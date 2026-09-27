@@ -188,3 +188,27 @@ lifecycle event. Preserve explicit Python cancellation. Shared server Task6b wil
 forward validated list query/limit, classify ambiguous command timeout, and keep
 mutations non-retrying. UI may fetch a full catalog (up to backend limit) on open
 and filter locally instead of requesting on each keystroke.
+
+
+## Concrete presentation and subscription boundaries
+
+The native goal display container is `metadata.codexPresentation` with nullable
+`threadGoal` and `completedThreadGoal`. Replace it authoritatively, including null
+clears. Plan timeline items use type `artifact`: content kind `plan-progress`
+contains explanation and the native plan steps, while content kind `plan` contains
+Markdown text. Progress has one stable identity per physical turn; Markdown keeps
+its native item identity. Preserve unknown fields/status in native state.
+
+AA background inventory also reads session state. Persistent IPC observation must
+therefore begin through an explicit session-view preparation seam, not every
+get_session_state call. Add a default-noop runtime hook and binding/RPC forwarding;
+Codex attaches read-only and bounds retained follower views. Background snapshots
+remain scoped, and missing owners are not claimed by reading. Native operations
+and live task ownership retain their separate lifecycle.
+
+Public notice identities are tied to the opaque native response context, including
+owner/generation. A fresh request reusing a numeric or string request ID after
+reconnect gets a new notice identity, so delayed browser actions cannot target it.
+The current native protocol does not expose another owner's SDK generation; record
+any residual unobservable remote-restart boundary instead of claiming a guarantee
+that the protocol cannot provide.

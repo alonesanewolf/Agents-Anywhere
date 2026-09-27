@@ -108,7 +108,9 @@
 ### Task 4: AA provider, runtime controls and end-to-end integration
 
 **Files:** active `provider.py`, `provider_config.py`, `runtime.py`, relevant
-`domain/`, `turns/`, `notifications/` only as necessary; provider/runtime tests.
+`domain/`, `turns/`, `notifications/` only as necessary; a default-noop runtime
+session-view hook, instance binding and explicit session-read RPC forwarding;
+provider/runtime and focused subscription-seam tests.
 
 - [ ] Add opt-in `appIntegration` config schema/default/normalization revision;
   instantiate adapter with configured home and runtime KV. Default SDK path remains.
