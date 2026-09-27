@@ -5,6 +5,7 @@ import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionRecord } from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-storage-domain'
+import type {} from '@deepseek-ai/dsh-permission-presets'
 import { realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { canonicalJson, digest, userMessageId } from './identity.js'
@@ -67,6 +68,7 @@ export class NativeRuntime {
     this.catalogs = new RuntimeCatalogs(ctx, () => this.emit({ type: 'catalogs' }))
     this.configuration = new RuntimeConfiguration(ctx)
     ctx.on('llm/adapters-updated', () => this.catalogs.invalidate(), { global: true })
+    ctx.on('permission-presets/catalog-changed', () => this.emit({ type: 'catalogs' }), { global: true })
     for (const key of ['sessionController', 'permissionPresets', 'commands', 'agentPresets', 'attachments', 'fileUploads'] as const) {
       ctx.inject([key], child => {
         this.emit({ type: 'capabilities' })

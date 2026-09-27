@@ -5,6 +5,7 @@ import { Monitor, ChevronDown, ArrowUp, Loader2, Check } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
@@ -22,6 +23,7 @@ import { useSessionToolSidebarStore } from "@/components/session-tool-sidebar-st
 import { DashboardSidebarToggle } from "@/components/dashboard-sidebar-toggle"
 import { AgentSelectionDrawer } from "@/components/session/agent-selection-drawer"
 import { SelectionSettingsDrawer } from "@/components/session/selection-settings-drawer"
+import { AutoReviewPermissionDialog } from "@/components/session/auto-review-permission-dialog"
 import {
   AttachmentButton,
   AttachmentPreviewList,
@@ -56,9 +58,11 @@ import {
   catalogItemDisabledReason,
   catalogItemEnabled,
   catalogI18nText,
+  isDshAutoReviewPermission,
   modelCatalogDisplayName,
   modelIdsForSelectionId,
   permissionIdForSelectionId,
+  permissionSelectionForNewSessionPreference,
   selectionIdForModelCatalog,
   selectionIdForPermissionCatalog,
 } from "@/components/session/catalog-selection"
@@ -269,6 +273,7 @@ export function TaskComposer() {
   const [selectedModel, setSelectedModel] = React.useState("")
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
+  const [pendingAutoReviewPermission, setPendingAutoReviewPermission] = React.useState<string | null>(null)
   const [workspace, setWorkspace] = React.useState<WorkspaceSelection | null>(null)
   const [projectEditor, setProjectEditor] = React.useState<ProjectEditorState>(null)
   const [prompt, setPrompt] = React.useState("")
@@ -474,6 +479,41 @@ export function TaskComposer() {
     CAPABILITY.permissionCatalog,
     selectedRuntimeScope,
   )
+  React.useEffect(() => {
+    if (!authSession?.accessToken || !selectedConnectorId || !selectedAgent ||
+      selectedRuntime?.runtimeType !== "dsh" || !canUsePermissionCatalog) return
+    let cancelled = false
+    let pending = false
+    const refresh = async () => {
+      if (pending || document.visibilityState === "hidden") return
+      pending = true
+      try {
+        const result = await dashboardApi.getConnectorRuntimePermissionCatalog(
+          authSession.accessToken,
+          selectedConnectorId,
+          selectedAgent,
+        )
+        if (!cancelled) setPermissionCatalog((current) =>
+          current?.revision === result.catalog.revision ? current : result.catalog,
+        )
+      } catch {
+        // The next focus or interval retries without hiding the current catalog.
+      } finally {
+        pending = false
+      }
+    }
+    const onVisible = () => { if (document.visibilityState === "visible") void refresh() }
+    void refresh()
+    window.addEventListener("focus", onVisible)
+    document.addEventListener("visibilitychange", onVisible)
+    const timer = window.setInterval(() => { void refresh() }, 10_000)
+    return () => {
+      cancelled = true
+      window.removeEventListener("focus", onVisible)
+      document.removeEventListener("visibilitychange", onVisible)
+      window.clearInterval(timer)
+    }
+  }, [authSession?.accessToken, canUsePermissionCatalog, selectedAgent, selectedConnectorId, selectedRuntime?.runtimeType])
   const canUseAttachments = capabilityIsUsable(
     runtimeCapabilities,
     CAPABILITY.attachment,
@@ -518,6 +558,7 @@ export function TaskComposer() {
       enabled: catalogItemEnabled(item),
       disabledReason: catalogItemDisabledReason(item),
       selectionId: item.selectionId,
+      badge: permissionCatalog?.runtime === "dsh" && item.metadata?.preset === "auto" ? "EXP" : undefined,
     })) ?? [],
     [permissionCatalog, t],
   )
@@ -560,12 +601,13 @@ export function TaskComposer() {
     const scope = newSessionSelectionScope(selectedConnectorId, selectedAgent)
     const selectionPreference = preference?.selections?.[scope]
     if (!selectionPreference) return
+    const preferredPermissionId = permissionIdForSelectionId(permissionCatalog, selectionPreference.permission)
 
     const availablePreference = availableNewSessionSelectionPreference(
       models,
       permissionOptions,
       modelIdsForSelectionId(modelCatalog, selectionPreference.model),
-      permissionIdForSelectionId(permissionCatalog, selectionPreference.permission),
+      isDshAutoReviewPermission(permissionCatalog, preferredPermissionId) ? "" : preferredPermissionId,
     )
     if (availablePreference.model) {
       setSelectedModel(availablePreference.model.modelId)
@@ -629,14 +671,29 @@ export function TaskComposer() {
     persistTargetPreference(selectedConnectorId, agent)
   }, [agentOptions, persistTargetPreference, selectedConnectorId])
 
-  const handlePermissionChange = React.useCallback((permission: string) => {
+  const commitPermissionChange = React.useCallback((permission: string) => {
     if (!selectedConnectorId || !selectedAgent) return
     if (!permissionOptions.some((option) => option.id === permission && option.enabled)) return
     setSelectedPermissionMode(permission)
     persistTargetPreference(selectedConnectorId, selectedAgent, {
-      permission: selectionIdForPermissionCatalog(permissionCatalog, permission),
+      permission: permissionSelectionForNewSessionPreference(permissionCatalog, permission),
     })
   }, [permissionCatalog, permissionOptions, persistTargetPreference, selectedAgent, selectedConnectorId])
+
+  const handlePermissionChange = React.useCallback((permission: string) => {
+    if (!permissionOptions.some((option) => option.id === permission && option.enabled)) return
+    if (isDshAutoReviewPermission(permissionCatalog, permission)) {
+      setPendingAutoReviewPermission(permission)
+      return
+    }
+    commitPermissionChange(permission)
+  }, [commitPermissionChange, permissionCatalog, permissionOptions])
+
+  React.useEffect(() => {
+    if (pendingAutoReviewPermission && !isDshAutoReviewPermission(permissionCatalog, pendingAutoReviewPermission)) {
+      setPendingAutoReviewPermission(null)
+    }
+  }, [pendingAutoReviewPermission, permissionCatalog])
 
   const handleModelChange = React.useCallback((model: string, reasoning: string) => {
     if (!selectedConnectorId || !selectedAgent) return
@@ -785,7 +842,7 @@ export function TaskComposer() {
         selectedAgent,
         {
           model: selectedModelSelection,
-          permission: selectedPermissionSelection,
+          permission: permissionSelectionForNewSessionPreference(permissionCatalog, selectedPermissionMode),
         },
       )
       persistPreference(nextPreference)
@@ -819,6 +876,14 @@ export function TaskComposer() {
       onDrop={onDrop}
     >
       <DragOverlay isDragging={isDragging} />
+      <AutoReviewPermissionDialog
+        open={pendingAutoReviewPermission !== null}
+        onOpenChange={(open) => { if (!open) setPendingAutoReviewPermission(null) }}
+        onConfirm={() => {
+          if (pendingAutoReviewPermission) commitPermissionChange(pendingAutoReviewPermission)
+          setPendingAutoReviewPermission(null)
+        }}
+      />
       <div className="absolute left-3 top-3 flex items-center gap-2">
         <DashboardSidebarToggle />
       </div>
@@ -925,6 +990,7 @@ export function TaskComposer() {
                         <Button variant="ghost" size="sm" className="min-w-0 shrink gap-1.5 text-muted-foreground">
                           {permissionOptions.length > 0 ? <span className="size-1.5 shrink-0 rounded-full bg-primary" /> : null}
                           <span className="min-w-0 truncate text-foreground">{permissionLabel}</span>
+                          {selectedPermissionOption?.badge ? <Badge variant="secondary">{selectedPermissionOption.badge}</Badge> : null}
                           <ChevronDown className="size-3.5 opacity-50" />
                         </Button>
                       </DropdownMenuTrigger>
@@ -941,7 +1007,10 @@ export function TaskComposer() {
                           >
                             <Check className={cn("mt-0.5 size-3.5", selectedPermissionMode === item.id ? "opacity-100" : "opacity-0")} />
                             <span className="min-w-0 flex-1">
-                              <span className="block font-medium leading-none">{item.label}</span>
+                              <span className="flex items-center gap-2 font-medium leading-none">
+                                <span>{item.label}</span>
+                                {item.badge ? <Badge variant="secondary">{item.badge}</Badge> : null}
+                              </span>
                               {(item.enabled ? item.description : item.disabledReason) ? (
                                 <span className="mt-1 block whitespace-normal text-xs leading-snug text-muted-foreground">
                                   {item.enabled ? item.description : item.disabledReason}

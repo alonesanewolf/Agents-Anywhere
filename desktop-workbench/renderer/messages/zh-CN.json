@@ -359,7 +359,14 @@
         "dsh": {
           "readOnly": { "label": "仅可查看" },
           "workspaceWrite": { "label": "工作区内修改" },
-          "fullAccess": { "label": "完全权限" }
+          "fullAccess": { "label": "完全权限" },
+          "auto": {
+            "label": "Auto review",
+            "description": "模型逐次审查工具调用，获准的操作以完全权限执行。",
+            "confirmTitle": "启用实验性的 Auto review？",
+            "confirmDescription": "获准的工具调用会以完全权限执行。自动审查可能判断错误，也会消耗额外 token。",
+            "confirmAction": "启用 Auto review"
+          }
         },
         "requestApproval": {
           "label": "请求批准",

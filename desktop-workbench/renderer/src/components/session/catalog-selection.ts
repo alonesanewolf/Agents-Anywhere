@@ -29,6 +29,13 @@ const dshPermissionLabelKeys: Record<string, string> = {
   "read-only": "permissionModes.dsh.readOnly.label",
   "workspace-write": "permissionModes.dsh.workspaceWrite.label",
   "danger-full-access": "permissionModes.dsh.fullAccess.label",
+  "auto": "permissionModes.dsh.auto.label",
+}
+
+export function isDshAutoReviewPermission(catalog: ProtocolPermissionCatalog | null, id: string): boolean {
+  return catalog?.runtime === "dsh" && catalog.permissions.some(
+    (item) => item.id === id && item.metadata?.preset === "auto",
+  )
 }
 
 export function catalogI18nText(
@@ -41,6 +48,7 @@ export function catalogI18nText(
   const preset = metadata?.preset
   const rawKey = (isRecord(i18n) ? i18n[field] : undefined)
     ?? (field === "labelKey" && typeof preset === "string" ? dshPermissionLabelKeys[preset] : undefined)
+    ?? (field === "descriptionKey" && preset === "auto" ? "permissionModes.dsh.auto.description" : undefined)
   if (typeof rawKey !== "string" || !rawKey) return fallback ?? ""
   const key = rawKey.startsWith("dashboard.new.")
     ? rawKey.slice("dashboard.new.".length)
@@ -115,6 +123,15 @@ export function selectionIdForPermissionCatalog(
   return catalog.permissions.find(
     (item) => item.id === permissionId && catalogItemEnabled(item),
   )?.selectionId ?? null
+}
+
+export function permissionSelectionForNewSessionPreference(
+  catalog: ProtocolPermissionCatalog | null,
+  permissionId: string,
+): string | null {
+  return isDshAutoReviewPermission(catalog, permissionId)
+    ? null
+    : selectionIdForPermissionCatalog(catalog, permissionId)
 }
 
 export function permissionIdForSelectionId(

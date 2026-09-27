@@ -359,7 +359,14 @@
         "dsh": {
           "readOnly": { "label": "read-only" },
           "workspaceWrite": { "label": "workspace-write" },
-          "fullAccess": { "label": "danger-full-access" }
+          "fullAccess": { "label": "danger-full-access" },
+          "auto": {
+            "label": "Auto review",
+            "description": "A model reviews each tool call before approved actions run with full access.",
+            "confirmTitle": "Enable Auto review (experimental)?",
+            "confirmDescription": "Approved tool calls run with full access. The review can make mistakes and uses extra tokens.",
+            "confirmAction": "Enable Auto review"
+          }
         },
         "requestApproval": {
           "label": "Request approval",
