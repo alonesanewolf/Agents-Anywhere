@@ -138,13 +138,13 @@ export class NativeRuntime {
   status(id: SessionId): 'idle' | 'running' | undefined { return this.ctx.get('agents')?.get(id)?.status }
   async capabilities(platformId?: string, id?: SessionId) {
     let model = false
-    const catalog = this.catalogs.currentModels()
+    let catalog: Awaited<ReturnType<RuntimeCatalogs['models']>> | undefined
     if (this.configuration.canSelectModel) {
-      try { model = this.ctx.get('llm')!.listProviders().length > 0 }
-      catch (error) { this.diagnostics.log('error', 'capabilities.model_providers_failed', {}, error) }
+      try { catalog = await this.catalogs.models(); model = catalog.metadata.routableProviders.length > 0 }
+      catch (error) { this.diagnostics.log('error', 'capabilities.model_catalog_failed', {}, error) }
     }
-    // The model directory can require remote provider calls. Capabilities must
-    // remain quick; the catalog update publishes effort support when it arrives.
+    // This capability covers the model selector, including switching to another
+    // model. Each model's reasoningItems describes its own effort support.
     const effort = Boolean(catalog?.models.some(item => item.enabled && item.reasoningItems.some(option => option.enabled)))
     const result = capabilities(platformId, Boolean(this.ctx.get('sessionController')), this.questions.available,
       { model, effort, approval: this.approvals.available, attachments: Boolean(this.ctx.get('attachments')), files: Boolean(this.ctx.get('fileUploads')),

@@ -12,9 +12,7 @@ import {
   isDshAutoReviewPermission,
   modelIdsForSelectionId,
   permissionIdForSelectionId,
-  permissionCatalogI18nText,
   permissionSelectionForNewSessionPreference,
-  retainUnchangedPermissionCatalog,
 } from "../src/components/session/catalog-selection.ts"
 
 const source = readFileSync(
@@ -244,22 +242,6 @@ test("DSH Auto review is not saved as a new-session preference", () => {
   assert.equal(isDshAutoReviewPermission({ ...catalog, runtime: "codex" }, "auto-id"), false)
   assert.equal(permissionSelectionForNewSessionPreference(catalog, "auto-id"), null)
   assert.equal(permissionSelectionForNewSessionPreference(catalog, "workspace-id"), "permission:workspace")
-})
-
-test("DSH permission labels and live options update even when a runtime reuses its revision", () => {
-  const withoutAuto = { runtime: "dsh", revision: 3, permissions: [] }
-  const auto = { id: "auto-id", displayName: "auto", selectionId: "permission:auto", metadata: {} }
-  const withAuto = { ...withoutAuto, permissions: [auto] }
-  assert.equal(retainUnchangedPermissionCatalog(withoutAuto, withAuto), withAuto)
-  assert.equal(retainUnchangedPermissionCatalog(withAuto, { ...withAuto }), withAuto)
-  assert.equal(isDshAutoReviewPermission(withAuto, "auto-id"), true)
-  assert.equal(
-    permissionCatalogI18nText((key) => {
-      if (key === "permissionModes.dsh.auto.label") return "Auto review"
-      throw new Error(`Unexpected key: ${key}`)
-    }, withAuto, auto, "labelKey"),
-    "Auto review",
-  )
 })
 
 test("session creation retains preference persistence as a final fallback", () => {

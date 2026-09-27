@@ -357,15 +357,14 @@
       "permissionMode": "Permission mode",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "Read Only" },
-          "workspaceWrite": { "label": "Workspace Write" },
-          "fullAccess": { "label": "Full access" },
+          "readOnly": { "label": "read-only" },
+          "workspaceWrite": { "label": "workspace-write" },
+          "fullAccess": { "label": "danger-full-access" },
           "auto": {
             "label": "Auto review",
-            "description": "Run without a sandbox after an experimental same-model review of every native tool call and PTC inner call.",
+            "description": "A model reviews each tool call before approved actions run with full access.",
             "confirmTitle": "Enable Auto review (experimental)?",
-            "confirmDescription": "Auto review runs without a sandbox. Before every native tool call and PTC inner call, the same model as the current agent reviews whether to allow it; you approve or reject each call it denies. This feature is experimental, can falsely allow or deny actions, and uses additional tokens.",
-            "confirmAcknowledge": "I understand these risks and want to continue",
+            "confirmDescription": "Approved tool calls run with full access. The review can make mistakes and uses extra tokens.",
             "confirmAction": "Enable Auto review"
           }
         },

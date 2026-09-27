@@ -42,7 +42,6 @@ import {
   modelCatalogDisplayName,
   modelIdsForSelectionId,
   permissionIdForSelectionId,
-  permissionCatalogI18nText,
   selectionIdForModelCatalog,
   selectionIdForPermissionCatalog,
 } from "@/components/session/catalog-selection"
@@ -186,13 +185,13 @@ export function SessionComposer({
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
   const permissionItems = permissionCatalog?.permissions.map((item) => ({
     id: item.id,
-    label: permissionCatalogI18nText(tNew, permissionCatalog, item, "labelKey"),
-    description: permissionCatalogI18nText(tNew, permissionCatalog, item, "descriptionKey"),
+    label: catalogI18nText(tNew, item.metadata, "labelKey", item.displayName),
+    description: catalogI18nText(tNew, item.metadata, "descriptionKey", item.description),
     default: item.default,
     enabled: catalogItemEnabled(item),
     disabledReason: catalogItemDisabledReason(item),
     selectionId: item.selectionId,
-    badge: isDshAutoReviewPermission(permissionCatalog, item.id) ? "EXP" : undefined,
+    badge: dsh && item.metadata?.preset === "auto" ? "EXP" : undefined,
   })) ?? []
   const modelItems = modelCatalog?.models.map((item) => ({
     id: item.id,
@@ -223,9 +222,7 @@ export function SessionComposer({
   const modelValue = modelSelectionValue?.modelId ?? ""
   const effortValue = modelSelectionValue?.reasoningId ?? ""
   const permissionLabel =
-    permissionItems.find((item) => item.id === selectedPermissionMode)?.label
-    ?? (dsh && actualPermission?.id === "auto" ? tNew("permissionModes.dsh.auto.label") : dsh ? actualPermission?.name : null)
-    ?? tNew("permissionMode")
+    permissionItems.find((item) => item.id === selectedPermissionMode)?.label ?? (dsh ? actualPermission?.name : null) ?? tNew("permissionMode")
   const modelLabel = selectedModelItem?.label ?? (dsh && actualModel?.model ? `${actualModel.model}（${actualModel.provider}）` : tNew("model"))
   const effortLabel = effortItems.find((item) => item.id === selectedReasoning)?.label ?? (dsh ? actualModel?.reasoningEffort : null) ?? tNew("reasoning")
   const hasSelectors = Boolean(permissionItems.length > 0 || modelItems.length > 0)
@@ -524,7 +521,7 @@ export function SessionComposer({
                       >
                         <span className="size-1.5 shrink-0 rounded-full bg-primary" />
                         <span className="min-w-0 truncate text-foreground">{permissionLabel}</span>
-                        {permissionItems.find((item) => item.id === selectedPermissionMode)?.badge || (dsh && actualPermission?.id === "auto")
+                        {permissionItems.find((item) => item.id === selectedPermissionMode)?.badge
                           ? <Badge variant="secondary">EXP</Badge>
                           : null}
                         <ChevronDown className="size-3.5 opacity-60" />
