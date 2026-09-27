@@ -1,5 +1,6 @@
 """Exact request validation and opaque presentation-bound response contexts."""
 
+from collections.abc import Mapping
 from copy import deepcopy
 from secrets import token_urlsafe
 
@@ -12,6 +13,32 @@ REQUEST_ROUTES = {
     "submit-user-input": "item/tool/requestUserInput",
     "submit-mcp-server-elicitation-response": "mcpServer/elicitation/request",
 }
+
+
+def validate_response(request, result):
+    """Pure validation, usable before the facade commits its one-shot token."""
+    if not isinstance(result, Mapping):
+        raise TypeError("native response requires a mapping")
+    method = request["method"]
+    if (
+        method
+        in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval")
+        and "decision" not in result
+    ):
+        raise ValueError("approval response requires decision")
+    if method == "item/tool/requestUserInput" and not isinstance(
+        result.get("answers"), dict
+    ):
+        raise ValueError("question response requires answers mapping")
+    if method == "mcpServer/elicitation/request":
+        content = request["params"]
+        if result.get("action") not in ("accept", "decline", "cancel"):
+            raise ValueError("invalid elicitation action")
+        if result["action"] == "accept" and (
+            content.get("mode") not in ("form", "url")
+            or "connector" in str(content.get("_meta", {})).lower()
+        ):
+            raise ValueError("unsupported special MCP authentication or verification")
 
 
 async def reply(operations, thread_id, suffix, params):
@@ -34,19 +61,7 @@ async def reply(operations, thread_id, suffix, params):
         if suffix in ("command-approval-decision", "file-approval-decision")
         else deepcopy(params["response"])
     )
-    if method == "item/tool/requestUserInput" and not isinstance(
-        result.get("answers"), dict
-    ):
-        raise ValueError("question response requires answers mapping")
-    if method == "mcpServer/elicitation/request":
-        content = request["params"]
-        if result.get("action") not in ("accept", "decline", "cancel"):
-            raise ValueError("invalid elicitation action")
-        if result["action"] == "accept" and (
-            content.get("mode") not in ("form", "url")
-            or "connector" in str(content.get("_meta", {})).lower()
-        ):
-            raise ValueError("unsupported special MCP authentication or verification")
+    validate_response(request, result)
     operations.state(thread_id)
     await operations.sdk.respond_native_request(
         request["id"],
@@ -119,6 +134,12 @@ class ResponseContexts:
         }
         self.tokens.update(keep)
         return valid
+
+    def peek(self, token):
+        binding = self.tokens.get(token)
+        if binding is None:
+            raise ValueError("stale response context")
+        return binding
 
     def take(self, token):
         binding = self.tokens.pop(token, None)

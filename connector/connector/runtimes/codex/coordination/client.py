@@ -18,7 +18,7 @@ from .operations import OwnerOperations
 from .projection import native_to_state, presentation, state_to_native
 from .queue import execute_head
 from .reducer import exact_id, merge_settings, reduce_event
-from .requests import REQUEST_ROUTES, ResponseContexts
+from .requests import REQUEST_ROUTES, ResponseContexts, validate_response
 from .state import history_complete
 
 
@@ -348,10 +348,16 @@ class CoordinatedCodexClient:
 
         def done(completed):
             self.queue_tasks.pop(thread_id, None)
-            if not completed.cancelled():
-                completed.exception()
-            if thread_id in self.queue_wakes:
-                self.queue_wakes.discard(thread_id)
+            progressed = (
+                not completed.cancelled()
+                and completed.exception() is None
+                and completed.result() is True
+            )
+            wake = thread_id in self.queue_wakes
+            self.queue_wakes.discard(thread_id)
+            if progressed or wake:
+                # One bounded head check per progress signal. Active/paused/failed
+                # guards return False and stop without needing another notification.
                 self._kick_queue(thread_id)
 
         task.add_done_callback(done)
@@ -527,17 +533,25 @@ class CoordinatedCodexClient:
         return await self.sdk.respond(request_id, result)
 
     async def respond_to_request(self, response_context, result):
-        thread_id, source, _id_type, request_id, method = self.contexts.take(
+        thread_id, source, _id_type, request_id, method = self.contexts.peek(
             response_context
         )
         state, owner, _, _, current = self._snapshot(thread_id)
         if state is None or owner is None or source != current:
             raise ValueError("stale response context authority")
-        if not any(
-            exact_id(r.get("id"), request_id) and r.get("method") == method
-            for r in state.get("requests", [])
-        ):
+        request = next(
+            (
+                r
+                for r in state.get("requests", [])
+                if exact_id(r.get("id"), request_id)
+                and r.get("method") == method
+                and r.get("params", {}).get("threadId") == thread_id
+            ),
+            None,
+        )
+        if request is None:
             raise ValueError("stale response context request")
+        validate_response(request, result)
         suffix = next(
             (key for key, value in REQUEST_ROUTES.items() if value == method), None
         )
@@ -548,6 +562,9 @@ class CoordinatedCodexClient:
             params["decision"] = deepcopy(result["decision"])
         else:
             params["response"] = deepcopy(dict(result))
+        # No await between authority validation, local validation and consumption.
+        # Once dispatch starts, errors/timeouts cannot safely make this token reusable.
+        self.contexts.take(response_context)
         if self.peer.is_owner(thread_id):
             await self.operations.handle("thread-follower-" + suffix, params)
         else:

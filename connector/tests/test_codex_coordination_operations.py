@@ -833,3 +833,58 @@ async def test_rejected_start_recovery_rechecks_native_generation(tmp_path):
     with pytest.raises(ValueError, match="generation"):
         await operations.handle("thread-follower-start-turn", params)
     assert len(native.calls) == 2
+
+
+@async_test
+async def test_canonical_edit_can_hydrate_under_its_mutation_lock(tmp_path):
+    operations, native, peer, _journal = setup(
+        tmp_path,
+        [
+            {
+                "id": "old",
+                "status": "completed",
+                "items": [
+                    {
+                        "id": "u",
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": "old"}],
+                    }
+                ],
+            }
+        ],
+    )
+    turn = peer.state["turns"].pop()
+    peer.state["turnHistory"] = {
+        "kind": "canonical",
+        "history": {
+            "isComplete": True,
+            "entitiesByKey": {"old": turn},
+            "islands": [{"entries": [{"value": "old"}]}],
+        },
+    }
+    native.responses.update(
+        {
+            "thread/revert": {"thread": {"id": "t", "turns": []}},
+            "thread/read": {"thread": {"id": "t", "turns": []}},
+            "thread/turns/list": {"data": [], "nextCursor": None},
+            "turn/start": {"turn": {"id": "new", "status": "inProgress"}},
+        }
+    )
+    await asyncio.wait_for(
+        operations.handle(
+            "thread-follower-edit-last-user-turn",
+            {
+                "conversationId": "t",
+                "turnId": "old",
+                "message": "edited",
+            },
+        ),
+        2,
+    )
+    assert [method for method, _ in native.calls] == [
+        "thread/revert",
+        "thread/read",
+        "thread/turns/list",
+        "turn/start",
+    ]
+    assert [turn["turnId"] for turn in peer.state["turns"]] == ["new"]

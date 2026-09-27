@@ -445,3 +445,53 @@ async def test_queue_wakeup_during_running_send_is_not_lost(tmp_path, monkeypatc
     for _ in range(10):
         await asyncio.sleep(0)
     assert runs == ["t", "t"]
+
+
+@async_test
+async def test_confirmed_queue_recovery_advances_next_head_without_external_wake(
+    tmp_path,
+):
+    import asyncio
+
+    from test_codex_coordination_operations import Owner
+
+    from connector.runtimes.codex.coordination.client import CoordinatedCodexClient
+
+    peer = Owner(
+        [
+            {
+                "id": "done",
+                "status": "completed",
+                "items": [
+                    {"id": "answer", "type": "agentMessage", "text": "done"},
+                ],
+            }
+        ]
+    )
+    native = RuntimeNative()
+    native.responses["turn/start"] = {"turn": {"id": "two", "status": "inProgress"}}
+    adapter = CoordinatedCodexClient(
+        native,
+        peer,
+        kv_store=JsonKeyValueStore(tmp_path / "kv.json"),
+        namespace="runtime",
+    )
+    await adapter.journal.begin("t", {"clientUserMessageId": "one"})
+    await adapter.journal.stage("t", "confirmed", result={"turn": {"id": "done"}})
+    await adapter.journal.replace_queue(
+        "t",
+        [
+            {"id": "one", "text": "already sent"},
+            {"id": "two", "text": "ready"},
+            {"id": "three", "text": "must wait for active turn"},
+        ],
+    )
+    adapter._kick_queue("t")
+    async with asyncio.timeout(2):
+        while adapter.queue_tasks:
+            await asyncio.gather(*adapter.queue_tasks.values())
+            await asyncio.sleep(0)
+    assert [message["id"] for message in adapter.journal.queue("t")] == ["three"]
+    assert len(native.calls) == 1
+    assert native.calls[0][1]["clientUserMessageId"] == "two"
+    assert not adapter.queue_tasks
