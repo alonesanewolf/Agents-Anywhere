@@ -417,56 +417,34 @@ export function TaskComposer() {
     setModelCatalog(null)
     setPermissionCatalog(null)
     setRuntimeCapabilities(null)
-    dashboardApi.getConnectorRuntimeCapabilities(
-      authSession.accessToken,
-      selectedConnectorId,
-      selectedAgent,
-    )
-      .then(async (capabilitiesResponse) => {
-        const capabilitySet = capabilitiesResponse.capabilitySet
-        const canUseModelCatalog = capabilityIsUsable(
-          capabilitySet,
-          CAPABILITY.modelCatalog,
-          selectedRuntimeScope,
+    void (async () => {
+      try {
+        const { capabilitySet } = await dashboardApi.getConnectorRuntimeCapabilities(
+          authSession.accessToken,
+          selectedConnectorId,
+          selectedAgent,
         )
-        const canUsePermissionCatalog = capabilityIsUsable(
-          capabilitySet,
-          CAPABILITY.permissionCatalog,
-          selectedRuntimeScope,
-        )
-        const [modelCatalogResponse, permissionCatalogResponse] = await Promise.all([
-          canUseModelCatalog
-            ? dashboardApi.getConnectorRuntimeModelCatalog(
-                authSession.accessToken,
-                selectedConnectorId,
-                selectedAgent,
-              )
-            : Promise.resolve(null),
-          canUsePermissionCatalog
-            ? dashboardApi.getConnectorRuntimePermissionCatalog(
-                authSession.accessToken,
-                selectedConnectorId,
-                selectedAgent,
-              )
-            : Promise.resolve(null),
-        ])
-        return { capabilitySet, modelCatalogResponse, permissionCatalogResponse }
-      })
-      .then(({ capabilitySet, modelCatalogResponse, permissionCatalogResponse }) => {
         if (cancelled) return
         setRuntimeCapabilities(capabilitySet)
-        setModelCatalog(modelCatalogResponse?.catalog ?? null)
-        setPermissionCatalog(permissionCatalogResponse?.catalog ?? null)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setRuntimeCapabilities(null)
-        setModelCatalog(null)
-        setPermissionCatalog(null)
-      })
-      .finally(() => {
+        const catalogRequests = [
+          capabilityIsUsable(capabilitySet, CAPABILITY.modelCatalog, selectedRuntimeScope)
+            ? dashboardApi.getConnectorRuntimeModelCatalog(
+                authSession.accessToken, selectedConnectorId, selectedAgent,
+              ).then(({ catalog }) => { if (!cancelled) setModelCatalog(catalog) })
+            : Promise.resolve(),
+          capabilityIsUsable(capabilitySet, CAPABILITY.permissionCatalog, selectedRuntimeScope)
+            ? dashboardApi.getConnectorRuntimePermissionCatalog(
+                authSession.accessToken, selectedConnectorId, selectedAgent,
+              ).then(({ catalog }) => { if (!cancelled) setPermissionCatalog(catalog) })
+            : Promise.resolve(),
+        ]
+        await Promise.allSettled(catalogRequests)
+      } catch {
+        if (!cancelled) setRuntimeCapabilities(null)
+      } finally {
         if (!cancelled) setCatalogsLoading(false)
-      })
+      }
+    })()
     return () => {
       cancelled = true
     }
@@ -598,7 +576,7 @@ export function TaskComposer() {
 
   React.useEffect(() => {
     if (!preferenceLoaded || !selectedConnectorId || !selectedAgent) return
-    if (catalogsLoading || (!modelCatalog && !permissionCatalog)) return
+    if (!modelCatalog && !permissionCatalog) return
     const scope = newSessionSelectionScope(selectedConnectorId, selectedAgent)
     const selectionPreference = preference?.selections?.[scope]
     if (!selectionPreference) return
@@ -624,7 +602,6 @@ export function TaskComposer() {
     permissionOptions,
     preference,
     preferenceLoaded,
-    catalogsLoading,
     selectedAgent,
     selectedConnectorId,
   ])
@@ -722,7 +699,8 @@ export function TaskComposer() {
     (prompt.trim().length > 0 || attachments.length > 0)
   const selectorsLoading =
     runtimeInventoryLoading || (
-      Boolean(authSession?.accessToken && hasOnlineDevice && selectedConnector && selectedAgent) && catalogsLoading
+      Boolean(authSession?.accessToken && hasOnlineDevice && selectedConnector && selectedAgent) &&
+      catalogsLoading && !runtimeCapabilities
     )
   const compactSelectors = composerWidth > 0 && composerWidth < 640
 
@@ -987,6 +965,7 @@ export function TaskComposer() {
                   />
                 ) : !compactSelectors ? (
                   <>
+                    {catalogsLoading && canUsePermissionCatalog && !permissionCatalog ? <ComposerSelectorLoading className="w-28" /> : null}
                     {permissionOptions.length > 0 ? <DropdownMenu onOpenChange={(open) => { if (open) setPermissionRefreshKey((key) => key + 1) }}>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="sm" className="min-w-0 shrink gap-1.5 text-muted-foreground">
@@ -1024,6 +1003,7 @@ export function TaskComposer() {
                       </DropdownMenuContent>
                     </DropdownMenu> : null}
 
+                    {catalogsLoading && canUseModelCatalog && !modelCatalog ? <ComposerSelectorLoading className="w-36" /> : null}
                     {hasOnlineDevice && models.length > 0 ? (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>

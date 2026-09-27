@@ -27,6 +27,7 @@ export class RuntimeCatalogs {
   constructor(private ctx: Context, private changed: () => void) {}
 
   invalidate(): void { this.loadedAt = 0; this.generation++; this.changed() }
+  currentModels(): ModelCatalog | undefined { return this.cached }
 
   models(force = false): Promise<ModelCatalog> {
     if (this.pending) return this.pending
