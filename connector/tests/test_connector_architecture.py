@@ -51,11 +51,36 @@ FORBIDDEN_ACTIVE_CODEX_TOKENS = {
     "JsonRpcStdioClient",
     "CodexIpcClient",
     "CodexIpcPublisher",
-    "thread-follower-start-turn",
-    "thread-follower-interrupt-turn",
     "ipcEnabled",
     "sdkMode",
 }
+
+
+COORDINATION_ONLY_TOKENS = {
+    "thread-follower-start-turn",
+    "thread-follower-interrupt-turn",
+}
+
+
+def _forbidden_codex_tokens(path: Path) -> set[str]:
+    coordination = CONNECTOR_PACKAGE / "runtimes" / "codex" / "coordination"
+    return FORBIDDEN_ACTIVE_CODEX_TOKENS | (
+        set() if path.is_relative_to(coordination) else COORDINATION_ONLY_TOKENS
+    )
+
+
+def test_coordination_exception_keeps_raw_transport_and_other_locations_forbidden():
+    codex = CONNECTOR_PACKAGE / "runtimes" / "codex"
+    allowed = _forbidden_codex_tokens(codex / "coordination" / "peer.py")
+    assert "thread-follower-start-turn" not in allowed
+    assert "JsonRpcStdioClient" in allowed
+    assert "CodexIpcClient" in allowed
+    assert "thread-follower-start-turn" in _forbidden_codex_tokens(
+        codex / "sdk" / "client.py"
+    )
+    assert "thread-follower-interrupt-turn" in _forbidden_codex_tokens(
+        codex / "coordination_old" / "client.py"
+    )
 
 
 def _active_python_files() -> list[Path]:
@@ -230,7 +255,7 @@ def test_active_codex_code_does_not_import_app_server_reference() -> None:
 
     for path in (CONNECTOR_PACKAGE / "runtimes" / "codex").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        for token in FORBIDDEN_ACTIVE_CODEX_TOKENS:
+        for token in _forbidden_codex_tokens(path):
             if token in source:
                 relative_path = path.relative_to(CONNECTOR_PACKAGE.parent)
                 violations.append(f"{relative_path}: references {token}")
@@ -373,7 +398,9 @@ def test_codex_notifications_are_split_by_side_effect_role() -> None:
 def test_codex_turn_controller_is_operation_facade() -> None:
     turns_dir = CONNECTOR_PACKAGE / "runtimes" / "codex" / "turns"
     controller_source = (turns_dir / "controller.py").read_text(encoding="utf-8")
-    session_start_source = (turns_dir / "session_start.py").read_text(encoding="utf-8")
+    session_start_source = (turns_dir / "session_start.py").read_text(
+        encoding="utf-8"
+    )
     selections_source = (turns_dir / "selections.py").read_text(encoding="utf-8")
 
     assert "start_thread(" not in controller_source
