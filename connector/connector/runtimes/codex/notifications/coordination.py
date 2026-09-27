@@ -69,6 +69,8 @@ class CoordinationSnapshotProjector:
     notices: object
     read_selections: object = None
     published: dict = field(default_factory=dict)
+    published_complete: dict = field(default_factory=dict)
+    published_authority: dict = field(default_factory=dict)
 
     locks: dict = field(default_factory=lambda: defaultdict(asyncio.Lock))
 
@@ -79,10 +81,26 @@ class CoordinationSnapshotProjector:
     async def _handle(self, session_id, thread_id, params):
         thread = params.get("thread")
         available = isinstance(thread, dict)
-        # Scoped passive-read cleanup has no new native facts. Preserve the last
-        # snapshot; a followed/owned authority loss remains explicitly unavailable.
-        if not available and params.get("coordination", {}).get("role") == "unattached":
-            return
+        coordination = params.get("coordination", {})
+        cached = self.session_states.get(session_id)
+        previous_role = (
+            cached.metadata.get("codexCoordination", {}).get("role") if cached else None
+        )
+        # The production facade uses "none" after scoped unfollow. Native owner
+        # disconnection also releases its peer and emits "none", so preserve that
+        # real loss when the previous observed authority was our native owner.
+        scoped_cleanup = (
+            not available
+            and coordination.get("role") in {"none", "unattached"}
+            and previous_role != "owner"
+        )
+        authority = {
+            key: coordination.get(key)
+            for key in ("role", "ownerClientId", "generation")
+        }
+        if not available or self.published_authority.get(thread_id) != authority:
+            self.published_complete.pop(thread_id, None)
+        self.published_authority[thread_id] = authority
         contexts = params.get("requestContexts", []) if available else []
         pending = {}
         for context in contexts:
@@ -147,6 +165,10 @@ class CoordinationSnapshotProjector:
             if existing is None:
                 self.notices.upsert(notice)
                 await self.host.notice_upsert(notice)
+        # Even intentional cleanup invalidates response contexts. Close notices
+        # above, then keep last-known display/status instead of fabricating loss.
+        if scoped_cleanup:
+            return
         metadata = {
             "source": "codex.coordination/state",
             "codexCoordination": {
@@ -263,7 +285,11 @@ class CoordinationSnapshotProjector:
         previous = self.published.get(thread_id, {})
         removed = complete and bool(previous.keys() - current.keys())
         changed = tuple(item for item in items if previous.get(item.id) != item)
-        if changed or removed or (complete and thread_id not in self.published):
+        if (
+            changed
+            or removed
+            or (complete and not self.published_complete.get(thread_id, False))
+        ):
             await self.host.timeline_sync(
                 session_id=session_id,
                 runtime="codex",
@@ -276,3 +302,4 @@ class CoordinationSnapshotProjector:
                 },
             )
         self.published[thread_id] = current if complete else {**previous, **current}
+        self.published_complete[thread_id] = complete
