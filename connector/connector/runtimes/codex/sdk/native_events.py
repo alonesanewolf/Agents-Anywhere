@@ -4,6 +4,10 @@ import asyncio
 from copy import deepcopy
 
 
+class NativeRequestResolved(ValueError):
+    """Native server already resolved the request; no second wire response."""
+
+
 def request_key(value):
     if type(value) not in (str, int):
         raise ValueError("invalid native request id")
@@ -42,7 +46,9 @@ class NativeEventBridge:
             params = message.get("params", {})
             entry = self.pending.get(request_key(params.get("requestId")))
             if entry and not entry[1].done():
-                entry[1].set_exception(ValueError("native request already resolved"))
+                entry[1].set_exception(
+                    NativeRequestResolved("native request already resolved")
+                )
         self.queue.put_nowait(message)
 
     async def _run(self):
@@ -84,6 +90,17 @@ class NativeEventBridge:
         ):
             raise ValueError("stale native request")
         entry[1].set_result(deepcopy(dict(result)))
+
+    async def reject(self, request_id, reason, *, generation):
+        entry = self.pending.get(request_key(request_id))
+        if (
+            self.closed
+            or generation != self.generation
+            or entry is None
+            or entry[1].done()
+        ):
+            raise ValueError("stale native request")
+        entry[1].set_exception(ValueError(reason))
 
     def terminate(self, error):
         if self.closed:

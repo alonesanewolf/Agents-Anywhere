@@ -4,6 +4,7 @@ import threading
 from typing import Any
 
 from connector.logging import logger
+from connector.runtimes.codex.sdk.native_events import NativeRequestResolved
 
 
 class DeferredServerRequestReader:
@@ -54,6 +55,8 @@ class DeferredServerRequestReader:
                 message
             )
             self._client._write_message({"id": request_id, "result": result})
+        except NativeRequestResolved:
+            return
         except BaseException as exc:  # noqa: BLE001 - fail all transport waiters
             logger.exception(
                 "codex sdk server request failed method={} request_id={}",

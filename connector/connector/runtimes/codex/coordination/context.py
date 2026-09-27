@@ -1,5 +1,6 @@
 """Validate native preparation before mutations; retain input rather than flattening."""
 
+import os
 from copy import deepcopy
 from uuid import uuid4
 
@@ -104,24 +105,43 @@ def prepare_start(thread_id, turn_start, state, sdk):
         settings = state.get("latestThreadSettings", {})
         for key, value in settings.items():
             target = "sandboxPolicy" if key == "sandbox" else key
+            if context.get("useAppServerPermissionDefault") and target in {
+                "approvalPolicy",
+                "approvalsReviewer",
+                "sandboxPolicy",
+                "permissions",
+                "runtimeWorkspaceRoots",
+            }:
+                continue
             if target in REQUEST_FIELDS and target not in request:
                 request[target] = deepcopy(value)
     for field in ("toolOutput", "turnTrigger", "serviceTierForTurn"):
         if request.get(field) is not None:
             require_feature(sdk, field)
     for attachment in context.get("attachments", []):
-        if not isinstance(attachment, dict):
-            raise TypeError("invalid attachment")
-        # Native typed inputs already prepared by caller are passed intact. Any
-        # UI-only attachment must provide a native input rather than lose content.
-        native_input = attachment.get("input")
-        if native_input is None:
-            raise ValueError(
-                "unsupported IDE attachment preparation; native input required"
-            )
+        native_input = attachment_input(attachment)
         if native_input not in request["input"]:
-            request["input"].append(deepcopy(native_input))
+            request["input"].append(native_input)
     return request, context
+
+
+def attachment_input(attachment):
+    if not isinstance(attachment, dict):
+        raise TypeError("invalid attachment")
+    if isinstance(attachment.get("input"), dict) and isinstance(
+        attachment["input"].get("type"), str
+    ):
+        return deepcopy(attachment["input"])
+    path = attachment.get("path")
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError(
+            "unsupported IDE attachment preparation; absolute local path or native input required"
+        )
+    media = attachment.get("mediaType", attachment.get("mimeType", ""))
+    if isinstance(media, str) and media.startswith("image/"):
+        return {"type": "localImage", "path": path}
+    name = attachment.get("name") or os.path.basename(path)
+    return {"type": "text", "text": f"[Attached file: {name} at {path}]"}
 
 
 def queue_start(thread_id, message):
@@ -146,7 +166,7 @@ def queue_start(thread_id, message):
     for key, value in context.items():
         if value not in (None, False, [], {}) and key not in supported:
             raise ValueError(f"unsupported queued context preparation: {key}")
-    for key in ("addedFiles", "fileAttachments", "ideContext", "imageAttachments"):
+    for key in ("addedFiles", "ideContext"):
         if context.get(key):
             raise ValueError(
                 f"unsupported queued editor preparation: {key}; native input required"
@@ -166,6 +186,13 @@ def queue_start(thread_id, message):
         ),
         "clientUserMessageId": message["id"],
     }
+    for attachment in [
+        *context.get("fileAttachments", []),
+        *context.get("imageAttachments", []),
+    ]:
+        native_input = attachment_input(attachment)
+        if native_input not in request["input"]:
+            request["input"].append(native_input)
     if message.get("cwd") is not None:
         request["cwd"] = message["cwd"]
     for key in ("turnTrigger", "collaborationMode"):

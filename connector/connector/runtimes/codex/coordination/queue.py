@@ -79,6 +79,20 @@ async def execute_head(operations, thread_id):
         ):
             return False
         head = messages[0]
+        record = operations.journal.operation(thread_id)
+        if (
+            record
+            and record["stage"] == "confirmed"
+            and record["request"].get("clientUserMessageId") == head["id"]
+        ):
+            # Crash after confirmed native send but before queue removal: acknowledge
+            # that head from durable evidence, never create another native turn.
+            async with operations.queue_locks[thread_id]:
+                current = operations.journal.queue(thread_id)
+                if current and current[0]["id"] == head["id"]:
+                    await operations.journal.replace_queue(thread_id, current[1:])
+                    await publish_queue(operations, thread_id)
+            return True
         try:
             prepared = queue_start(thread_id, head)
             # No awaits between final head check and entering start's journal.

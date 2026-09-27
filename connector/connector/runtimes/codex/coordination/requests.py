@@ -43,7 +43,7 @@ async def reply(operations, thread_id, suffix, params):
         if result.get("action") not in ("accept", "decline", "cancel"):
             raise ValueError("invalid elicitation action")
         if result["action"] == "accept" and (
-            content.get("mode") == "openai/userVerification"
+            content.get("mode") not in ("form", "url")
             or "connector" in str(content.get("_meta", {})).lower()
         ):
             raise ValueError("unsupported special MCP authentication or verification")

@@ -20,13 +20,10 @@ async def pages(call, method, params):
         params = {**params, "cursor": cursor}
 
 
-async def hydrate(operations, thread_id):
-    before = operations.state(thread_id)
-    raw = await operations.call(
-        thread_id, "thread/read", {"threadId": thread_id, "includeTurns": False}
-    )
+async def read_complete(call, thread_id, *, host_id="local"):
+    raw = await call("thread/read", {"threadId": thread_id, "includeTurns": False})
     turns = await pages(
-        lambda method, params: operations.call(thread_id, method, params),
+        call,
         "thread/turns/list",
         {
             "threadId": thread_id,
@@ -42,7 +39,7 @@ async def hydrate(operations, thread_id):
             or turn.get("itemsView") in ("notLoaded", "summary")
         ):
             entries = await pages(
-                lambda method, params: operations.call(thread_id, method, params),
+                call,
                 "thread/items/list",
                 {
                     "threadId": thread_id,
@@ -57,9 +54,18 @@ async def hydrate(operations, thread_id):
                 **turn.get("itemsPagination", {}),
                 "hasLoadedOldest": True,
             }
-    hydrated = native_to_state(
+    return native_to_state(
         {**raw["thread"], "turns": turns},
         complete=True,
+        host_id=host_id,
+    )
+
+
+async def hydrate(operations, thread_id):
+    before = operations.state(thread_id)
+    hydrated = await read_complete(
+        lambda method, params: operations.call(thread_id, method, params),
+        thread_id,
         host_id=operations.peer.host_id,
     )
     current = operations.state(thread_id)

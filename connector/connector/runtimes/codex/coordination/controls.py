@@ -13,12 +13,37 @@ from .state import enumerate_turns, history_complete
 async def settings(operations, thread_id, params):
     state = operations.state(thread_id)
     values = deepcopy(params["threadSettings"])
+    if "threadId" in values:
+        raise ValueError("threadSettings cannot override threadId")
+    supported = {
+        "model",
+        "effort",
+        "collaborationMode",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "sandboxPolicy",
+        "activePermissionProfile",
+        "cwd",
+        "serviceTier",
+        "permissions",
+        "runtimeWorkspaceRoots",
+    }
+    unknown = set(values) - supported
+    if unknown:
+        raise ValueError(f"unsupported thread settings: {', '.join(sorted(unknown))}")
     active_id = params.get("activeTurnId")
     condition = params.get("condition")
-    if active_id is None and condition is not None and (
-        state.get("latestReasoningEffort") != condition.get("ifEffortEquals") or (
-            condition.get("ifModelEquals") is not None
-            and state.get("latestModel") != condition["ifModelEquals"]
+    missing = object()
+    if (
+        active_id is None
+        and condition is not None
+        and (
+            state.get("latestReasoningEffort", missing)
+            != condition.get("ifEffortEquals", missing)
+            or (
+                condition.get("ifModelEquals") is not None
+                and state.get("latestModel") != condition["ifModelEquals"]
+            )
         )
     ):
         return {"applied": False}

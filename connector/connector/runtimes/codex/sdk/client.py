@@ -190,6 +190,11 @@ class CodexSdkClient:
                 "generation": self.native_generation,
                 "rawEvents": self._native_bridge is not None and not self._native_bridge.closed}
 
+    async def reject_native_request(self, request_id, reason, *, generation):
+        if self._native_bridge is None:
+            raise RuntimeInvalidRequestError("SDK native request extension unavailable")
+        await self._native_bridge.reject(request_id, reason, generation=generation)
+
     async def respond_native_request(self, request_id, result, *, generation, thread_id, method):
         if self._native_bridge is None:
             raise RuntimeInvalidRequestError("SDK native request extension unavailable")

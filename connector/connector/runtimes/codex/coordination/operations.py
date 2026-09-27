@@ -97,6 +97,34 @@ class OwnerOperations:
             await self.journal.stage(thread_id, "unknown", uncertainMethod=method)
             raise
 
+    async def reconcile(self, thread_id):
+        record = self.journal.operation(thread_id)
+        if not record or record["stage"] in ("confirmed", "failed"):
+            return False
+        if (
+            record["stage"] not in ("starting", "unknown")
+            or record.get("uncertainMethod", "turn/start") != "turn/start"
+        ):
+            return False
+        message_id = record["request"].get("clientUserMessageId")
+        if not message_id:
+            return False
+        for turn in enumerate_turns(self.state(thread_id)):
+            if not turn.get("turnId"):
+                continue
+            if turn.get("params", {}).get("clientUserMessageId") == message_id or any(
+                item.get("type") == "userMessage" and item.get("clientId") == message_id
+                for item in turn.get("items", [])
+            ):
+                await self.journal.stage(
+                    thread_id,
+                    "confirmed",
+                    result={"turn": {"id": turn["turnId"]}},
+                    reconciled=True,
+                )
+                return True
+        return False
+
     async def start(self, thread_id, turn_start, *, already_begun=False):
         state = self.state(thread_id)
         request, context = prepare_start(thread_id, turn_start, state, self.sdk)
@@ -140,6 +168,7 @@ class OwnerOperations:
             **request,
             "attachments": deepcopy(context.get("attachments", [])),
         }
+        turn["turnStartContext"] = deepcopy(context)
         if "localTurnMetadata" in context:
             turn["localMetadata"] = context["localTurnMetadata"]
         turns = enumerate_turns(state)

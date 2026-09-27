@@ -47,7 +47,6 @@ class CoordinatedCodexClient:
         self.peer.on_event = self._on_event
         self.peer.owner_handler = self._owner_operation
         self.sdk.set_native_event_handler(self._native_event)
-        self.remover = self.peer.client.add_broadcast_handler(self._lifecycle)
         await self.peer.start()
         try:
             await self.sdk.start(self._sdk_event)
@@ -98,13 +97,28 @@ class CoordinatedCodexClient:
             return
         params = message.get("params") or {}
         thread_id = params.get("threadId", (params.get("thread") or {}).get("id"))
+        if "id" in message and message["method"] not in REQUEST_ROUTES.values():
+            await self.sdk.reject_native_request(
+                message["id"],
+                "unsupported native server request method",
+                generation=generation,
+            )
+            return
         if thread_id in self.acquiring:
             self.acquiring[thread_id].append(deepcopy(message))
             return
         if not thread_id or not self.peer.is_owner(thread_id):
+            if "id" in message:
+                await self.sdk.reject_native_request(
+                    message["id"],
+                    "native request has no local owner",
+                    generation=generation,
+                )
             return
         state = reduce_event(self.peer.get_state(thread_id), message)
         await self.peer.publish_state(thread_id, state)
+        if not self.operations.mutation_locks[thread_id].locked():
+            await self.operations.reconcile(thread_id)
         self._kick_queue(thread_id)
 
     async def _on_state(self, thread_id, _stale_payload):
@@ -113,6 +127,8 @@ class CoordinatedCodexClient:
     async def _on_event(self, envelope):
         if self.closed:
             return
+        if envelope.get("method") in ("client-status-changed", "ipc-connection-reset"):
+            await self._lifecycle(envelope)
         thread_id = envelope.get("params", {}).get("conversationId")
         if thread_id:
             await self.refresh_state(thread_id, force=True)
@@ -371,17 +387,47 @@ class CoordinatedCodexClient:
                     self.contexts.clear(thread_id)
 
     async def list_thread_turns(self, thread_id):
-        result = await self.read_thread(thread_id)
-        return CodexThreadTurnsResult(turns=tuple(result.thread.get("turns", [])))
+        state = await self.load_complete_history(thread_id)
+        return CodexThreadTurnsResult(turns=tuple(state_to_native(state)["turns"]))
 
     async def load_complete_history(self, thread_id):
-        await self._acquire(thread_id)
-        if self.peer.is_owner(thread_id):
-            await self.operations.handle(
-                "thread-follower-load-complete-history", {"conversationId": thread_id}
+        from .history import read_complete
+
+        async with self.locks[thread_id]:
+            temporary = thread_id not in self.attached and not self.peer.is_owner(
+                thread_id
             )
-            return self.peer.get_state(thread_id)
-        return await self.peer.load_complete_history(thread_id)
+            try:
+                if self.peer.is_owner(thread_id):
+                    await self.operations.handle(
+                        "thread-follower-load-complete-history",
+                        {"conversationId": thread_id},
+                    )
+                    return self.peer.get_state(thread_id)
+                state = await self.peer.follow(thread_id)
+                if state is not None:
+                    return await self.peer.load_complete_history(thread_id)
+                return await read_complete(
+                    self.sdk.native_request, thread_id, host_id=self.peer.host_id
+                )
+            finally:
+                if temporary and self.peer.is_follower(thread_id):
+                    await self.peer.unfollow(thread_id)
+                    self.contexts.clear(thread_id)
+
+    async def owner_operation(self, thread_id, method, params):
+        """Explicit rich operations for runtime commands; responses require tokens."""
+        from .peer import FOLLOWER_METHODS
+
+        if method not in FOLLOWER_METHODS:
+            raise ValueError("unsupported follower operation")
+        if method.removeprefix("thread-follower-") in REQUEST_ROUTES:
+            raise ValueError("approval responses require respond_to_request context")
+        if params.get("conversationId", thread_id) != thread_id:
+            raise ValueError("conversation identity mismatch")
+        return await self._route(
+            thread_id, method.removeprefix("thread-follower-"), params
+        )
 
     async def start_thread(self, request):
         result = await self.sdk.native_thread_start(request)
@@ -407,11 +453,20 @@ class CoordinatedCodexClient:
         ):
             if getattr(request, source) is not None:
                 native[target] = getattr(request, source)
+        from connector.runtimes.codex.sdk.client import codex_approval_settings
+
+        policy, reviewer = codex_approval_settings(
+            request.approval_policy, request.approvals_reviewer
+        )
+        if policy is not None:
+            native["approvalPolicy"] = policy.model_dump(mode="json")
+        if reviewer is not None:
+            native["approvalsReviewer"] = reviewer.value
         if request.sandbox is not None:
             from connector.runtimes.codex.sdk.client import codex_turn_start_params
 
             sandbox = codex_turn_start_params(request).model_dump(
-                by_alias=True, exclude_none=True
+                by_alias=True, exclude_none=True, mode="json"
             )
             if "sandboxPolicy" in sandbox:
                 native["sandboxPolicy"] = sandbox["sandboxPolicy"]
@@ -494,6 +549,12 @@ class CoordinatedCodexClient:
                 params,
                 expected_owner_client_id=owner.client_id,
             )
+
+    async def reconcile_thread(self, thread_id):
+        if not self.peer.is_owner(thread_id):
+            raise ValueError("reconciliation requires AA ownership")
+        await self.load_complete_history(thread_id)
+        return await self.operations.reconcile(thread_id)
 
     async def native_request(self, method, params):
         thread_id = params.get("threadId")

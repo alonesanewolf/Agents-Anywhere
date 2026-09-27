@@ -54,3 +54,23 @@ async def test_queue_unknown_send_is_retained_and_not_repeated(tmp_path):
     assert journal.queue("t")[0]["pausedReason"] == "native outcome unknown"
     assert await execute_head(operations, "t") is False
     assert len(native.calls) == 1
+
+
+@async_test
+async def test_restart_after_confirmed_send_before_queue_removal_does_not_repeat(
+    tmp_path,
+):
+    from connector.runtimes.codex.coordination.queue import execute_head
+
+    operations, native, _peer, journal = setup(tmp_path)
+    await operations.handle(
+        "thread-follower-set-queued-follow-ups-state",
+        {"conversationId": "t", "state": {"t": [{"id": "one", "text": "one"}]}},
+    )
+    await journal.begin(
+        "t", {"clientUserMessageId": "one", "input": [{"type": "text", "text": "one"}]}
+    )
+    await journal.stage("t", "confirmed", result={"turn": {"id": "sent"}})
+    assert await execute_head(operations, "t") is True
+    assert journal.queue("t") == []
+    assert native.calls == []

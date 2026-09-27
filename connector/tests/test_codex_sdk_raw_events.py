@@ -145,3 +145,71 @@ async def test_native_requests_keep_exact_ids_generation_and_reject_reuse():
     assert await waiters[1] == {"answers": {"q": {"answers": ["x"]}}}
     assert [entry[0]["id"] for entry in seen] == [7, "7"]
     await bridge.close()
+
+
+@async_test
+async def test_explicit_unsupported_server_request_completes_with_error():
+    from connector.runtimes.codex.sdk.native_events import NativeEventBridge
+
+    seen = []
+
+    async def handler(message, generation):
+        seen.append(message)
+
+    bridge = NativeEventBridge(handler, generation=1)
+    bridge.start()
+    message = {"id": "unknown", "method": "item/tool/call", "params": {"threadId": "t"}}
+    bridge.raw_tap(message)
+    await asyncio.sleep(0)
+    waiter = asyncio.create_task(bridge.wait_response(message))
+    await bridge.reject("unknown", "unsupported native request", generation=1)
+    with pytest.raises(ValueError, match="unsupported"):
+        await waiter
+    await bridge.close()
+
+
+@async_test
+async def test_native_resolution_does_not_send_a_second_response():
+    from connector.runtimes.codex.sdk.native_events import NativeEventBridge
+
+    messages = queue.Queue()
+    written = []
+    seen = asyncio.Event()
+
+    async def handler(message, generation):
+        if message["method"] == "serverRequest/resolved":
+            seen.set()
+
+    bridge = NativeEventBridge(handler, generation=1)
+    bridge.start()
+    sync = SimpleNamespace(
+        _read_message=messages.get,
+        _coerce_notification=lambda method, params: (method, params),
+        _write_message=written.append,
+        _router=SimpleNamespace(
+            route_notification=lambda _: None,
+            route_response=lambda _: None,
+            fail_all=lambda _: None,
+        ),
+    )
+    reader = DeferredServerRequestReader(
+        sync, raw_tap=bridge.raw_tap, server_request=bridge.server_request
+    )
+    runner = asyncio.create_task(asyncio.to_thread(reader.run))
+    messages.put(
+        {"id": 7, "method": "item/tool/requestUserInput", "params": {"threadId": "t"}}
+    )
+    messages.put(
+        {
+            "method": "serverRequest/resolved",
+            "params": {"threadId": "t", "requestId": 7},
+        }
+    )
+    try:
+        await asyncio.wait_for(seen.wait(), 1)
+        await asyncio.sleep(0.02)
+        assert written == []
+    finally:
+        messages.put(None)
+        await runner
+        await bridge.close()
