@@ -134,3 +134,57 @@ argument insertion, native errors preserving drafts, unavailable old bridge,
 command-specific busy rules and native result correlation. Use headless component
 tests and targeted type checks; do not start dev servers or repeatedly build the
 application.
+
+
+## Shared command contract agreed after preflight
+
+Use existing public RuntimeCommand/RuntimeCommandResult metadata rather than new
+protocol fields. DSH exact raw input wins even when empty. Without raw, zero args
+means `/name`, one string means `/name ` plus that string unchanged, and multiple
+args are rejected with a request to provide raw. Non-string args and unsupported
+attachments fail before native invocation.
+
+Command descriptors use `metadata.ui`, with this deliberately small discriminator:
+
+```ts
+type CommandUi =
+  | { kind: 'execute'; argumentHint?: string; acceptsMultiline?: boolean;
+      allowedStatuses?: string[] }
+  | { kind: 'selector'; target: 'model' | 'reasoning' | 'permission' | 'collaborationMode' };
+```
+
+`acceptsArgs` controls editable argument insertion. Keep native DSH input and
+optional definitionId separately in metadata; `attachmentsAvailable:false` means
+AA has no command attachment transport. DSH descriptors set acceptsMultiline true
+because the actual native parser accepts newline input. Other commands must
+explicitly support multiline or UI rejects it with the draft intact. DSH native
+handlers own busy-state validation; advertise the online session statuses they
+accept rather than inheriting a generic idle-only command gate. Codex descriptors
+use operation-specific state availability. UI still applies source/read-only/
+write-authorization and pending-submit guards. Do not infer required arguments
+from hint prose. Do not add the earlier proposed metadata.presentation field.
+
+`session.commands.metadata.catalogRevision` is an opaque string changing across
+adapter restart and native command-registry invalidation. Existing platform
+runtime.capability.updated (including optional sessionId) carries it. Refresh the
+open menu on relevant revision/availability change; reopening and reconnect also
+fetch fresh catalogs. Never infer registry invalidation from model output.
+
+Use `result.executionState: 'accepted' | 'completed' | 'unknown'` when the backend
+can classify a dispatched operation. Accepted means acknowledged without proof
+that background work has finished. Completed requires evidence for that operation.
+Generic native DSH success defaults to accepted; preserve its exact native text
+and correlation, without claiming all resulting model/background work is done.
+Returned native kind:error is ok:false with its known result (completed command
+handler, not rollback of effects). Validation/unknown-name rejection need not have
+an executionState because nothing was dispatched. Thrown handlers, transport loss
+and timeout after dispatch use unknown with retryable:false; no auto-retry and
+keep draft. Use this field instead of the earlier proposed result.outcome. UI
+must treat ok:false as failure regardless of HTTP status and executionState.
+
+DSH normal execution result keeps commandId, kind, text and sourceEventSeq as
+available. Throw/abort does not provide a correlation: never guess from the latest
+lifecycle event. Preserve explicit Python cancellation. Shared server Task6b will
+forward validated list query/limit, classify ambiguous command timeout, and keep
+mutations non-retrying. UI may fetch a full catalog (up to backend limit) on open
+and filter locally instead of requesting on each keystroke.
