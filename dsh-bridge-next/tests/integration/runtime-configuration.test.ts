@@ -159,13 +159,15 @@ test('Auto review contribution changes the live permission catalog and selection
   const f = await nativeRuntime(home, ctx => mountAgents(ctx, new TextAdapter()))
   const runtime = f.ctx.agentsAnywhereRuntime.native
   const changes: string[] = []
-  const unwatch = runtime.watch(change => changes.push(change.type))
+  const unwatch = runtime.watch(change => {
+    if (change.type === 'catalogs') changes.push(change.catalogType)
+  })
   try {
     const before = runtime.catalogs.permissions()
     assert.ok(!before.permissions.some(item => item.metadata.preset === 'auto'))
 
     const removeAuto = f.ctx.permissionPresets.registerAuto(() => {})
-    await until(() => changes.includes('catalogs'))
+    await until(() => changes.includes('permission'))
     const withAuto = runtime.catalogs.permissions()
     assert.ok(withAuto.revision > before.revision)
     assert.equal(withAuto.permissions.at(-1)?.metadata.preset, 'auto')
@@ -173,7 +175,7 @@ test('Auto review contribution changes the live permission catalog and selection
 
     changes.length = 0
     await removeAuto()
-    await until(() => changes.includes('catalogs'))
+    await until(() => changes.includes('permission'))
     const after = runtime.catalogs.permissions()
     assert.ok(after.revision > withAuto.revision)
     assert.ok(!after.permissions.some(item => item.metadata.preset === 'auto'))

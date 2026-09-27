@@ -31,6 +31,7 @@ export type ModelSelectionOption = SelectionOption & {
 
 export function SelectionSettingsDrawer({
   disabled,
+  onOpenChange,
   permissionDisabled = false,
   modelDisabled = false,
   reasoningDisabled = false,
@@ -49,6 +50,7 @@ export function SelectionSettingsDrawer({
   onModelChange,
 }: {
   disabled?: boolean
+  onOpenChange?: (open: boolean) => void
   permissionDisabled?: boolean
   modelDisabled?: boolean
   reasoningDisabled?: boolean
@@ -71,6 +73,7 @@ export function SelectionSettingsDrawer({
 
   const setDrawerOpen = (nextOpen: boolean) => {
     setOpen(nextOpen)
+    onOpenChange?.(nextOpen)
     if (!nextOpen) setExpandedModelId(null)
   }
 

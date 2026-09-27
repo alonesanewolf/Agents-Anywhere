@@ -12,6 +12,7 @@ import {
   isDshAutoReviewPermission,
   modelIdsForSelectionId,
   permissionIdForSelectionId,
+  permissionCatalogI18nText,
   permissionSelectionForNewSessionPreference,
 } from "../src/components/session/catalog-selection.ts"
 
@@ -242,6 +243,12 @@ test("DSH Auto review is not saved as a new-session preference", () => {
   assert.equal(isDshAutoReviewPermission({ ...catalog, runtime: "codex" }, "auto-id"), false)
   assert.equal(permissionSelectionForNewSessionPreference(catalog, "auto-id"), null)
   assert.equal(permissionSelectionForNewSessionPreference(catalog, "workspace-id"), "permission:workspace")
+  assert.equal(permissionCatalogI18nText(
+    (key) => key === "permissionModes.dsh.auto.label" ? "Auto review" : key,
+    { runtime: "dsh", permissions: [] },
+    { displayName: "auto", metadata: {} },
+    "labelKey",
+  ), "Auto review")
 })
 
 test("session creation retains preference persistence as a final fallback", () => {

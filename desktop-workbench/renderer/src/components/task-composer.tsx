@@ -62,6 +62,7 @@ import {
   modelCatalogDisplayName,
   modelIdsForSelectionId,
   permissionIdForSelectionId,
+  permissionCatalogI18nText,
   permissionSelectionForNewSessionPreference,
   selectionIdForModelCatalog,
   selectionIdForPermissionCatalog,
@@ -273,6 +274,7 @@ export function TaskComposer() {
   const [selectedModel, setSelectedModel] = React.useState("")
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
+  const [permissionRefreshKey, setPermissionRefreshKey] = React.useState(0)
   const [pendingAutoReviewPermission, setPendingAutoReviewPermission] = React.useState<string | null>(null)
   const [workspace, setWorkspace] = React.useState<WorkspaceSelection | null>(null)
   const [projectEditor, setProjectEditor] = React.useState<ProjectEditorState>(null)
@@ -494,7 +496,10 @@ export function TaskComposer() {
           selectedAgent,
         )
         if (!cancelled) setPermissionCatalog((current) =>
-          current?.revision === result.catalog.revision ? current : result.catalog,
+          current?.runtime === result.catalog.runtime &&
+          current.revision === result.catalog.revision &&
+          JSON.stringify(current.permissions) === JSON.stringify(result.catalog.permissions)
+            ? current : result.catalog,
         )
       } catch {
         // The next focus or interval retries without hiding the current catalog.
@@ -506,14 +511,14 @@ export function TaskComposer() {
     void refresh()
     window.addEventListener("focus", onVisible)
     document.addEventListener("visibilitychange", onVisible)
-    const timer = window.setInterval(() => { void refresh() }, 10_000)
+    const timer = window.setInterval(() => { void refresh() }, 5_000)
     return () => {
       cancelled = true
       window.removeEventListener("focus", onVisible)
       document.removeEventListener("visibilitychange", onVisible)
       window.clearInterval(timer)
     }
-  }, [authSession?.accessToken, canUsePermissionCatalog, selectedAgent, selectedConnectorId, selectedRuntime?.runtimeType])
+  }, [authSession?.accessToken, canUsePermissionCatalog, permissionRefreshKey, selectedAgent, selectedConnectorId, selectedRuntime?.runtimeType])
   const canUseAttachments = capabilityIsUsable(
     runtimeCapabilities,
     CAPABILITY.attachment,
@@ -552,13 +557,13 @@ export function TaskComposer() {
   const permissionOptions = React.useMemo(
     () => permissionCatalog?.permissions.map((item) => ({
       id: item.id,
-      label: catalogI18nText(t, item.metadata, "labelKey", item.displayName),
-      description: catalogI18nText(t, item.metadata, "descriptionKey", item.description),
+      label: permissionCatalogI18nText(t, permissionCatalog, item, "labelKey"),
+      description: permissionCatalogI18nText(t, permissionCatalog, item, "descriptionKey"),
       default: item.default,
       enabled: catalogItemEnabled(item),
       disabledReason: catalogItemDisabledReason(item),
       selectionId: item.selectionId,
-      badge: permissionCatalog?.runtime === "dsh" && item.metadata?.preset === "auto" ? "EXP" : undefined,
+      badge: isDshAutoReviewPermission(permissionCatalog, item.id) ? "EXP" : undefined,
     })) ?? [],
     [permissionCatalog, t],
   )
@@ -969,6 +974,7 @@ export function TaskComposer() {
                 {compactSelectors && hasSelectionSettings ? (
                   <SelectionSettingsDrawer
                     disabled={selectorsLoading}
+                    onOpenChange={(open) => { if (open) setPermissionRefreshKey((key) => key + 1) }}
                     buttonLabel={t("selectionSettings")}
                     title={t("selectionSettings")}
                     description={t("selectionSettingsDescription")}
@@ -985,7 +991,7 @@ export function TaskComposer() {
                   />
                 ) : !compactSelectors ? (
                   <>
-                    {permissionOptions.length > 0 ? <DropdownMenu>
+                    {permissionOptions.length > 0 ? <DropdownMenu onOpenChange={(open) => { if (open) setPermissionRefreshKey((key) => key + 1) }}>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="sm" className="min-w-0 shrink gap-1.5 text-muted-foreground">
                           {permissionOptions.length > 0 ? <span className="size-1.5 shrink-0 rounded-full bg-primary" /> : null}
