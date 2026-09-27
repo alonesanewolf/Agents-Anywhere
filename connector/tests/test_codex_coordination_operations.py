@@ -545,3 +545,291 @@ async def test_steer_service_tier_override_is_not_silently_ignored(tmp_path):
             },
         )
     assert native.calls == []
+
+
+@pytest.mark.parametrize("completion_phase", ["response", "confirmation"])
+@async_test
+async def test_late_start_preserves_observed_completion(tmp_path, completion_phase):
+    operations, native, peer, journal = setup(tmp_path)
+    completed = {
+        "id": "fast",
+        "status": "completed",
+        "error": {"message": "observed"},
+        "completedAt": 123,
+        "durationMs": 15,
+        "items": [{"id": "answer", "type": "agentMessage", "text": "done"}],
+    }
+
+    async def complete():
+        await peer.publish_state(
+            "t", native_to_state({"id": "t", "turns": [completed]}, complete=True)
+        )
+
+    async def response(params):
+        if completion_phase == "response":
+            await complete()
+        return {"turn": {"id": "fast", "status": "inProgress", "items": []}}
+
+    original_stage = journal.stage
+
+    async def stage(thread_id, name, **fields):
+        if name == "confirmed" and completion_phase == "confirmation":
+            await complete()
+        await original_stage(thread_id, name, **fields)
+
+    journal.stage = stage
+    native.responses["turn/start"] = response
+    await operations.handle(
+        "thread-follower-start-turn",
+        {
+            "conversationId": "t",
+            "turnStart": {
+                "request": {
+                    "threadId": "t",
+                    "input": [],
+                    "clientUserMessageId": "message",
+                },
+                "context": {"localTurnMetadata": {"source": "test"}},
+            },
+        },
+    )
+    turn = peer.state["turns"][0]
+    assert turn["status"] == "completed"
+    assert turn["error"] == completed["error"]
+    assert turn["completedAt"] == 123
+    assert turn["durationMs"] == 15
+    assert turn["items"][0]["text"] == "done"
+    assert turn["params"]["clientUserMessageId"] == "message"
+    assert turn["localMetadata"] == {"source": "test"}
+
+
+@async_test
+async def test_history_hydration_serializes_edit_and_allows_internal_hydration(
+    tmp_path,
+):
+    old = {
+        "id": "old",
+        "status": "completed",
+        "items": [
+            {
+                "id": "user",
+                "type": "userMessage",
+                "content": [{"type": "text", "text": "old"}],
+            }
+        ],
+    }
+    operations, native, peer, _journal = setup(tmp_path, [old])
+    entered, release = asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    async def page(params):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            entered.set()
+            await release.wait()
+            return {"data": [old], "nextCursor": None}
+        return {"data": [], "nextCursor": None}
+
+    native.responses.update(
+        {
+            "thread/read": {"thread": {"id": "t", "turns": []}},
+            "thread/turns/list": page,
+            "thread/revert": {"thread": {"id": "t", "turns": []}},
+            "thread/rollback": {"thread": {"id": "t", "turns": []}},
+            "turn/start": {
+                "turn": {"id": "replacement", "status": "inProgress", "items": []}
+            },
+        }
+    )
+    hydrating = asyncio.create_task(
+        operations.handle(
+            "thread-follower-load-complete-history", {"conversationId": "t"}
+        )
+    )
+    await entered.wait()
+    blocked = operations.mutation_locks["t"].locked()
+    editing = asyncio.create_task(
+        operations.handle(
+            "thread-follower-edit-last-user-turn",
+            {"conversationId": "t", "turnId": "old", "message": "edited"},
+        )
+    )
+    # Await a barrier behind the edit task's first event-loop turn.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(hydrating, editing), 2)
+    assert blocked, "history hydration must exclude destructive edit"
+    assert [turn["turnId"] for turn in peer.state["turns"]] == ["replacement"]
+
+
+@pytest.mark.parametrize(
+    "error_name", ["InvalidParamsError", "MethodNotFoundError", "InvalidRequestError"]
+)
+@async_test
+async def test_definite_native_rejection_allows_corrected_start(tmp_path, error_name):
+    from openai_codex import errors
+
+    operations, native, _peer, journal = setup(tmp_path)
+    native.responses["turn/start"] = getattr(errors, error_name)(
+        -32602, "invalid model"
+    )
+    params = {
+        "conversationId": "t",
+        "turnStart": {
+            "request": {
+                "threadId": "t",
+                "input": [],
+                "model": "bad",
+            }
+        },
+    }
+    with pytest.raises(getattr(errors, error_name)):
+        await operations.handle("thread-follower-start-turn", params)
+    assert journal.operation("t")["stage"] == "failed"
+    params["turnStart"]["request"]["model"] = "corrected"
+    native.responses["turn/start"] = {"turn": {"id": "new", "status": "inProgress"}}
+    await operations.handle("thread-follower-start-turn", params)
+    assert len(native.calls) == 2
+
+
+@async_test
+async def test_corrected_start_recovers_injected_phase_after_journal_reload(tmp_path):
+    from openai_codex.errors import InvalidParamsError
+
+    from connector.runtimes.codex.coordination.operations import OwnerOperations
+
+    operations, native, peer, journal = setup(tmp_path)
+    native.responses["turn/start"] = InvalidParamsError(-32602, "invalid model")
+    params = {
+        "conversationId": "t",
+        "turnStart": {
+            "request": {"threadId": "t", "input": [], "model": "bad"},
+            "context": {
+                "responseItems": [{"type": "message", "role": "user", "content": []}]
+            },
+        },
+    }
+    with pytest.raises(InvalidParamsError):
+        await operations.handle("thread-follower-start-turn", params)
+    operations = OwnerOperations(
+        native, peer, CoordinationJournal(journal.store, "runtime")
+    )
+    changed = deepcopy(params)
+    changed["turnStart"]["context"]["responseItems"] = []
+    with pytest.raises(ValueError, match="recovery"):
+        await operations.handle("thread-follower-start-turn", changed)
+    assert len(native.calls) == 2
+    params["turnStart"]["request"]["model"] = "corrected"
+    native.responses["turn/start"] = {"turn": {"id": "new", "status": "inProgress"}}
+    await operations.handle("thread-follower-start-turn", params)
+    assert [method for method, _ in native.calls] == [
+        "thread/inject_items",
+        "turn/start",
+        "turn/start",
+    ]
+    assert (
+        native.calls[1][1]["clientUserMessageId"]
+        == native.calls[2][1]["clientUserMessageId"]
+    )
+
+
+@async_test
+async def test_edit_retry_after_definite_restart_rejection_never_reverts_twice(
+    tmp_path,
+):
+    from openai_codex.errors import InvalidParamsError
+
+    operations, native, peer, journal = setup(
+        tmp_path,
+        [
+            {
+                "id": "old",
+                "status": "completed",
+                "items": [
+                    {
+                        "id": "u",
+                        "type": "userMessage",
+                        "content": [{"type": "text", "text": "old"}],
+                    }
+                ],
+            }
+        ],
+    )
+    native.responses["thread/rollback"] = {"thread": {"id": "t", "turns": []}}
+    native.responses["turn/start"] = InvalidParamsError(-32602, "rejected")
+    params = {"conversationId": "t", "turnId": "old", "message": "edited"}
+    with pytest.raises(InvalidParamsError):
+        await operations.handle("thread-follower-edit-last-user-turn", params)
+    assert peer.state["turns"] == []
+    assert journal.operation("t")["stage"] == "rejected"
+    native.responses["turn/start"] = {"turn": {"id": "new", "status": "inProgress"}}
+    await operations.handle("thread-follower-edit-last-user-turn", params)
+    assert [method for method, _ in native.calls] == [
+        "thread/rollback",
+        "turn/start",
+        "turn/start",
+    ]
+
+
+@pytest.mark.parametrize(
+    "error_name, expected",
+    [
+        ("InvalidParamsError", "failed"),
+        ("MethodNotFoundError", "failed"),
+        ("InternalRpcError", "unknown"),
+    ],
+)
+@async_test
+async def test_injection_rejection_distinguishes_no_effect_from_ambiguity(
+    tmp_path, error_name, expected
+):
+    from openai_codex import errors
+
+    operations, native, _peer, journal = setup(tmp_path)
+    native.responses["thread/inject_items"] = getattr(errors, error_name)(
+        -32602, "rejected"
+    )
+    params = {
+        "conversationId": "t",
+        "turnStart": {
+            "request": {"threadId": "t", "input": []},
+            "context": {
+                "responseItems": [{"type": "message", "role": "user", "content": []}]
+            },
+        },
+    }
+    with pytest.raises(getattr(errors, error_name)):
+        await operations.handle("thread-follower-start-turn", params)
+    assert journal.operation("t")["stage"] == expected
+    native.responses["thread/inject_items"] = {}
+    native.responses["turn/start"] = {"turn": {"id": "new", "status": "inProgress"}}
+    if expected == "failed":
+        await operations.handle("thread-follower-start-turn", params)
+        assert len(native.calls) == 3
+    else:
+        with pytest.raises(ValueError, match="unconfirmed"):
+            await operations.handle("thread-follower-start-turn", params)
+        assert len(native.calls) == 1
+
+
+@async_test
+async def test_rejected_start_recovery_rechecks_native_generation(tmp_path):
+    from openai_codex.errors import InvalidParamsError
+
+    operations, native, _peer, _journal = setup(tmp_path)
+    native.responses["turn/start"] = InvalidParamsError(-32602, "rejected")
+    params = {
+        "conversationId": "t",
+        "turnStart": {
+            "request": {"threadId": "t", "input": []},
+            "context": {"responseItems": [{"type": "message"}]},
+        },
+    }
+    with pytest.raises(InvalidParamsError):
+        await operations.handle("thread-follower-start-turn", params)
+    native.native_generation += 1
+    with pytest.raises(ValueError, match="generation"):
+        await operations.handle("thread-follower-start-turn", params)
+    assert len(native.calls) == 2

@@ -5,6 +5,12 @@ from collections import defaultdict
 from contextvars import ContextVar
 from copy import deepcopy
 
+from openai_codex.errors import (
+    InvalidParamsError,
+    InvalidRequestError,
+    MethodNotFoundError,
+)
+
 from .context import prepare_start, require_feature
 from .history import hydrate
 from .projection import active_turn, canonical_turn
@@ -54,7 +60,10 @@ class OwnerOperations:
             if suffix in REQUEST_ROUTES:
                 return await reply(self, thread_id, suffix, params)
             if suffix == "load-complete-history":
-                return {"revision": await hydrate(self, thread_id)}
+                # Edit holds this lock across revert, hydration and restart. Internal
+                # edit hydration uses hydrate directly to avoid recursive acquisition.
+                async with self.mutation_locks[thread_id]:
+                    return {"revision": await hydrate(self, thread_id)}
             if suffix == "set-queued-follow-ups-state":
                 from .queue import accept_queue
 
@@ -93,6 +102,15 @@ class OwnerOperations:
         await self.journal.stage(thread_id, stage)
         try:
             return await self.call(thread_id, method, params)
+        except (InvalidParamsError, InvalidRequestError, MethodNotFoundError):
+            record = self.journal.operation(thread_id)
+            # Only protocol-level no-effect errors are safe to retry. Previously
+            # successful phases remain durable and must not be repeated.
+            partial = record.get("injectionConfirmed") or record.get("historyChanged")
+            await self.journal.stage(
+                thread_id, "rejected" if partial else "failed", rejectedMethod=method
+            )
+            raise
         except BaseException:
             await self.journal.stage(thread_id, "unknown", uncertainMethod=method)
             raise
@@ -127,7 +145,32 @@ class OwnerOperations:
 
     async def start(self, thread_id, turn_start, *, already_begun=False):
         state = self.state(thread_id)
+        record = self.journal.operation(thread_id) or {}
+        recovering = record.get("stage") == "rejected"
+        if recovering:
+            turn_start = deepcopy(turn_start)
+            previous = record["request"]
+            turn_start.setdefault("request", {}).setdefault(
+                "clientUserMessageId", previous["clientUserMessageId"]
+            )
         request, context = prepare_start(thread_id, turn_start, state, self.sdk)
+        if recovering and (
+            record["request"].get("generation") != self.sdk.native_generation
+            or context != record["request"].get("context")
+            or any(
+                request.get(key) != record["request"].get(key)
+                for key in (
+                    "threadId",
+                    "input",
+                    "clientUserMessageId",
+                    "toolOutput",
+                    "additionalContext",
+                )
+            )
+        ):
+            raise ValueError(
+                "recovery requires the same input, context and native generation"
+            )
         if active_turn(state) is not None and request.get("toolOutput") is None:
             raise ValueError("conversation has an active turn")
         passive = context.get("passiveContext") or {}
@@ -136,16 +179,18 @@ class OwnerOperations:
             items.extend(deepcopy(passive.get("items") or []))
         if items and active_turn(state) is not None:
             raise ValueError("response item injection requires an idle thread")
-        if not already_begun:
-            await self.journal.begin(
-                thread_id,
-                {
-                    **request,
-                    "context": context,
-                    "generation": self.sdk.native_generation,
-                },
+        prepared = {
+            **request,
+            "context": context,
+            "generation": self.sdk.native_generation,
+        }
+        if already_begun or recovering:
+            await self.journal.stage(
+                thread_id, "prepared", request=prepared, restart=deepcopy(turn_start)
             )
-        if items:
+        else:
+            await self.journal.begin(thread_id, prepared)
+        if items and not (recovering and record.get("injectionConfirmed")):
             if active_turn(self.state(thread_id)) is not None:
                 raise ValueError("response item injection requires an idle thread")
             await self.mutation(
@@ -154,7 +199,7 @@ class OwnerOperations:
                 "thread/inject_items",
                 {"threadId": thread_id, "items": items},
             )
-            await self.journal.stage(thread_id, "injected")
+            await self.journal.stage(thread_id, "injected", injectionConfirmed=True)
             if passive.get("items"):
                 await self.journal.set_passive_key(thread_id, passive.get("key"))
         result = await self.mutation(thread_id, "starting", "turn/start", request)
@@ -176,11 +221,13 @@ class OwnerOperations:
         if old is None:
             turns.append(turn)
         else:
-            # Native notifications may have already appended items before response.
-            live_items = old.get("items", [])
-            old.update(turn)
-            if live_items:
-                old["items"] = live_items
+            # Notifications observed while awaiting the response or fsync are newer.
+            # Fill missing response fields, but only overwrite preparation metadata.
+            for key, value in turn.items():
+                old.setdefault(key, value)
+            for key in ("params", "turnStartContext", "localMetadata"):
+                if key in turn:
+                    old[key] = turn[key]
         state["turns"] = turns
         await self.peer.publish_state(thread_id, state)
         return result

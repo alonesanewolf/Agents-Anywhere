@@ -161,6 +161,12 @@ async def interrupt(operations, thread_id, params):
 
 
 async def edit(operations, thread_id, params):
+    record = operations.journal.operation(thread_id) or {}
+    if record.get("stage") == "rejected" and record.get("historyChanged"):
+        if record.get("edit") != params:
+            raise ValueError("edit recovery requires the same edit request")
+        await operations.start(thread_id, record["restart"])
+        return {"ok": True}
     if params.get("shouldSendPermissionOverrides"):
         raise ValueError("unsupported IDE permission override preparation")
     if params.get("writingBlockContextPrepared"):
@@ -210,6 +216,7 @@ async def edit(operations, thread_id, params):
     await operations.journal.begin(
         thread_id, {"edit": deepcopy(params), "restart": turn_start}
     )
+    await operations.journal.stage(thread_id, "prepared", edit=deepcopy(params))
     if state.get("turnHistory", {}).get("kind") == "canonical":
         require_feature(operations.sdk, "revert")
         result = await operations.mutation(
@@ -225,6 +232,7 @@ async def edit(operations, thread_id, params):
             "thread/rollback",
             {"threadId": thread_id, "numTurns": len(turns) - index},
         )
+    await operations.journal.stage(thread_id, "reverted", historyChanged=True)
     new_state = native_to_state(
         result["thread"], complete=False, host_id=operations.peer.host_id
     )
