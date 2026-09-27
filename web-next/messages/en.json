@@ -349,11 +349,7 @@
           "workspaceWrite": { "label": "Workspace Write" },
           "fullAccess": { "label": "Full access" },
           "auto": {
-            "label": "Auto review",
-            "description": "Run without a sandbox after an experimental same-model review of every native tool call and PTC inner call.",
-            "confirmTitle": "Enable Auto review (experimental)?",
-            "confirmDescription": "Auto review runs without a sandbox. Before every native tool call and PTC inner call, the same model as the current agent reviews whether to allow it; you approve or reject each call it denies. This feature is experimental, can falsely allow or deny actions, and uses additional tokens.",
-            "confirmAction": "Enable Auto review"
+            "label": "Auto review"
           }
         },
         "requestApproval": {

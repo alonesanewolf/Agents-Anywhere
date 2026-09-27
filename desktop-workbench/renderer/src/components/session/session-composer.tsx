@@ -47,7 +47,6 @@ import {
   selectionIdForPermissionCatalog,
 } from "@/components/session/catalog-selection"
 import { SelectionSettingsDrawer } from "@/components/session/selection-settings-drawer"
-import { AutoReviewPermissionDialog } from "@/components/session/auto-review-permission-dialog"
 import { CAPABILITY, capabilityIsUsable, findCapability, attachmentMimeTypes } from "@/components/session/capabilities"
 import { useElementWidth } from "@/hooks/use-element-width"
 import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runtime-instances"
@@ -181,7 +180,6 @@ export function SessionComposer({
   )
   const showInterrupt = !creatingSession && canUseInterrupt && activeSessionCanInterrupt
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
-  const [pendingAutoReviewPermission, setPendingAutoReviewPermission] = React.useState<string | null>(null)
   const [selectedModel, setSelectedModel] = React.useState("")
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
   const permissionItems = permissionCatalog?.permissions.map((item) => ({
@@ -279,7 +277,7 @@ export function SessionComposer({
   }, [dsh, effortItems, effortValue])
   const selectedModelSelection = selectionIdForModelCatalog(modelCatalog, selectedModel, selectedReasoning) ?? (dsh ? runtimeSelections.model : null)
   const selectedPermissionSelection = selectionIdForPermissionCatalog(permissionCatalog, selectedPermissionMode) ?? (dsh && actualPermission?.id !== 'custom' ? runtimeSelections.permission : null)
-  const commitPermission = (permissionId: string) => {
+  const choosePermission = (permissionId: string) => {
     if (permissionId === selectedPermissionMode) return
     const previousPermission = selectedPermissionMode
     const nextSelection = selectionIdForPermissionCatalog(permissionCatalog, permissionId)
@@ -289,19 +287,6 @@ export function SessionComposer({
       if (!ok && !dsh) setSelectedPermissionMode(previousPermission)
     })
   }
-  const choosePermission = (permissionId: string) => {
-    if (permissionId === selectedPermissionMode) return
-    if (isDshAutoReviewPermission(permissionCatalog, permissionId)) {
-      setPendingAutoReviewPermission(permissionId)
-      return
-    }
-    commitPermission(permissionId)
-  }
-  React.useEffect(() => {
-    if (pendingAutoReviewPermission && !isDshAutoReviewPermission(permissionCatalog, pendingAutoReviewPermission)) {
-      setPendingAutoReviewPermission(null)
-    }
-  }, [pendingAutoReviewPermission, permissionCatalog])
   const chooseModel = (modelId: string, reasoningId: string) => {
     if (modelId === selectedModel && reasoningId === selectedReasoning) return
     const previousModel = selectedModel
@@ -400,16 +385,6 @@ export function SessionComposer({
       onDrop={onDrop}
     >
       <DragOverlay isDragging={isDragging} />
-      <AutoReviewPermissionDialog
-        open={pendingAutoReviewPermission !== null}
-        onOpenChange={(open) => { if (!open) setPendingAutoReviewPermission(null) }}
-        onConfirm={() => {
-          if (pendingAutoReviewPermission && isDshAutoReviewPermission(permissionCatalog, pendingAutoReviewPermission)) {
-            commitPermission(pendingAutoReviewPermission)
-          }
-          setPendingAutoReviewPermission(null)
-        }}
-      />
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {concurrentWriter ? (
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">

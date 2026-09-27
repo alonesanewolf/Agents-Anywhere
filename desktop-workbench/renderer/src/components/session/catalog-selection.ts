@@ -74,7 +74,6 @@ export function catalogI18nText(
   const preset = metadata?.preset
   const rawKey = (isRecord(i18n) ? i18n[field] : undefined)
     ?? (field === "labelKey" && typeof preset === "string" ? dshPermissionLabelKeys[preset] : undefined)
-    ?? (field === "descriptionKey" && preset === "auto" ? "permissionModes.dsh.auto.description" : undefined)
   if (typeof rawKey !== "string" || !rawKey) return fallback ?? ""
   const key = rawKey.startsWith("dashboard.new.")
     ? rawKey.slice("dashboard.new.".length)

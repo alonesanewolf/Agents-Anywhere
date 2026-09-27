@@ -23,7 +23,6 @@ import { useSessionToolSidebarStore } from "@/components/session-tool-sidebar-st
 import { DashboardSidebarToggle } from "@/components/dashboard-sidebar-toggle"
 import { AgentSelectionDrawer } from "@/components/session/agent-selection-drawer"
 import { SelectionSettingsDrawer } from "@/components/session/selection-settings-drawer"
-import { AutoReviewPermissionDialog } from "@/components/session/auto-review-permission-dialog"
 import {
   AttachmentButton,
   AttachmentPreviewList,
@@ -275,7 +274,6 @@ export function TaskComposer() {
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
   const [permissionRefreshKey, setPermissionRefreshKey] = React.useState(0)
-  const [pendingAutoReviewPermission, setPendingAutoReviewPermission] = React.useState<string | null>(null)
   const [workspace, setWorkspace] = React.useState<WorkspaceSelection | null>(null)
   const [projectEditor, setProjectEditor] = React.useState<ProjectEditorState>(null)
   const [prompt, setPrompt] = React.useState("")
@@ -677,7 +675,7 @@ export function TaskComposer() {
     persistTargetPreference(selectedConnectorId, agent)
   }, [agentOptions, persistTargetPreference, selectedConnectorId])
 
-  const commitPermissionChange = React.useCallback((permission: string) => {
+  const handlePermissionChange = React.useCallback((permission: string) => {
     if (!selectedConnectorId || !selectedAgent) return
     if (!permissionOptions.some((option) => option.id === permission && option.enabled)) return
     setSelectedPermissionMode(permission)
@@ -685,21 +683,6 @@ export function TaskComposer() {
       permission: permissionSelectionForNewSessionPreference(permissionCatalog, permission),
     })
   }, [permissionCatalog, permissionOptions, persistTargetPreference, selectedAgent, selectedConnectorId])
-
-  const handlePermissionChange = React.useCallback((permission: string) => {
-    if (!permissionOptions.some((option) => option.id === permission && option.enabled)) return
-    if (isDshAutoReviewPermission(permissionCatalog, permission)) {
-      setPendingAutoReviewPermission(permission)
-      return
-    }
-    commitPermissionChange(permission)
-  }, [commitPermissionChange, permissionCatalog, permissionOptions])
-
-  React.useEffect(() => {
-    if (pendingAutoReviewPermission && !isDshAutoReviewPermission(permissionCatalog, pendingAutoReviewPermission)) {
-      setPendingAutoReviewPermission(null)
-    }
-  }, [pendingAutoReviewPermission, permissionCatalog])
 
   const handleModelChange = React.useCallback((model: string, reasoning: string) => {
     if (!selectedConnectorId || !selectedAgent) return
@@ -882,14 +865,6 @@ export function TaskComposer() {
       onDrop={onDrop}
     >
       <DragOverlay isDragging={isDragging} />
-      <AutoReviewPermissionDialog
-        open={pendingAutoReviewPermission !== null}
-        onOpenChange={(open) => { if (!open) setPendingAutoReviewPermission(null) }}
-        onConfirm={() => {
-          if (pendingAutoReviewPermission) commitPermissionChange(pendingAutoReviewPermission)
-          setPendingAutoReviewPermission(null)
-        }}
-      />
       <div className="absolute left-3 top-3 flex items-center gap-2">
         <DashboardSidebarToggle />
       </div>
