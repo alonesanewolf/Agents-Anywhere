@@ -8,7 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from .router import elect_router, open_stream, validate_endpoint
+from .router import close_stream, elect_router, open_stream, validate_endpoint
 from .wire import (
     INITIALIZING_CLIENT,
     IpcError,
@@ -131,8 +131,9 @@ class CoordinationClient:
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:
-            await send_frame(self._writer, message)
-            response = await asyncio.wait_for(future, timeout)
+            async with asyncio.timeout(timeout):
+                await send_frame(self._writer, message)
+                response = await future
             if response.get("resultType") == "error":
                 code = response.get("error")
                 if not isinstance(code, str):
@@ -154,11 +155,14 @@ class CoordinationClient:
             # Never resend: the selected owner may already have executed it.
             raise IpcError("timeout") from exc
         except (ConnectionError, OSError) as exc:
-            raise IpcError("connection-closed") from exc
+            raise IpcError("disposed" if self._closed else "connection-closed") from exc
         finally:
             self._pending.pop(request_id, None)
             if not future.done():
                 future.cancel()
+            elif not future.cancelled():
+                # Disposal can reject the reply while the sender is still in drain().
+                future.exception()
 
     async def broadcast(self, method, params, *, target_client_ids=None):
         self._require_connection(method)
@@ -206,6 +210,14 @@ class CoordinationClient:
                         future = self._pending.get(message.get("requestId"))
                         if future is not None and not future.done():
                             future.set_result(message)
+                            if (
+                                self._client_id == INITIALIZING_CLIENT
+                                and message.get("method") == "initialize"
+                                and initialize_task is not None
+                            ):
+                                # Initialization validates/assigns the id and queues
+                                # self status before a coalesced targeted frame is read.
+                                await initialize_task
                     elif message.get("type") == "broadcast":
                         targets = message.get("targetClientIds")
                         if targets is not None and not isinstance(targets, list):
@@ -222,11 +234,7 @@ class CoordinationClient:
                     await asyncio.gather(initialize_task, return_exceptions=True)
                 writer, self._writer = self._writer, None
                 if writer:
-                    writer.close()
-                    try:
-                        await writer.wait_closed()
-                    except OSError:
-                        pass
+                    await close_stream(writer)
                 for task in self._tasks:
                     task.cancel()
                 await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -398,7 +406,7 @@ class CoordinationClient:
             if not waiter.done():
                 waiter.set_exception(IpcError("disposed"))
         if self._writer:
-            self._writer.close()
+            self._writer.transport.abort()
         if self._runner:
             self._runner.cancel()
             await asyncio.gather(self._runner, return_exceptions=True)

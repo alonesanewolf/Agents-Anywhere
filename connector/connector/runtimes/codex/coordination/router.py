@@ -19,6 +19,15 @@ async def open_stream(endpoint: Path):
     return await asyncio.open_unix_connection(str(endpoint))
 
 
+async def close_stream(writer: asyncio.StreamWriter):
+    """Discard a finished connection without waiting for a stalled peer to drain."""
+    writer.transport.abort()
+    try:
+        await asyncio.wait_for(writer.wait_closed(), 0.1)
+    except (OSError, TimeoutError):
+        pass
+
+
 async def listen_stream(callback, endpoint: Path):
     if sys.platform == "win32":
         raise IpcError("unsupported-platform")
@@ -90,8 +99,7 @@ async def _connectable(endpoint: Path) -> bool:
     except TimeoutError as exc:
         # A busy or inaccessible listener is never evidence of a stale socket.
         raise IpcError("endpoint-connect-timeout") from exc
-    writer.close()
-    await writer.wait_closed()
+    await close_stream(writer)
     return True
 
 
@@ -163,7 +171,7 @@ class CoordinationRouter:
 
     def _accept(self, reader, writer):
         if self._closed:
-            writer.close()
+            writer.transport.abort()
             return
         # Register before scheduling: close may cancel a task before its first step.
         peer = _Peer(writer)
@@ -227,11 +235,7 @@ class CoordinationRouter:
             for task in peer.tasks:
                 task.cancel()
             await asyncio.gather(*peer.tasks, return_exceptions=True)
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except OSError:
-                pass
+            await close_stream(writer)
             if peer.client_id and not self._closed:
                 await self._status(peer, "disconnected")
 
@@ -298,12 +302,16 @@ class CoordinationRouter:
         future = asyncio.get_running_loop().create_future()
         collection[request_id] = _Pending(peer, future)
         try:
-            await send_frame(peer.writer, {**message, "requestId": request_id})
-            return await asyncio.wait_for(future, timeout)
+            async with asyncio.timeout(timeout):
+                await send_frame(peer.writer, {**message, "requestId": request_id})
+                return await future
         finally:
             collection.pop(request_id, None)
             if not future.done():
                 future.cancel()
+            elif not future.cancelled():
+                # A disconnect may fail the reply while send_frame is in drain().
+                future.exception()
 
     async def _discover(self, peer, request):
         response = await self._exchange(
@@ -399,7 +407,7 @@ class CoordinationRouter:
         if self.server:
             self.server.close()
         for peer in tuple(self._peers):
-            peer.writer.close()
+            peer.writer.transport.abort()
         for task in tuple(self._sessions):
             task.cancel()
         await asyncio.gather(*tuple(self._sessions), return_exceptions=True)

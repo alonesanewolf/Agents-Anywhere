@@ -719,3 +719,229 @@ async def test_concurrent_client_start_initializes_once_and_all_tasks_stop(tmp_p
         await peer.close()
     await asyncio.sleep(0)
     assert not (asyncio.all_tasks() - original_tasks)
+
+
+@asynccontextmanager
+async def stalled_native(tmp_path):
+    """A real initialized native peer which stops consuming bytes from its socket."""
+    endpoint = tmp_path / "stalled.sock"
+    remote_writers = []
+    sessions = []
+    stalled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def session(reader, writer):
+        remote_writers.append(writer)
+        try:
+            initialize = await read_frame(reader)
+            writer.write(
+                frame(
+                    {
+                        "type": "response",
+                        "requestId": initialize["requestId"],
+                        "resultType": "success",
+                        "method": "initialize",
+                        "handledByClientId": "self",
+                        "result": {"clientId": "self"},
+                    }
+                )
+            )
+            await writer.drain()
+            writer.transport.pause_reading()
+            stalled.set()
+            await release.wait()
+        finally:
+            writer.transport.abort()
+            await writer.wait_closed()
+
+    def accept(reader, writer):
+        sessions.append(asyncio.create_task(session(reader, writer)))
+
+    server = await listen_stream(accept, endpoint)
+    peer = CoordinationClient(tmp_path, endpoint=endpoint, start_router=False)
+    try:
+        await peer.start()
+        await peer.wait_initialized()
+        await asyncio.wait_for(stalled.wait(), 1)
+        yield peer
+    finally:
+        # Release/abort the fake endpoint first so pre-fix failures also clean up.
+        release.set()
+        for writer in remote_writers:
+            writer.transport.abort()
+        await asyncio.gather(*sessions, return_exceptions=True)
+        await asyncio.wait_for(peer.close(), 1)
+        server.close()
+        await server.wait_closed()
+
+
+@async_test
+async def test_client_close_aborts_backpressured_request_without_remote_release(
+    tmp_path,
+):
+    async with stalled_native(tmp_path) as peer:
+        pending = asyncio.create_task(peer.request("large", {"data": "x" * 4_000_000}))
+        await asyncio.sleep(0.03)
+        assert peer._writer.transport.get_write_buffer_size() > 0
+        closing = asyncio.create_task(peer.close())
+        try:
+            await asyncio.wait_for(asyncio.shield(closing), 0.2)
+            with pytest.raises(IpcError, match="disposed"):
+                await pending
+        finally:
+            if not closing.done():
+                closing.cancel()
+            await asyncio.gather(closing, return_exceptions=True)
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
+@async_test
+async def test_client_request_timeout_includes_backpressured_write(tmp_path):
+    async with stalled_native(tmp_path) as peer:
+        with pytest.raises(IpcError, match="timeout"):
+            await asyncio.wait_for(
+                peer.request("large", {"data": "x" * 4_000_000}, timeout=0.03), 0.25
+            )
+
+
+@async_test
+async def test_router_close_aborts_backpressured_session_without_remote_release(
+    tmp_path,
+):
+    router = CoordinationRouter(tmp_path / "router.sock")
+    await router.start()
+    try:
+        async with raw_peer(router.endpoint) as (_, stalled_writer, stalled_id):
+            stalled_writer.transport.pause_reading()
+            async with raw_peer(router.endpoint) as (_, source_writer, _):
+                source_writer.write(
+                    frame(
+                        {
+                            "type": "broadcast",
+                            "sourceClientId": "untrusted",
+                            "method": "large",
+                            "version": 0,
+                            "params": {"data": "x" * 4_000_000},
+                            "targetClientIds": [stalled_id],
+                        }
+                    )
+                )
+                await source_writer.drain()
+                await asyncio.sleep(0.03)
+                receiver = next(
+                    peer for peer in router._peers if peer.client_id == stalled_id
+                )
+                assert receiver.writer.transport.get_write_buffer_size() > 0
+                closing = asyncio.create_task(router.close())
+                try:
+                    await asyncio.wait_for(asyncio.shield(closing), 0.2)
+                finally:
+                    if not closing.done():
+                        # Abort test sockets so a failing assertion cannot strand cleanup.
+                        for peer in tuple(router._peers):
+                            peer.writer.transport.abort()
+                        await asyncio.wait_for(closing, 1)
+    finally:
+        await router.close()
+
+
+@pytest.mark.parametrize("kind", ["request", "client-discovery-request"])
+@async_test
+async def test_router_exchange_deadline_includes_backpressured_write(tmp_path, kind):
+    router = CoordinationRouter(tmp_path / "router.sock")
+    await router.start()
+    try:
+        async with raw_peer(router.endpoint) as (_, stalled_writer, stalled_id):
+            stalled_writer.transport.pause_reading()
+            receiver = next(
+                peer for peer in router._peers if peer.client_id == stalled_id
+            )
+            request = {
+                "type": "request",
+                "requestId": "original",
+                "sourceClientId": "source",
+                "version": 0,
+                "method": "large",
+                "params": {"data": "x" * 4_000_000},
+            }
+            message = (
+                request if kind == "request" else {"type": kind, "request": request}
+            )
+            collection = router._responses if kind == "request" else router._discoveries
+            exchange = asyncio.create_task(
+                router._exchange(receiver, message, collection, 0.03)
+            )
+            try:
+                done, _ = await asyncio.wait({exchange}, timeout=0.2)
+                assert exchange in done, (
+                    "router exchange exceeded its send-plus-response deadline"
+                )
+                with pytest.raises(TimeoutError):
+                    await exchange
+                assert collection == {}
+            finally:
+                exchange.cancel()
+                await asyncio.gather(exchange, return_exceptions=True)
+                receiver.writer.transport.abort()
+    finally:
+        await router.close()
+
+
+@async_test
+async def test_initialize_and_targeted_broadcast_coalesced_delivers_in_order(tmp_path):
+    endpoint = tmp_path / "coalesced.sock"
+    sessions = []
+
+    async def native(reader, writer):
+        try:
+            initialize = await read_frame(reader)
+            response = {
+                "type": "response",
+                "requestId": initialize["requestId"],
+                "resultType": "success",
+                "method": "initialize",
+                "handledByClientId": "new-id",
+                "result": {"clientId": "new-id"},
+            }
+            targeted = {
+                "type": "broadcast",
+                "method": "targeted",
+                "sourceClientId": "owner",
+                "version": 0,
+                "params": {"revision": 1},
+                "targetClientIds": ["new-id"],
+            }
+            writer.write(
+                frame(response)
+                + frame(targeted)
+                + frame({**targeted, "params": {"revision": 2}})
+            )
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.transport.abort()
+            await writer.wait_closed()
+
+    def accept(reader, writer):
+        sessions.append(asyncio.create_task(native(reader, writer)))
+
+    server = await listen_stream(accept, endpoint)
+    peer = CoordinationClient(tmp_path, endpoint=endpoint, start_router=False)
+    events = asyncio.Queue()
+    peer.add_broadcast_handler(events.put)
+    try:
+        await peer.start()
+        await peer.wait_initialized()
+        self_status = await asyncio.wait_for(events.get(), 0.2)
+        assert self_status["method"] == "client-status-changed"
+        first = await asyncio.wait_for(events.get(), 0.2)
+        second = await asyncio.wait_for(events.get(), 0.2)
+        assert first["method"] == second["method"] == "targeted"
+        assert first["params"] == {"revision": 1}
+        assert second["params"] == {"revision": 2}
+    finally:
+        await peer.close()
+        server.close()
+        await asyncio.gather(*sessions)
+        await server.wait_closed()
