@@ -187,7 +187,8 @@ export function SessionComposer({
   const permissionItems = permissionCatalog?.permissions.map((item) => ({
     id: item.id,
     label: permissionCatalogI18nText(tNew, permissionCatalog, item, "labelKey"),
-    description: permissionCatalogI18nText(tNew, permissionCatalog, item, "descriptionKey"),
+    description: isDshAutoReviewPermission(permissionCatalog, item.id)
+      ? undefined : permissionCatalogI18nText(tNew, permissionCatalog, item, "descriptionKey"),
     default: item.default,
     enabled: catalogItemEnabled(item),
     disabledReason: catalogItemDisabledReason(item),

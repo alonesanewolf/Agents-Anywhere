@@ -556,7 +556,8 @@ export function TaskComposer() {
     () => permissionCatalog?.permissions.map((item) => ({
       id: item.id,
       label: permissionCatalogI18nText(t, permissionCatalog, item, "labelKey"),
-      description: permissionCatalogI18nText(t, permissionCatalog, item, "descriptionKey"),
+      description: isDshAutoReviewPermission(permissionCatalog, item.id)
+        ? undefined : permissionCatalogI18nText(t, permissionCatalog, item, "descriptionKey"),
       default: item.default,
       enabled: catalogItemEnabled(item),
       disabledReason: catalogItemDisabledReason(item),
