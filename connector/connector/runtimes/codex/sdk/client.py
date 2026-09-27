@@ -176,6 +176,14 @@ class CodexSdkClient:
         result = await request(method, dict(params), response_model=RootModel[dict[str, Any]])
         return result.root
 
+    async def native_thread_resume(self, thread_id: str) -> dict[str, Any]:
+        params = codex_thread_resume_params(CodexResumeThreadRequest(thread_id=thread_id), self._model_gateway)
+        return await self.native_request("thread/resume", params.model_dump(by_alias=True, exclude_none=True, mode="json"))
+
+    async def native_thread_start(self, request: CodexStartThreadRequest) -> dict[str, Any]:
+        params = codex_thread_start_params(request, self._model_gateway)
+        return await self.native_request("thread/start", params.model_dump(by_alias=True, exclude_none=True, mode="json"))
+
     def native_runtime_info(self) -> dict[str, Any]:
         sync = getattr(getattr(self._client, "_client", None), "_sync", None)
         return {"version": getattr(sync, "_runtime_version", None),

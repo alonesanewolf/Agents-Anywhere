@@ -90,6 +90,8 @@ class CodexThreadListResult:
 @dataclass(frozen=True, slots=True)
 class CodexThreadReadResult:
     thread: Thread | Mapping[str, Any]
+    canonical_complete: bool | None = None
+    coordination_role: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,3 +153,17 @@ class CodexRuntimeClient(Protocol):
         request_id: str | int,
         result: Mapping[str, Any] | None = None,
     ) -> None: ...
+
+
+class CoordinatedRuntimeClient(CodexRuntimeClient, Protocol):
+    async def attach_thread(self, thread_id: str) -> Mapping[str, Any] | None: ...
+    async def detach_thread(self, thread_id: str) -> None: ...
+    def has_canonical_authority(self, thread_id: str) -> bool: ...
+    def is_follower(self, thread_id: str) -> bool: ...
+    async def respond_to_request(
+        self, response_context: str, result: Mapping[str, Any]
+    ) -> None: ...
+    async def native_request(
+        self, method: str, params: Mapping[str, Any]
+    ) -> dict[str, Any]: ...
+    def native_runtime_info(self) -> Mapping[str, Any]: ...
