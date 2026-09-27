@@ -140,3 +140,32 @@ source/test fixes identified by review.
 - [ ] Run meaningful complete regression once changes settle; collect branch diff
   for independent final review and fix material findings. Commit final state.
   Push this new feature branch when verified; no main merge or deployment.
+
+### Task 6: Codex and DSH slash commands; goal and plan presentation
+
+**Added by user steering:** implement slash commands for both runtimes in AA;
+evaluate how Codex goals and plans should be presented, including a UI component
+when existing presentation cannot expose their persistent state and actions.
+
+**Files:** active Codex/DSH command catalog and execution adapters, runtime
+capabilities, relevant connector tests; existing web-next session composer and
+session display components with tests when behavior changes; UI design note.
+
+- [ ] Inspect active DSH native command API and installed Codex IDE commands. Map
+  command names, arguments, enablement, scope and responses into RuntimeCommand.
+  UI-only commands need AA equivalents or explicit unsupported reasons, never
+  send them as accidental prompt text or acknowledge them as executed.
+- [ ] Reuse AA's existing slash menu, fixing argument entry and command results
+  where needed. Runtime capabilities and disabled reasons reflect availability.
+- [ ] Implement supported native actions for both runtimes and cover catalog to
+  execution through public runtime interfaces; add parsing/menu behavior tests
+  where the existing composer needs corrections.
+- [ ] Inspect native goal and plan event shapes and AA timeline capabilities.
+  Present a concrete design in a short repository note. Reuse plan checklist if
+  present. If persistent goals require a component, implement a small card with
+  objective/status/budget/progress and only actions supported by native methods.
+  Preserve unknown/pending states and never invent progress percentages.
+- [ ] Read web-next/AGENTS.md and installed local Next documentation before web
+  edits; use existing framework/components. No dev server or heavy local build.
+- [ ] Run focused connector and UI tests/type checks, review, commit. Final task
+  order puts this before Task 5 final audit so the complete branch is reviewed.

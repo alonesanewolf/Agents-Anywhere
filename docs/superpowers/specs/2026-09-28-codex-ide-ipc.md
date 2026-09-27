@@ -151,3 +151,11 @@ an isolated test conversation and must never interrupt this active task.
 Commit milestones on `codex/codex-ide-ipc`, preserve the user's original checkout.
 Document source/version matrix, activation, tests, limitations, and verified versus
 unverified behavior. Do not claim full parity merely because a wire route exists.
+
+## User scope addition
+
+Also implement AA slash-command discovery and execution for Codex and DSH. Use
+the current native APIs and AA's existing command menu; preserve arguments and
+disabled reasons. Consider Codex goal/plan presentation from the real state model,
+reusing existing plan views and adding a focused persistent-goal component only
+where justified. This is included in the branch's final verification and review.
