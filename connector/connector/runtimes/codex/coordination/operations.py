@@ -186,6 +186,10 @@ class OwnerOperations:
         return result
 
     async def steer(self, thread_id, params):
+        if params.get("serviceTier") is not None:
+            raise ValueError(
+                "unsupported active steer serviceTier override; update thread settings first"
+            )
         active = active_turn(self.state(thread_id))
         if active is None or active.get("turnId") is None:
             raise ValueError("no active native turn")

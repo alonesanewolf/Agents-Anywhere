@@ -528,3 +528,20 @@ async def test_unknown_setting_is_not_acknowledged_as_applied(tmp_path):
             },
         )
     assert native.calls == []
+
+
+@async_test
+async def test_steer_service_tier_override_is_not_silently_ignored(tmp_path):
+    operations, native, _peer, _journal = setup(
+        tmp_path, [{"id": "active", "status": "inProgress", "items": []}]
+    )
+    with pytest.raises(ValueError, match="serviceTier"):
+        await operations.handle(
+            "thread-follower-steer-turn",
+            {
+                "conversationId": "t",
+                "input": [{"type": "text", "text": "continue"}],
+                "serviceTier": "fast",
+            },
+        )
+    assert native.calls == []
