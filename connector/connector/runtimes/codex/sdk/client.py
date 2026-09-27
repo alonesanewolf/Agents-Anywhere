@@ -27,10 +27,14 @@ from openai_codex.generated.v2_all import (
     UserInput,
     WorkspaceWriteSandboxPolicy,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from connector.logging import logger
-from connector.runtime_protocol import RuntimeConfig, RuntimeConflictError, RuntimeInvalidRequestError
+from connector.runtime_protocol import (
+    RuntimeConfig,
+    RuntimeConflictError,
+    RuntimeInvalidRequestError,
+)
 from connector.runtimes.codex.runtime_helpers import soft_codex_unavailable_reason
 from connector.runtimes.codex.sdk.binary import (
     codex_launch_command,
@@ -55,8 +59,8 @@ from connector.runtimes.codex.sdk.runtime_client import (
     CodexThreadListResult,
     CodexThreadReadResult,
     CodexThreadResult,
-    CodexThreadTurnsResult,
     CodexThreadTurnsPage,
+    CodexThreadTurnsResult,
     CodexTurnResult,
     NotificationHandler,
 )
@@ -115,6 +119,9 @@ class CodexSdkClient:
         model_gateway: ModelGateway | None = None,
     ) -> None:
         self._client = client
+        self._native_handler = None
+        self._native_bridge = None
+        self.native_generation = 0
         self._sdk = sdk
         self._model_gateway = model_gateway
         self._handler: NotificationHandler | None = None
@@ -132,7 +139,21 @@ class CodexSdkClient:
     async def start(self, handler: NotificationHandler) -> None:
         self._handler = handler
         self._loop = asyncio.get_running_loop()
-        if install_deferred_server_request_reader(self._client):
+        callbacks = {}
+        if self._native_handler is not None:
+            from connector.runtimes.codex.sdk.native_events import NativeEventBridge
+
+            self.native_generation += 1
+            self._native_bridge = NativeEventBridge(self._native_handler, generation=self.native_generation)
+            self._native_bridge.start()
+            callbacks = {"raw_tap": self._native_bridge.raw_tap,
+                         "server_request": self._native_bridge.server_request,
+                         "on_close": self._native_bridge.reader_closed}
+        installed = install_deferred_server_request_reader(self._client, **callbacks)
+        if callbacks and not installed:
+            await self._native_bridge.close()
+            raise RuntimeInvalidRequestError("SDK raw reader extension unavailable")
+        if installed:
             logger.debug("codex sdk deferred server request reader installed")
         install_codex_approval_handler(self._client, self.handle_sdk_approval_request)
         start = getattr(self._client, "start", None)
@@ -142,7 +163,34 @@ class CodexSdkClient:
             self._entered_client = await self._client.__aenter__()
         self.start_global_notification_task()
 
+    def set_native_event_handler(self, handler) -> None:
+        if self._loop is not None:
+            raise RuntimeError("native handler must be installed before start")
+        self._native_handler = handler
+
+    async def native_request(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
+        await ensure_codex_initialized(self._client)
+        request = getattr(getattr(self._client, "_client", None), "request", None)
+        if not callable(request):
+            raise RuntimeInvalidRequestError("SDK extensible request unavailable")
+        result = await request(method, dict(params), response_model=RootModel[dict[str, Any]])
+        return result.root
+
+    def native_runtime_info(self) -> dict[str, Any]:
+        sync = getattr(getattr(self._client, "_client", None), "_sync", None)
+        return {"version": getattr(sync, "_runtime_version", None),
+                "generation": self.native_generation,
+                "rawEvents": self._native_bridge is not None and not self._native_bridge.closed}
+
+    async def respond_native_request(self, request_id, result, *, generation, thread_id, method):
+        if self._native_bridge is None:
+            raise RuntimeInvalidRequestError("SDK native request extension unavailable")
+        await self._native_bridge.respond(request_id, result, generation=generation,
+                                          thread_id=thread_id, method=method)
+
     async def stop(self) -> None:
+        if self._native_bridge is not None:
+            await self._native_bridge.close()
         self.cancel_pending_approval_responses()
         if self._global_notification_task is not None:
             self._global_notification_task.cancel()
