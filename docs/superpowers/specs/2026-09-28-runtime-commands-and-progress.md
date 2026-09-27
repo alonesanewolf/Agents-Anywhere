@@ -1,0 +1,136 @@
+# Runtime commands, goals and plans
+
+This extends the user-approved Codex IPC implementation with the user's request
+for Codex and DSH slash commands and a considered goal/plan presentation.
+
+## Sources and verified constraints
+
+Current Codex IDE extension 26.917.62051, its webview bundles, and the official
+Python SDK 0.155.1 were inspected directly. DSH's current command registry types
+and enabled command packages were inspected in its vendored runtime 0.1.7-rc.2.
+The current AA connector, next bridge and web composer are integration surfaces.
+No earlier AA IPC implementation informs this design.
+
+The installed IDE's slash menu is a mixture of native operations and client UI
+actions. There is no generic Codex execute-slash RPC. Map each supported command
+to its actual operation. DSH has a real native command registry, but AA's next
+bridge currently lacks command-list/execute routes and marks session.commands
+unsupported. This branch must add the bridge routes as well as Python adapters.
+
+## Commands
+
+Reuse RuntimeCommand, the existing session command API and the AA composer menu.
+Keep descriptions, aliases, argument hints, native availability and disabled
+reasons. Preserve the exact raw line for DSH; splitting and joining whitespace
+changes native command input. An argument-taking menu item inserts an editable
+command instead of immediately executing an empty invocation. Keep the draft on
+failure. Treat a successful HTTP response with ok:false as a command failure.
+Unknown/multiline slash input must not accidentally become a model prompt.
+
+DSH registry contract:
+
+```ts
+commands.list(agent): readonly CommandDescriptor[]
+commands.execute(agent, line, attachments, signal): Promise<CommandExecution | undefined>
+// Descriptor: {definitionId?, name, description, input?: {hint, attachments?}}
+// Execution: {commandId, result: {kind: 'success' | 'error', text?, sourceEventSeq?}}
+```
+
+Resolve the authoritative native Agent through the bridge's existing session
+controller. Respect native command overrides and commands/change invalidation.
+Unknown commands return a visible error without starting model work. Preserve
+commandId and sourceEventSeq in the public result. Add capability detection, so
+an older bridge remains explicitly unavailable until upgraded; do not merely
+change commands:false to true. This branch does not authorize a DSH release or
+replacement of an installed desktop app.
+
+Verified native DSH commands are goal, compact, feedback, permission and plan.
+Optional commands must come from the live registry, not a hardcoded assumption.
+DSH model is a client selector; use AA's existing model control. For the current
+attachment-free command API, reject attachments explicitly until there is a
+complete attachment transport; never silently discard them.
+
+Codex compact maps to thread/compact/start and can forward to an App owner. Plan
+mode maps to collaborationMode settings; model/reasoning map to the existing
+selection controls or supported settings flow. Goal and review require native
+owner operations; exclude or disable them where the current owner route cannot
+perform them. Product/navigation commands such as project/new/side require an AA
+equivalent before being advertised. Native acknowledgements must not be presented
+as completion of a background operation.
+
+## Persistent goals
+
+Introduce a compact SessionGoalPanel near session status/composer. It presents
+native objective and status, plus actual usage when available. Collapse completed
+goals to a concise summary. Do not derive goal completion from physical turn end,
+model text or token usage percentage.
+
+Codex native shape:
+
+```ts
+type ThreadGoal = {
+  threadId: string; objective: string;
+  status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete';
+  createdAt: number; updatedAt: number;
+  timeUsedSeconds: number; tokensUsed: number; tokenBudget?: number | null;
+};
+// thread/goal/get {threadId} -> {goal: ThreadGoal | null}
+// thread/goal/set {threadId, objective?, status?, tokenBudget?} -> {goal: ThreadGoal}
+// thread/goal/clear {threadId} -> {cleared: boolean}
+// thread/goal/updated {threadId, turnId?, goal}; thread/goal/cleared {threadId}
+```
+
+Hydrate goal on attach/reconnect. IPC state may expose threadGoal and
+completedThreadGoal. Retain the latter when App clears the current completed goal.
+Do not copy App auto-clear behavior without preserving completion visibility.
+Never drop tokenBudget through a convenience SDK method that omits it.
+
+The current IPC follower method set has no goal mutation route. The installed IDE
+goal creation path explicitly requires owner role. Therefore App/IDE-owned goals
+are read-only in AA with this protocol; do not resume the thread under another SDK
+process to bypass ownership. Show edit/pause/resume/clear only where the actual
+owner backend supports them. Shared/public views are always read-only.
+
+DSH goal counters represent rounds and activation, not Codex tokens/time. If the
+component is reused for DSH, preserve runtime-specific units and revision-based
+mutation preconditions. Never convert a round limit into a token budget.
+
+## Per-turn plans
+
+Three data structures require distinct behavior:
+
+- turn/plan/updated replaces the current step list for a turn, with explanation
+  and pending/inProgress/completed statuses. Show a small collapsible checklist,
+  keyed by turn. Each update replaces prior progress instead of appending a new
+  plan to the timeline.
+- Native plan items contain Markdown text; item/plan/delta streams text under a
+  stable item ID. Reuse the existing Markdown renderer in a labeled plan card,
+  with final replacement and reconnect hydration.
+- Plan review is a pending interaction. DSH already supplies plan-review intent
+  and approveOptionId in notices. Present the full plan alongside explicit
+  approval/revision actions through existing interaction plumbing. Never convert
+  a display-only plan event into an approval action.
+
+Planning mode is a setting for subsequent model work and remains separate from
+both goal state and plan progress. The UI must not imply enabling that mode has
+created a plan or started a goal.
+
+## Data flow and validation
+
+Preserve authoritative raw native/IPC state in the connector. Derive a small,
+typed presentation container in SessionRuntimeState.metadata; the server already
+transports metadata. Clearing requires explicit null/replacement because the
+connector state cache merges partial metadata. Keep per-turn plan content in the
+timeline rather than storing an unbounded history in session metadata.
+
+The existing web runtimeStatesSemanticallyEqual ignores metadata. Include the
+new presentation fields in semantic comparison, or goal/plan-only updates will
+be discarded even when updatedSeq advances. Avoid rerendering for unrelated
+diagnostic metadata. Test attach, reconnect, clear, budget/status-only changes,
+physical turn rollover and read-only rendering.
+
+Command tests cover catalog-to-execution through public adapters, exact raw input,
+argument insertion, native errors preserving drafts, unavailable old bridge,
+command-specific busy rules and native result correlation. Use headless component
+tests and targeted type checks; do not start dev servers or repeatedly build the
+application.
