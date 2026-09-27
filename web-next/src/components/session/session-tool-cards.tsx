@@ -128,6 +128,7 @@ export function ToolCard({
             <div className="mt-2">
               <InteractionCard
                 notice={interaction}
+                readOnly={readOnly}
                 resolvingNoticeId={resolvingNoticeId}
                 resolvingActionId={resolvingActionId}
                 onRespondInteraction={onRespondInteraction}

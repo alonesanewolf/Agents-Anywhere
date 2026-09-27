@@ -25,6 +25,7 @@ import { firstTextOf, messageText, recordsOf, textOf } from "@/components/sessio
 import { extractAttachments, stripInjectedAttachmentMentions } from "@/features/dashboard/attachments"
 import { MessageAttachments } from "@/components/session/message-attachments"
 import { CollapsibleUserMessage } from "@/components/session/collapsible-user-message"
+import { SessionPlanCard } from "@/components/session/session-plan-card"
 
 const MarkdownText = dynamic(() => import("../markdown-text").then((mod) => ({ default: mod.MarkdownText })), { ssr: false })
 const INLINE_REASONING_SUMMARY_MAX_CHARS = 80
@@ -60,6 +61,9 @@ export function TimelineEntry({
   if (item.type === "message") {
     entry = <MessageCard token={token} session={session} item={item} readOnly={readOnly} attachmentUrl={attachmentUrl} />
     return <TimelineEntryContextMenu item={item}>{entry}</TimelineEntryContextMenu>
+  }
+  if (item.type === "artifact" && (item.content.kind === "plan-progress" || item.content.kind === "plan")) {
+    return <TimelineEntryContextMenu item={item}><SessionPlanCard item={item} token={token} session={session} /></TimelineEntryContextMenu>
   }
   if (item.type === "tool" || isFileChangeArtifact(item)) {
     entry = (

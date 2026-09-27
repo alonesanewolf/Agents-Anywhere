@@ -27,7 +27,6 @@ import type {
   ProtocolEventEnvelope,
   ProtocolModelCatalog,
   ProtocolPermissionCatalog,
-  RuntimeCommand,
   RuntimeStatusValue,
   SessionLocalTimelineState,
   SessionSnapshotResponse,
@@ -49,8 +48,13 @@ import { timelineRunCounts } from "@/components/session/timeline-summary"
 import { needsOlderTimelinePage } from "@/components/session/timeline-autofill"
 import { createTimelineScrollFollow } from "@/components/session/timeline-scroll-follow"
 import { createSessionEventBuffer } from "@/components/session/session-event-buffer"
-import { CAPABILITY, capabilityIsUsable } from "@/components/session/capabilities"
+import { CAPABILITY, capabilityIsUsable, findCapability } from "@/components/session/capabilities"
 import { SessionComposer, type AttachedFile } from "@/components/session/session-composer"
+import { SessionGoalPanel } from "@/components/session/session-goal-panel"
+import { commandResult, commandTransportFailure, type CommandOutcome } from "@/components/session/runtime-command-model"
+import { latestPlanItems, runtimeStatesSemanticallyEqual } from "@/components/session/runtime-presentation"
+import { sessionStopOutcome } from "@/components/session/session-stop-result"
+import { useRuntimeCommands } from "@/components/session/use-runtime-commands"
 import {
   acceptSessionEventId,
   bufferedEventsAfterLiveCapabilityRead,
@@ -138,7 +142,6 @@ const SCROLL_TO_BOTTOM_PRUNE_DISTANCE = 180
 const INITIAL_SCROLL_LAYOUT_QUIET_MS = 120
 const INITIAL_SCROLL_LAYOUT_FALLBACK_MS = 900
 const SCROLL_TO_BOTTOM_PRUNE_CHECK_MS = 120
-const COMMAND_QUERY_DEBOUNCE_MS = 120
 const COMPOSER_DRAFT_STORAGE_PREFIX = "agents-anywhere.sessionComposerDraft.v1."
 type ComposerDraftState = {
   sessionId: string
@@ -358,8 +361,7 @@ export function SessionDetail({
   } | null>(null)
   const [sourceErrorCode, setSourceErrorCode] = React.useState<SessionSourceErrorCode | null>(null)
   const [commandQuery, setCommandQuery] = React.useState<string | null>(null)
-  const [runtimeCommands, setRuntimeCommands] = React.useState<RuntimeCommand[]>([])
-  const [commandsLoading, setCommandsLoading] = React.useState(false)
+  const [stopOutcome, setStopOutcome] = React.useState<{ok:boolean;message:string} | null>(null)
   const [blockingInteractionStackHeight, setBlockingInteractionStackHeight] = React.useState(0)
   const [composerHeight, setComposerHeight] = React.useState(144)
   const [timelineGroupOpenByKey, setTimelineGroupOpenByKey] = React.useState<Record<string, boolean>>({})
@@ -422,6 +424,18 @@ export function SessionDetail({
       capabilityIsUsable(effectiveCapabilities, CAPABILITY.permissionCatalog, sessionRuntimeScope),
   )
   const commandSessionId = session?.id ?? null
+  const commandCapability = session ? findCapability(state?.effectiveCapabilities, CAPABILITY.commands, {
+    runtimeId: sessionRuntimeId(session), runtimeType: sessionRuntimeType(session),
+  }) : null
+  const catalogMetadata = commandCapability?.metadata as Record<string, unknown> | undefined
+  const catalogRevision = typeof catalogMetadata?.catalogRevision === "string" ? catalogMetadata.catalogRevision : ""
+  const commandAvailable = Boolean(commandCapability?.supported && commandCapability.available && commandCapability.allowed && session?.connectorStatus === "online")
+  const {commands: runtimeCommands, loading: commandsLoading, error: commandsError} = useRuntimeCommands({
+    token, sessionId: commandSessionId, open: commandQuery !== null,
+    available: commandAvailable, catalogRevision,
+  })
+  const currentSessionIdRef = React.useRef(sessionId)
+  currentSessionIdRef.current = sessionId
 
   React.useEffect(() => {
     if (!session) return
@@ -460,6 +474,7 @@ export function SessionDetail({
 
   React.useEffect(() => {
     setSourceErrorCode(null)
+    setStopOutcome(null)
   }, [sessionId])
 
   React.useEffect(() => {
@@ -582,33 +597,6 @@ export function SessionDetail({
     setTimelineItemOpenById({})
     catalogFetchKeyRef.current = null
   }, [sessionId])
-
-  React.useEffect(() => {
-    const commandMenuOpen = commandQuery !== null
-    if (!commandMenuOpen || !commandSessionId) {
-      setRuntimeCommands([])
-      setCommandsLoading(false)
-      return
-    }
-    let cancelled = false
-    setCommandsLoading(true)
-    const timer = window.setTimeout(() => {
-      void dashboardApi.getSessionCommands(token, commandSessionId).then((response) => {
-        if (cancelled) return
-        setRuntimeCommands(response.commands)
-      }).catch(() => {
-        if (cancelled) return
-        setRuntimeCommands([])
-      }).finally(() => {
-        if (cancelled) return
-        setCommandsLoading(false)
-      })
-    }, COMMAND_QUERY_DEBOUNCE_MS)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [commandQuery !== null, commandSessionId, token])
 
   React.useEffect(() => {
     const runtime = sessionRuntime
@@ -1310,21 +1298,26 @@ export function SessionDetail({
 
   const handleInterrupt = async () => {
     if (!session || interrupting) return
+    const originSession = session.id
     setInterrupting(true)
+    setStopOutcome(null)
     try {
-      await dashboardApi.interruptSession(token, session.id)
+      const response = await dashboardApi.interruptSession(token, originSession)
+      if (currentSessionIdRef.current !== originSession) return
+      setStopOutcome(sessionStopOutcome(response, (key, values) => tSession(key, values)))
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : tSession("interruptFailed"))
+      if (currentSessionIdRef.current === originSession) setStopOutcome({ok:false,message:err instanceof Error ? err.message : tSession("interruptFailed")})
     } finally {
-      setInterrupting(false)
+      if (currentSessionIdRef.current === originSession) setInterrupting(false)
     }
   }
 
   const handleSessionCommand = async (
     command: string,
     options: { args: string[]; raw: string },
-  ) => {
-    if (!session) return
+  ): Promise<CommandOutcome> => {
+    if (!session) return {ok:false,state:"unknown",code:"session_unavailable",message:tSession("commandUnavailable"),result:null}
+    const originSession = session.id
     try {
       const response = await dashboardApi.sendSessionCommand(
         token,
@@ -1332,15 +1325,13 @@ export function SessionDetail({
         command,
         options,
       )
-      if (response.session) {
+      if (currentSessionIdRef.current === originSession && response.session) {
         setState((current) => current ? { ...current, session: response.session! } : current)
         onSessionUpdated?.(response.session)
       }
-      if (response.message) {
-        toast.message(response.message)
-      }
+      return commandResult(response)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : tSession("commandFailed"))
+      return commandTransportFailure(err, tSession("commandFailed"))
     }
   }
 
@@ -1592,7 +1583,7 @@ export function SessionDetail({
     return () => resizeObserver.disconnect()
   }, [session?.id])
   const timelineGroups = React.useMemo(
-    () => groupTimelineItems((state?.items ?? []).filter(isVisibleTimelineItem), interactionTargetIds),
+    () => groupTimelineItems(latestPlanItems((state?.items ?? []).filter(isVisibleTimelineItem)), interactionTargetIds),
     [interactionTargetIds, state?.items],
   )
   const turnReviewDisplay = React.useMemo(() => {
@@ -1772,6 +1763,7 @@ export function SessionDetail({
           onRespondInteraction={handleRespondInteraction}
         />
         <div ref={composerContainerRef} className="pointer-events-auto relative">
+          <SessionGoalPanel state={runtimeState} />
           {onOpenReview && turnReviewDisplay.activeReview ? (
             <SessionReviewTag files={turnReviewDisplay.activeReview.files} onReview={() => onOpenReview()} />
           ) : null}
@@ -1790,6 +1782,8 @@ export function SessionDetail({
             permissionCatalog={state?.catalogs.permission ?? null}
             runtimeCommands={runtimeCommands}
             commandsLoading={commandsLoading}
+            commandsError={commandsError}
+            stopOutcome={stopOutcome}
             onCommandQueryChange={handleCommandQueryChange}
             onValueChange={setComposerDraft}
             onSelectionChange={handleSelectionChange}
@@ -2693,30 +2687,6 @@ function sessionSemanticallyEqual(left: SessionView, right: SessionView): boolea
   })
 }
 
-function runtimeStatesSemanticallyEqual(
-  left: SessionRuntimeState | null,
-  right: SessionRuntimeState,
-): boolean {
-  if (!left) return false
-  return stableStringify({
-    sessionId: left.sessionId,
-    runtime: left.runtime,
-    externalSessionId: left.externalSessionId,
-    status: left.status,
-    selections: left.selections,
-    statusReason: left.statusReason,
-    error: left.error,
-  }) === stableStringify({
-    sessionId: right.sessionId,
-    runtime: right.runtime,
-    externalSessionId: right.externalSessionId,
-    status: right.status,
-    selections: right.selections,
-    statusReason: right.statusReason,
-    error: right.error,
-  })
-}
-
 function effectiveRuntimeStatus(
   runtimeState: SessionRuntimeState | null | undefined,
   session: SessionView | null | undefined,
@@ -2796,7 +2766,7 @@ function openInteractions(notices: Notice[], _sessionId?: string): Notice[] {
       notice.status === "responding" ||
       notice.status === "response_accepted" ||
       notice.status === "resolving" ||
-      notice.status === "failed"
+      notice.status === "failed" || notice.status === "unknown"
     ),
   )
 }

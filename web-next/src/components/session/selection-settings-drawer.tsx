@@ -28,6 +28,8 @@ export type ModelSelectionOption = SelectionOption & {
 }
 
 export function SelectionSettingsDrawer({
+  requestOpenKey,
+  onClose,
   disabled,
   permissionDisabled = false,
   modelDisabled = false,
@@ -46,6 +48,8 @@ export function SelectionSettingsDrawer({
   selectedReasoning,
   onModelChange,
 }: {
+  requestOpenKey?: number
+  onClose?: () => void
   disabled?: boolean
   permissionDisabled?: boolean
   modelDisabled?: boolean
@@ -65,11 +69,13 @@ export function SelectionSettingsDrawer({
   onModelChange: (modelId: string, reasoningId: string) => void
 }) {
   const [open, setOpen] = React.useState(false)
+  React.useEffect(() => { if (requestOpenKey) setOpen(true) }, [requestOpenKey])
   const [expandedModelId, setExpandedModelId] = React.useState<string | null>(null)
 
   const setDrawerOpen = (nextOpen: boolean) => {
     setOpen(nextOpen)
     if (!nextOpen) setExpandedModelId(null)
+    if (!nextOpen) onClose?.()
   }
 
   return (

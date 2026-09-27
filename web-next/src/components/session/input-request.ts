@@ -13,6 +13,7 @@ export type InputRequestQuestion = {
   multiple: boolean
   allowCustom: boolean
   options: InputRequestOption[]
+  planReview?: { approveOptionId: string; detail: string }
 }
 
 export type InputRequestForm = {
@@ -113,6 +114,12 @@ function readQuestion(value: unknown): InputRequestQuestion | null {
     multiple: question.multiple === true,
     allowCustom: question.allowCustom !== false,
     options,
+    ...(recordOf(question.intent)?.kind === "plan-review" && typeof recordOf(question.intent)?.approveOptionId === "string" ? {
+      planReview: {
+        approveOptionId: recordOf(question.intent)!.approveOptionId as string,
+        detail: prompt.includes("\n\n") ? prompt.slice(prompt.indexOf("\n\n") + 2) : "",
+      },
+    } : {}),
   }
 }
 

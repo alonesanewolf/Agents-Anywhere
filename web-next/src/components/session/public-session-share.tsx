@@ -15,6 +15,7 @@ import { dashboardApi } from "@/features/dashboard/api"
 import type { PublicSessionShareResponse, SessionView } from "@/features/dashboard/types"
 import { apiPath } from "@/lib/api"
 import { isVisibleTimelineItem, runtimeLabel } from "@/components/session/session-utils"
+import { latestPlanItems } from "@/components/session/runtime-presentation"
 
 export function PublicSessionShare({ shareId: initialShareId }: { shareId?: string } = {}) {
   const t = useTranslations("dashboard.session")
@@ -66,7 +67,7 @@ export function PublicSessionShare({ shareId: initialShareId }: { shareId?: stri
   }
 
   const session = publicSessionView(share)
-  const items = share.items.filter(isVisibleTimelineItem)
+  const items = latestPlanItems(share.items.filter(isVisibleTimelineItem))
   const groups = groupTimelineItems(items, new Set())
   const attachmentUrl = (fileId: string) => apiPath(
     `/public/shares/${encodeURIComponent(share.shareId)}/attachments/${encodeURIComponent(fileId)}`,

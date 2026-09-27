@@ -508,7 +508,8 @@ export type NoticeStatus =
   | "closed"
   | "expired"
   | "cancelled"
-  | "failed";
+  | "failed"
+  | "unknown";
 
 export type NoticeActionStyle = "primary" | "secondary" | "danger";
 

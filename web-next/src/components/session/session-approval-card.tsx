@@ -20,6 +20,7 @@ import {
 import { cn } from "@/lib/utils"
 import type { Notice, NoticeAction } from "@/features/dashboard/types"
 import { useTranslations } from "next-intl"
+import { MarkdownText } from "@/components/markdown-text"
 
 type InteractionCardProps = {
   notice: Notice
@@ -27,6 +28,7 @@ type InteractionCardProps = {
   resolvingActionId: string | null
   onRespondInteraction: (noticeId: string, actionId: string, input?: Record<string, unknown>) => void
   compact?: boolean
+  readOnly?: boolean
 }
 
 export function InteractionCard({
@@ -35,13 +37,22 @@ export function InteractionCard({
   resolvingActionId,
   onRespondInteraction,
   compact,
+  readOnly = false,
 }: InteractionCardProps) {
   const tSession = useTranslations("dashboard.session")
   const tCommon = useTranslations("common")
   const resolving = resolvingNoticeId === notice.noticeId
-  const disabled = resolvingNoticeId !== null || notice.status === "response_accepted" || notice.status === "resolving"
+  const unknownOutcome = notice.status === "unknown" || notice.metadata.responseOutcome === "unknown"
+  const disabled = readOnly || unknownOutcome || !notice.responseRequired || resolvingNoticeId !== null || notice.status === "response_accepted" || notice.status === "resolving"
+  const nativeRequest = notice.context.nativeRequest && typeof notice.context.nativeRequest === "object" ? notice.context.nativeRequest as Record<string, unknown> : null
+  const nativeParams = nativeRequest?.params && typeof nativeRequest.params === "object" ? nativeRequest.params as Record<string, unknown> : null
+  const nativeUrl = nativeParams?.mode === "url" && typeof nativeParams.url === "string" ? nativeParams.url : null
+  const safeUrl = nativeUrl && /^https?:\/\//i.test(nativeUrl) ? nativeUrl : null
   const Icon = notice.severity === "error" ? CircleAlert : ShieldCheck
-  const inputRequest = React.useMemo(() => readInputRequestForm(notice), [notice])
+  const inputSchemaKey = JSON.stringify(notice.actions.map(action => [action.actionId, action.input.uiSchema]))
+  // A server-side validation failure republishes the same form with a new notice
+  // object. Keep the user's correctable draft until the form itself changes.
+  const inputRequest = React.useMemo(() => readInputRequestForm(notice), [notice.noticeId, inputSchemaKey])
   const [inputDrafts, setInputDrafts] = React.useState<InputRequestDrafts>(() => (
     inputRequest ? createInputRequestDrafts(inputRequest) : {}
   ))
@@ -68,7 +79,7 @@ export function InteractionCard({
 
   const actionButtons = (
     <div className="flex flex-wrap gap-2 md:justify-end md:flex-nowrap">
-      {notice.actions.map((action) => {
+      {!readOnly && !unknownOutcome ? notice.actions.map((action) => {
         const submitDisabled = inputRequest?.action.actionId === action.actionId
           && !inputRequestIsComplete(inputRequest, inputDrafts)
         return (
@@ -87,7 +98,7 @@ export function InteractionCard({
             {actionLabel(action)}
           </Button>
         )
-      })}
+      }) : null}
     </div>
   )
 
@@ -122,9 +133,18 @@ export function InteractionCard({
             ) : null}
           </div>
         ) : null}
+        {unknownOutcome ? <p role="alert" className="text-sm text-destructive">{tSession("interactionUnknownOutcome")}</p> : null}
+        {safeUrl ? <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="wrap-break-word text-sm underline">{tSession("interactionOpenLink")}: {safeUrl}</a> : null}
         {inputRequest ? (
           <div className="flex flex-col gap-3">
-            <InputRequestFields
+            {readOnly || unknownOutcome ? <div className="flex flex-col gap-3">{inputRequest.questions.map(question => (
+              <div key={question.id} className="text-sm">
+                {question.header ? <p className="text-xs text-muted-foreground">{question.header}</p> : null}
+                <p className="wrap-break-word">{question.planReview ? question.prompt.slice(0, question.prompt.indexOf("\n\n")) : question.prompt}</p>
+                {question.planReview?.detail ? <MarkdownText text={question.planReview.detail} /> : null}
+                {question.options.length ? <p className="text-xs text-muted-foreground">{question.options.map(option => option.label).join(" · ")}</p> : null}
+              </div>
+            ))}</div> : <InputRequestFields
               noticeId={notice.noticeId}
               form={inputRequest}
               drafts={inputDrafts}
@@ -133,7 +153,7 @@ export function InteractionCard({
               onDraftChange={(questionId, draft) => {
                 setInputDrafts((current) => ({ ...current, [questionId]: draft }))
               }}
-            />
+            />}
             <div className="flex justify-end">{actionButtons}</div>
           </div>
         ) : null}
@@ -197,8 +217,9 @@ function InputRequestQuestionFields({
         {question.header ? (
           <span className="block text-xs font-medium text-muted-foreground">{question.header}</span>
         ) : null}
-        <span className="mt-0.5 block wrap-break-word text-sm text-foreground">{question.prompt}</span>
+        <span className="mt-0.5 block wrap-break-word text-sm text-foreground">{question.planReview ? question.prompt.slice(0, question.prompt.indexOf("\n\n")) : question.prompt}</span>
       </legend>
+      {question.planReview?.detail ? <div className="mb-3 rounded-lg border p-3"><MarkdownText text={question.planReview.detail} /></div> : null}
       {question.multiple ? (
         <div className="grid gap-1.5">
           {question.options.map((option) => {

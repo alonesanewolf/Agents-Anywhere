@@ -47,6 +47,9 @@ import { SelectionSettingsDrawer } from "@/components/session/selection-settings
 import { CAPABILITY, capabilityIsUsable, findCapability, attachmentMimeTypes } from "@/components/session/capabilities"
 import { useElementWidth } from "@/hooks/use-element-width"
 import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runtime-instances"
+import { commandActionReason, commandAllowed, commandRequest, commandUi, exactCommand, parseSlashIntent, type CommandOutcome } from "@/components/session/runtime-command-model"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { MarkdownText } from "@/components/markdown-text"
 
 export type { AttachedFile }
 
@@ -65,6 +68,8 @@ export function SessionComposer({
   permissionCatalog,
   runtimeCommands,
   commandsLoading = false,
+  commandsError = false,
+  stopOutcome = null,
   onCommandQueryChange,
   onValueChange,
   onSelectionChange,
@@ -87,6 +92,8 @@ export function SessionComposer({
   permissionCatalog: ProtocolPermissionCatalog | null
   runtimeCommands: RuntimeCommand[]
   commandsLoading?: boolean
+  commandsError?: boolean
+  stopOutcome?: { ok: boolean; message: string } | null
   onCommandQueryChange: (query: string | null) => void
   onValueChange: (value: string) => void
   onSelectionChange: (selections: { model?: string; permission?: string }) => Promise<boolean>
@@ -96,14 +103,29 @@ export function SessionComposer({
     selections: { model?: string; permission?: string },
   ) => Promise<boolean>
   onInterrupt: () => void
-  onCommand: (command: string, options: { args: string[]; raw: string }) => void
+  onCommand: (command: string, options: { args: string[]; raw: string }) => Promise<CommandOutcome>
   onToggleTakeover: () => void
 }) {
   const tSession = useTranslations("dashboard.session")
   const tNew = useTranslations("dashboard.new")
   const composerRef = React.useRef<HTMLDivElement | null>(null)
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null)
   const valueRef = React.useRef(value)
   valueRef.current = value
+  const pendingCommandRef = React.useRef(false)
+  const sessionIdRef = React.useRef(session.id)
+  sessionIdRef.current = session.id
+  const [commandPending, setCommandPending] = React.useState(false)
+  const [commandFeedback, setCommandFeedback] = React.useState<CommandOutcome | null>(null)
+  const [commandInputError, setCommandInputError] = React.useState<string | null>(null)
+  const [resultExpanded, setResultExpanded] = React.useState(false)
+  const [selectorRequest, setSelectorRequest] = React.useState(0)
+  React.useEffect(() => {
+    setCommandFeedback(null)
+    setCommandInputError(null)
+    setCommandPending(false)
+    pendingCommandRef.current = false
+  }, [session.id])
   const composerWidth = useElementWidth(composerRef)
   const runtimeStatus = effectiveRuntimeStatus(runtimeState, session)
   const runtimeSelections = runtimeState?.selections ?? {}
@@ -134,6 +156,7 @@ export function SessionComposer({
     !isBlocked
   const canUseSendMessage = capabilityIsUsable(effectiveCapabilities, CAPABILITY.sendMessage, runtimeScope)
   const canUseInterrupt = capabilityIsUsable(effectiveCapabilities, CAPABILITY.interrupt, runtimeScope)
+  const canUseCommands = capabilityIsUsable(effectiveCapabilities, CAPABILITY.commands, runtimeScope)
   const interruptCapability = findCapability(effectiveCapabilities, CAPABILITY.interrupt, runtimeScope)
   const canUseModelCatalog = capabilityIsUsable(effectiveCapabilities, CAPABILITY.modelCatalog, runtimeScope)
   const canUsePermissionCatalog = capabilityIsUsable(
@@ -166,14 +189,20 @@ export function SessionComposer({
     !sending &&
     !interrupting &&
     acceptsUserInput
-  const canRunCommand = !creatingSession && !sending && !interrupting && acceptsUserInput
+  const commandWritable = !creatingSession && !sending && !interrupting && !commandPending && session.takeover && !sourceUnavailable
   const hasInput = value.trim().length > 0 || attachments.length > 0
   const attachmentsReady = attachmentsAllowed && (attachments.length === 0 || (allUploaded && !uploadsPending && !uploadFailed))
   const activeSessionCanInterrupt = Boolean(
     connectorOnline &&
     interruptCapability?.supported &&
     interruptCapability.allowed &&
-    (isWaiting || isRunning || isStopping || isWaitingApproval || isBlocked),
+    ((isWaiting || isRunning || isStopping || isWaitingApproval || isBlocked) || (
+      runtimeState?.metadata.codexPresentation &&
+      typeof runtimeState.metadata.codexPresentation === "object" &&
+      (runtimeState.metadata.codexCoordination as {available?:boolean} | undefined)?.available !== false &&
+      (runtimeState.metadata.codexPresentation as {threadGoal?: {status?: string}}).threadGoal?.status === "active" &&
+      (runtimeState.metadata.codexCapabilities as {userSessionStop?: boolean} | undefined)?.userSessionStop === true
+    )),
   )
   const showInterrupt = !creatingSession && canUseInterrupt && activeSessionCanInterrupt
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
@@ -221,7 +250,7 @@ export function SessionComposer({
   const modelLabel = selectedModelItem?.label ?? (dsh && actualModel?.model ? `${actualModel.model}（${actualModel.provider}）` : tNew("model"))
   const effortLabel = effortItems.find((item) => item.id === selectedReasoning)?.label ?? (dsh ? actualModel?.reasoningEffort : null) ?? tNew("reasoning")
   const hasSelectors = Boolean(permissionItems.length > 0 || modelItems.length > 0)
-  const compactSelectors = hasSelectors && composerWidth > 0 && composerWidth < 560
+  const compactSelectors = hasSelectors && ((composerWidth > 0 && composerWidth < 560) || selectorRequest > 0)
   const permissionSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || !canUsePermissionCatalog
   const modelSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || !canUseModelCatalog
   const effortSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || !canUseEffortCatalog
@@ -313,37 +342,90 @@ export function SessionComposer({
               : isError
                 ? tSession("errorPlaceholder")
                 : tSession("replyPlaceholder")
-  const commandQuery = commandQueryFromValue(value)
-  const showCommandMenu = commandQuery !== null && attachments.length === 0
+  const slashIntent = parseSlashIntent(value)
+  const showInterruptButton = showInterrupt && !slashIntent
+  const commandQuery = slashIntent?.command ?? null
+  const showCommandMenu = commandQuery !== null && !slashIntent?.multiline && !slashIntent?.suffix.trim() && attachments.length === 0
   const commandSuggestions = React.useMemo(
     () => runtimeCommands.filter((command) => commandMatchesQuery(command, commandQuery)),
     [commandQuery, runtimeCommands],
   )
   React.useEffect(() => {
-    onCommandQueryChange(showCommandMenu ? commandQuery : null)
-  }, [commandQuery, onCommandQueryChange, showCommandMenu])
-  const canSubmitCommand = commandQuery !== null && attachments.length === 0 && canRunCommand
+    onCommandQueryChange(slashIntent ? commandQuery : null)
+  }, [commandQuery, onCommandQueryChange, slashIntent !== null])
+  const canSubmitCommand = Boolean(slashIntent && !pendingCommandRef.current && commandWritable)
   const canSubmitMessage =
     canSend &&
     session.takeover &&
     hasInput &&
     attachmentsReady &&
-    (attachments.length === 0 || canUseAttachments)
+    (attachments.length === 0 || canUseAttachments) && !slashIntent
   const concurrentWriter = runtimeState?.error?.code === "DSH_CONCURRENT_WRITER_DETECTED"
   const updateValue = React.useCallback((nextValue: string) => {
     valueRef.current = nextValue
     onValueChange(nextValue)
+    setCommandInputError(null)
   }, [onValueChange])
+
+  const runCommand = async (command: RuntimeCommand, raw: string) => {
+    if (pendingCommandRef.current) return
+    const intent = parseSlashIntent(raw)
+    const actionReason = intent ? commandActionReason(intent, command) : null
+    if (actionReason) {
+      setCommandInputError(tSession.has(`commandReason_${actionReason}`) ? tSession(`commandReason_${actionReason}`) : actionReason)
+      return
+    }
+    if (!commandAllowed(command, runtimeStatus, canUseCommands, commandWritable, connectorOnline)) {
+      setCommandInputError(command.disabledReason && tSession.has(`commandReason_${command.disabledReason}`)
+        ? tSession(`commandReason_${command.disabledReason}`) : command.disabledReason || tSession("commandUnavailable"))
+      return
+    }
+    if (attachments.length) { setCommandInputError(tSession("commandAttachments")); return }
+    const request = commandRequest(intent, command)
+    if (!request) { setCommandInputError(tSession(intent?.multiline ? "commandMultiline" : "commandInvalidArgs")); return }
+    const ui = commandUi(command)
+    if (ui?.kind === "selector") {
+      // The existing settings drawer owns model, reasoning and permission selection.
+      const available = ui.target === "model" ? modelItems.length > 0 && !modelSelectorDisabled
+        : ui.target === "reasoning" ? effortItems.length > 0 && !effortSelectorDisabled
+        : ui.target === "permission" ? permissionItems.length > 0 && !permissionSelectorDisabled : false
+      if (!available) {
+        setCommandInputError(tSession("commandUnavailable"))
+        return
+      }
+      setSelectorRequest((current) => current + 1)
+      return
+    }
+    const submittedSession = session.id
+    pendingCommandRef.current = true
+    setCommandPending(true)
+    setCommandFeedback(null)
+    try {
+      const outcome = await onCommand(command.id, { args: request.args, raw: request.raw })
+      if (sessionIdRef.current !== submittedSession) return
+      setCommandFeedback(outcome)
+      setResultExpanded(false)
+      if (outcome.ok && valueRef.current === raw) updateValue("")
+    } catch (error) {
+      if (sessionIdRef.current === submittedSession) {
+        setCommandFeedback({ok:false,state:"unknown",code:"command_outcome_unknown",message:error instanceof Error ? error.message : tSession("commandFailed"),result:null})
+      }
+    } finally {
+      if (sessionIdRef.current === submittedSession) {
+        pendingCommandRef.current = false
+        setCommandPending(false)
+      }
+    }
+  }
 
   const submit = async () => {
     if (!hasInput) return
-    const command = commandFromValue(value, commandSuggestions)
-    if (commandQuery !== null && attachments.length === 0) {
-      if (command && canRunCommand) {
-        const parsed = parseCommandValue(value)
-        updateValue("")
-        onCommand(command.id, { args: parsed.args, raw: parsed.raw })
-      }
+    if (slashIntent) {
+      if (attachments.length) { setCommandInputError(tSession("commandAttachments")); return }
+      if (commandsLoading) { setCommandInputError(tSession("commandLoading")); return }
+      const command = exactCommand(slashIntent, runtimeCommands)
+      if (!command) { setCommandInputError(commandsError ? tSession("commandCatalogError") : tSession("commandUnknown")); return }
+      await runCommand(command, value)
       return
     }
     if (!canSubmitMessage) return
@@ -361,7 +443,7 @@ export function SessionComposer({
   }
 
   const primaryAction = () => {
-    if (showInterrupt) {
+    if (showInterruptButton) {
       onInterrupt()
       return
     }
@@ -378,6 +460,14 @@ export function SessionComposer({
     >
       <DragOverlay isDragging={isDragging} />
       <div className="mx-auto w-full max-w-3xl space-y-2">
+        {stopOutcome ? <Alert variant={stopOutcome.ok ? "default" : "destructive"} role={stopOutcome.ok ? "status" : "alert"}><AlertDescription>{stopOutcome.message}</AlertDescription></Alert> : null}
+        {commandFeedback ? <Alert variant={commandFeedback.ok ? "default" : "destructive"} role={commandFeedback.ok ? "status" : "alert"}>
+          <AlertDescription>
+            <span>{tSession(commandFeedback.ok ? (commandFeedback.state === "completed" ? "commandCompleted" : "commandAccepted") : commandFeedback.state === "unknown" ? "commandUnknownOutcome" : "commandFailed")}</span>
+            {commandFeedback.message ? <div className="mt-1"><MarkdownText text={commandFeedback.message.length > 500 && !resultExpanded ? `${commandFeedback.message.slice(0,500)}…` : commandFeedback.message} /></div> : null}
+            {commandFeedback.message && commandFeedback.message.length > 500 ? <Button type="button" variant="ghost" size="xs" onClick={() => setResultExpanded(!resultExpanded)}>{tSession(resultExpanded ? "goalLess" : "goalDetails")}</Button> : null}
+          </AlertDescription>
+        </Alert> : null}
         {concurrentWriter ? (
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             {tSession("dshConcurrentWriter")}
@@ -398,6 +488,7 @@ export function SessionComposer({
           <div className="space-y-3 px-4 pt-4">
             <AttachmentPreviewList attachments={attachments} onRemove={remove} />
             {attachmentError ? <p role="alert" className="text-xs text-destructive">{attachmentError}</p> : null}
+            {commandInputError ? <p role="alert" className="text-xs text-destructive">{commandInputError}</p> : null}
             {showCommandMenu ? (
               <div className="rounded-xl border border-border bg-popover p-1 text-sm shadow-sm">
                 {commandSuggestions.length > 0 ? (
@@ -409,37 +500,48 @@ export function SessionComposer({
                         "flex w-full items-start gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent hover:text-accent-foreground",
                         !command.enabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-current",
                       )}
-                      disabled={!command.enabled}
+                      disabled={!commandAllowed(command, runtimeStatus, canUseCommands, commandWritable, connectorOnline)}
                       onClick={() => {
-                        if (!command.enabled) return
-                        updateValue("")
-                        onCommand(command.id, { args: [], raw: `/${command.id}` })
+                        if (!commandAllowed(command, runtimeStatus, canUseCommands, commandWritable, connectorOnline)) return
+                        const raw = slashIntent && (slashIntent.command === command.id || command.aliases.includes(slashIntent.command))
+                          ? `/${command.id}${slashIntent.suffix}` : `/${command.id}`
+                        if (command.acceptsArgs) {
+                          updateValue(raw === `/${command.id}` ? `${raw} ` : raw)
+                          textareaRef.current?.focus()
+                          return
+                        }
+                        void runCommand(command, raw)
                       }}
                     >
                       <span className="code-mono shrink-0 text-xs text-primary">/{command.id}</span>
                       <span className="min-w-0">
                         <span className="block font-medium">{command.title}</span>
                         <span className="block text-xs text-muted-foreground">
-                          {command.disabledReason || command.description}
+                          {command.disabledReason ? (tSession.has(`commandReason_${command.disabledReason}`) ? tSession(`commandReason_${command.disabledReason}`) : command.disabledReason) : commandUi(command)?.kind === "execute" ? (commandUi(command) as {argumentHint?:string}).argumentHint || command.description : command.description}
                         </span>
                       </span>
                     </button>
                   ))
                 ) : commandsLoading ? (
                   <div className="px-3 py-2 text-xs text-muted-foreground">{tSession("commandLoading")}</div>
+                ) : commandsError ? (
+                  <div role="alert" className="px-3 py-2 text-xs text-destructive">{tSession("commandCatalogError")}</div>
+                ) : !canUseCommands ? (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">{tSession("commandUnavailable")}</div>
                 ) : (
                   <div className="px-3 py-2 text-xs text-muted-foreground">{tSession("commandNoMatches")}</div>
                 )}
               </div>
             ) : null}
             <Textarea
+              ref={textareaRef}
               value={value}
               onChange={(event) => updateValue(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault()
-                  if (!showInterrupt) void submit()
+                  if (!showInterruptButton) void submit()
                 }
               }}
               placeholder={placeholder}
@@ -461,6 +563,8 @@ export function SessionComposer({
             {hasSelectors ? (
               compactSelectors ? (
                 <SelectionSettingsDrawer
+                  requestOpenKey={selectorRequest}
+                  onClose={() => setSelectorRequest(0)}
                   disabled={selectorsDisabled}
                   permissionDisabled={permissionSelectorDisabled}
                   modelDisabled={modelSelectorDisabled}
@@ -645,14 +749,14 @@ export function SessionComposer({
             <Button
               type="button"
               size="icon"
-              aria-label={showInterrupt ? tSession("interrupt") : tSession("send")}
-              className={cn("size-8 rounded-full", showInterrupt && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
-              disabled={showInterrupt ? interrupting : !(canSubmitCommand || canSubmitMessage)}
+              aria-label={showInterruptButton ? tSession("interrupt") : tSession("send")}
+              className={cn("size-8 rounded-full", showInterruptButton && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
+              disabled={showInterruptButton ? interrupting : !(canSubmitCommand || canSubmitMessage)}
               onClick={primaryAction}
             >
               {sending || interrupting ? (
                 <Loader2 className="size-4 animate-spin" />
-              ) : showInterrupt ? (
+              ) : showInterruptButton ? (
                 <Square className="size-4" />
               ) : (
                 <ArrowUp className="size-4" />
@@ -663,23 +767,6 @@ export function SessionComposer({
       </div>
     </div>
   )
-}
-
-function commandQueryFromValue(value: string): string | null {
-  const parsed = parseCommandValue(value)
-  return parsed.command
-}
-
-function commandFromValue(value: string, suggestions: RuntimeCommand[]): RuntimeCommand | null {
-  const parsed = parseCommandValue(value)
-  const query = parsed.command
-  if (query === null) return null
-  if (!query) return null
-  const exact = suggestions.find((command) => command.id === query || command.aliases.includes(query))
-  if (exact && exact.enabled && (commandAcceptsParsedArgs(exact, parsed.args))) return exact
-  if (parsed.args.length > 0) return null
-  const onlyEnabled = suggestions.filter((command) => command.enabled)
-  return onlyEnabled.length === 1 ? onlyEnabled[0] ?? null : null
 }
 
 function commandMatchesQuery(command: RuntimeCommand, query: string | null): boolean {
@@ -701,22 +788,6 @@ function fuzzyIncludes(value: string, query: string): boolean {
     if (index === query.length) return true
   }
   return query.length === 0
-}
-
-function commandAcceptsParsedArgs(command: RuntimeCommand, args: string[]): boolean {
-  return args.length === 0 || command.acceptsArgs
-}
-
-function parseCommandValue(value: string): { command: string | null; args: string[]; raw: string } {
-  const raw = value.trim()
-  if (!raw.startsWith("/") || raw.includes("\n")) return { command: null, args: [], raw }
-  const parts = raw.slice(1).split(/\s+/).filter(Boolean)
-  const command = parts[0]?.toLowerCase() ?? ""
-  return {
-    command,
-    args: parts.slice(1),
-    raw,
-  }
 }
 
 function effectiveRuntimeStatus(
