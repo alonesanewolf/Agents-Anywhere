@@ -12,8 +12,11 @@
 
 - Do not read, copy, import or use old AA IPC implementations, reference tests,
   prior protocol notes or deprecated code. Use the installed IDE/App and the spec.
-- Keep all work in this worktree. No dev server, simulator, App modifications,
-  live conversation mutation, main-branch merge, or deployment.
+- Keep all code changes in this worktree. The user has now explicitly authorized
+  an isolated local AA service stack and computer-controlled end-to-end testing
+  after implementation. Use dedicated test conversations and test data; preserve
+  unrelated running services and conversations. No production deployment or main
+  merge. Native app replacement/release remains outside this task.
 - Python 3.12, uv, asyncio, modular/headless implementation. Official SDK remains
   native backend; no handwritten app-server JSON-RPC transport.
 - Write meaningful failing behavior tests before implementation. Check target
@@ -122,7 +125,7 @@
   send/steer/interrupt/respond through existing runtime calls, reconnect resync and
   SDK-only regressions. Run all active Codex + architecture tests; commit.
 
-### Task 5: Live validation, documentation and complete review
+### Task 5: Live validation, local service and UI end-to-end acceptance
 
 **Files:** `connector/scripts/probe_codex_coordination.py`,
 `connector/docs/codex-app-integration.md`, connector README activation link,
@@ -134,6 +137,17 @@ source/test fixes identified by review.
 - [ ] Run probe against installed running App; confirm observed snapshots/patches
   exercise AA projection, record version and structural evidence. No live mutation
   of active task. Clearly identify write-side verification level.
+- [ ] Start an isolated local AA stack from this worktree using separate ports
+  and disposable test data. Use computer control to test the actual AA interface.
+  Exercise App-owned and AA-owned dedicated conversations, bidirectional output,
+  sends/steer/interrupt, approvals/questions, reconnect, slash commands and
+  goal/plan presentation. Fix observed failures and rerun the affected scenario.
+  Record evidence and distinguish live-tested, fixture-tested and unsupported
+  behavior. Never mark this goal complete before the UI acceptance work is done.
+- [ ] For DSH, run the new bridge in a local development/test host or another
+  supported isolated loading mechanism to validate native commands. Do not claim
+  the installed desktop package gained the routes without an actual package
+  update. Any native App UI access restriction must be reported explicitly.
 - [ ] Document all 23 versioned methods, source versions, supported operations,
   enablement and test commands, architecture, resync difference and platform/native
   feature limits. A wire handler alone does not count as full UI feature parity.

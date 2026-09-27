@@ -159,3 +159,15 @@ the current native APIs and AA's existing command menu; preserve arguments and
 disabled reasons. Consider Codex goal/plan presentation from the real state model,
 reusing existing plan views and adding a focused persistent-goal component only
 where justified. This is included in the branch's final verification and review.
+
+## Additional completion condition authorized by the user
+
+After implementation, start an isolated local AA service stack and use computer
+control to validate the actual end-to-end behavior through AA's UI. Include the
+Codex/DSH command additions and goal/plan presentation, as well as same-session
+IPC operations. Use dedicated test sessions, preserve unrelated conversations
+and running services, and fix failures found during acceptance. This requirement
+is part of the active goal: automated tests or a read-only IPC probe alone do not
+complete it. Record live evidence and concrete limitations without presenting
+fixture coverage as installed-application validation. Production deployment, main
+merge and replacing installed native apps are not requested by this acceptance.
