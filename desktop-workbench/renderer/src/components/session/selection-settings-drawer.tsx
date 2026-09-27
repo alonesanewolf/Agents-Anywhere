@@ -43,6 +43,7 @@ export function SelectionSettingsDrawer({
   permissionItems,
   selectedPermission,
   onPermissionChange,
+  onOpenChange,
   modelItems,
   selectedModel,
   selectedReasoning,
@@ -61,6 +62,7 @@ export function SelectionSettingsDrawer({
   permissionItems: SelectionOption[]
   selectedPermission: string
   onPermissionChange: (id: string) => void
+  onOpenChange?: (open: boolean) => void
   modelItems: ModelSelectionOption[]
   selectedModel: string
   selectedReasoning: string
@@ -71,6 +73,7 @@ export function SelectionSettingsDrawer({
 
   const setDrawerOpen = (nextOpen: boolean) => {
     setOpen(nextOpen)
+    onOpenChange?.(nextOpen)
     if (!nextOpen) setExpandedModelId(null)
   }
 

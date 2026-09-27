@@ -34,8 +34,44 @@ const dshPermissionLabelKeys: Record<string, string> = {
 
 export function isDshAutoReviewPermission(catalog: ProtocolPermissionCatalog | null, id: string): boolean {
   return catalog?.runtime === "dsh" && catalog.permissions.some(
-    (item) => item.id === id && item.metadata?.preset === "auto",
+    (item) => item.id === id && dshPermissionPreset(catalog, item) === "auto",
   )
+}
+
+export function dshPermissionPreset(
+  catalog: ProtocolPermissionCatalog | null,
+  item: ProtocolPermissionItem,
+): string | null {
+  if (catalog?.runtime !== "dsh") return null
+  const preset = item.metadata?.preset
+  if (typeof preset === "string" && preset) return preset
+  return Object.hasOwn(dshPermissionLabelKeys, item.displayName) ? item.displayName : null
+}
+
+export function permissionCatalogI18nText(
+  translate: (key: string) => string,
+  catalog: ProtocolPermissionCatalog | null,
+  item: ProtocolPermissionItem,
+  field: "labelKey" | "descriptionKey",
+): string {
+  const preset = dshPermissionPreset(catalog, item)
+  return catalogI18nText(
+    translate,
+    preset ? { ...item.metadata, preset } : item.metadata,
+    field,
+    field === "labelKey" ? item.displayName : item.description,
+  )
+}
+
+export function retainUnchangedPermissionCatalog(
+  current: ProtocolPermissionCatalog | null,
+  incoming: ProtocolPermissionCatalog,
+): ProtocolPermissionCatalog {
+  return current?.runtime === incoming.runtime &&
+    current.revision === incoming.revision &&
+    JSON.stringify(current.permissions) === JSON.stringify(incoming.permissions)
+    ? current
+    : incoming
 }
 
 export function catalogI18nText(
