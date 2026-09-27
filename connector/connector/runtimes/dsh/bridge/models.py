@@ -309,17 +309,78 @@ def commands(value: Any) -> tuple[RuntimeCommand, ...]:
 
 def command_result(value: Any, command: str) -> RuntimeCommandResult:
     data = _mapping(value, "command result")
-    returned_command = _optional_string(data.get("command")) or command
+    returned_command = _required_string(data.get("command"), "command identity")
     if returned_command != command:
         raise ValueError("DSH returned a different command identity")
-    result = _dict(data.get("result"))
-    native_error = result.get("kind") == "error"
-    if native_error:
-        result["executionState"] = "completed"
+    ok = data.get("ok")
+    if not isinstance(ok, bool):
+        raise ValueError("DSH command acknowledgement must include a boolean ok")
+    result = _mapping(data.get("result"), "command result details")
+    kind = result.get("kind")
+    if "kind" in result and (
+        not isinstance(kind, str) or kind not in {"success", "error"}
+    ):
+        raise ValueError("DSH command result kind is invalid")
+    command_id = result.get("commandId")
+    if "commandId" in result:
+        _required_string(command_id, "command ID")
+    if "text" in result and not isinstance(result["text"], str):
+        raise ValueError("DSH command result text is invalid")
+    if "sourceEventSeq" in result:
+        _nonnegative_int(result["sourceEventSeq"], "source event sequence")
+        if kind != "success":
+            raise ValueError("Only a successful DSH command can have a source event")
+    state = result.get("executionState")
+    if "executionState" in result and (
+        not isinstance(state, str)
+        or state not in {"accepted", "completed", "unknown"}
+    ):
+        raise ValueError("DSH command execution state is invalid")
+    if "retryable" in result and (
+        result["retryable"] is not False or state != "unknown"
+    ):
+        raise ValueError("An uncertain DSH command may not be retried automatically")
+    if ok:
+        if (
+            kind != "success"
+            or command_id is None
+            or state != "accepted"
+            or "retryable" in result
+            or "code" in data
+        ):
+            raise ValueError("DSH successful command acknowledgement is incomplete or inconsistent")
+    elif (
+        kind == "success"
+        or kind == "error" and (command_id is None or state != "completed")
+        or kind is None and (command_id is not None or state not in {None, "unknown"})
+    ):
+        raise ValueError("DSH failed command acknowledgement is inconsistent")
+    code = data.get("code")
+    if not ok:
+        _required_string(code, "command failure code")
+        if kind == "error" and code != "command_error":
+            raise ValueError("DSH native command error has an inconsistent failure code")
+        if kind is None and code == "command_error":
+            raise ValueError("DSH native command error is missing its result identity")
+        if code in {"command_failed", "command_outcome_unknown"}:
+            if kind is not None or state != "unknown" or result.get("retryable") is not False:
+                raise ValueError("DSH unknown command outcome has incomplete no-retry details")
+        elif kind is None and (
+            code not in {
+                "invalid_command", "command_attachments_unsupported", "unknown_command"
+            }
+            or state is not None
+            or "retryable" in result
+        ):
+            raise ValueError("DSH pre-dispatch validation has inconsistent execution details")
+    elif code is not None:
+        raise ValueError("DSH successful command acknowledgement has an error code")
+    if "message" in data and not isinstance(data["message"], str):
+        raise ValueError("DSH command message is invalid")
     return RuntimeCommandResult(
         command=returned_command,
-        ok=_boolean(data.get("ok"), True) and not native_error,
-        code=_optional_string(data.get("code")),
+        ok=ok,
+        code=code,
         message=_optional_string(data.get("message")),
         result=result,
     )

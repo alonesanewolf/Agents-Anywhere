@@ -16,6 +16,44 @@ from connector.runtimes.dsh.discovery import BridgeEndpoint
 from connector.runtimes.dsh.provider_config import dsh_capabilities
 from connector.runtimes.dsh.runtime import DshRuntime
 
+MALFORMED_ACKS: dict[str, Any] = {
+    "empty": {},
+    "no-command": {"ok": True, "result": {"kind": "success", "commandId": "one"}},
+    "null-command": {"command": None, "ok": True, "result": {"kind": "success", "commandId": "one"}},
+    "numeric-command": {"command": 7, "ok": True, "result": {"kind": "success", "commandId": "one"}},
+    "empty-command": {"command": "", "ok": True, "result": {"kind": "success", "commandId": "one"}},
+    "no-ok": {"command": "feedback", "result": {"kind": "success", "commandId": "one"}},
+    "null-ok": {"command": "feedback", "ok": None, "result": {"kind": "success", "commandId": "one"}},
+    "numeric-ok": {"command": "feedback", "ok": 1, "result": {"kind": "success", "commandId": "one"}},
+    "no-result": {"command": "feedback", "ok": True},
+    "empty-result": {"command": "feedback", "ok": True, "result": {}},
+    "wrong-result-type": {"command": "feedback", "ok": True, "result": []},
+    "wrong-kind": {"command": "feedback", "ok": True, "result": {"kind": "error", "commandId": "one"}},
+    "array-kind": {"command": "feedback", "ok": True, "result": {"kind": [], "commandId": "one"}},
+    "no-kind": {"command": "feedback", "ok": True, "result": {"commandId": "one"}},
+    "no-id": {"command": "feedback", "ok": True, "result": {"kind": "success"}},
+    "no-success-state": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": "one"}},
+    "numeric-id": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": 7}},
+    "empty-id": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": ""}},
+    "negative-seq": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": "one", "sourceEventSeq": -1}},
+    "boolean-seq": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": "one", "sourceEventSeq": True}},
+    "invalid-text": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": "one", "text": 8}},
+    "invalid-state": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": "one", "executionState": "unknown"}},
+    "array-state": {"command": "feedback", "ok": True, "result": {"kind": "success", "commandId": "one", "executionState": []}},
+    "error-source-seq": {"command": "feedback", "ok": False, "code": "command_error", "result": {"kind": "error", "commandId": "one", "sourceEventSeq": 1}},
+    "false-success": {"command": "feedback", "ok": False, "code": "command_error", "result": {"kind": "success", "commandId": "one"}},
+    "error-without-id": {"command": "feedback", "ok": False, "code": "command_error", "result": {"kind": "error"}},
+    "no-error-state": {"command": "feedback", "ok": False, "code": "command_error", "result": {"kind": "error", "commandId": "one"}},
+    "failed-without-code": {"command": "feedback", "ok": False, "result": {}},
+    "invalid-retryability": {"command": "feedback", "ok": False, "code": "command_outcome_unknown", "result": {"executionState": "unknown", "retryable": True}},
+    "missing-unknown-state": {"command": "feedback", "ok": False, "code": "command_outcome_unknown", "result": {}},
+    "missing-no-retry": {"command": "feedback", "ok": False, "code": "command_failed", "result": {"executionState": "unknown"}},
+    "validation-with-unknown-state": {"command": "feedback", "ok": False, "code": "invalid_command", "result": {"executionState": "unknown", "retryable": False}},
+    "native-error-wrong-code": {"command": "feedback", "ok": False, "code": "invalid_command", "result": {"kind": "error", "commandId": "one", "executionState": "completed"}},
+    "missing-native-error-kind": {"command": "feedback", "ok": False, "code": "command_error", "result": {}},
+    "unrecognized-validation-code": {"command": "feedback", "ok": False, "code": "unexpected_code", "result": {}},
+}
+
 
 @asynccontextmanager
 async def bridge(tmp_path: Path, *, supported: bool = True, mode: str = "success") -> AsyncIterator[tuple[DshRuntime, list[dict[str, Any]], asyncio.Event]]:
@@ -66,12 +104,17 @@ async def bridge(tmp_path: Path, *, supported: bool = True, mode: str = "success
                         await writer.drain()
                         continue
                     result = {"command": params["command"], "ok": mode != "error", "message": "native acknowledgement",
+                        **({"code": "command_error"} if mode == "error" else {}),
                         "result": {"commandId": "native-command-7", "kind": "error" if mode == "error" else "success", "text": "native acknowledgement",
-                            "sourceEventSeq": 12, "executionState": "completed" if mode == "error" else "accepted"}}
+                            **({} if mode == "error" else {"sourceEventSeq": 12}), "executionState": "completed" if mode == "error" else "accepted"}}
                     if mode == "wrong-command":
                         result["command"] = "another"
                     elif mode == "error-kind":
                         result["result"]["kind"] = "error"
+                    elif mode in MALFORMED_ACKS:
+                        result = MALFORMED_ACKS[mode]
+                    elif mode == "validation-failed":
+                        result = {"command": params["command"], "ok": False, "code": "invalid_command", "message": "raw mismatch", "result": {}}
                 else:
                     raise AssertionError(f"unexpected request {method}")
                 writer.write(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}).encode() + b"\n")
@@ -190,8 +233,27 @@ def test_result_identity_or_error_kind_cannot_be_reported_as_success(tmp_path: P
             result = await runtime.execute_command("session", "feedback", "native", raw="/feedback hi")
             assert not result.ok
             assert result.command == "feedback"
-            if mode == "wrong-command":
-                assert result.result == {"executionState": "unknown", "retryable": False}
-            else:
-                assert result.result["commandId"] == "native-command-7"
+            assert result.result == {"executionState": "unknown", "retryable": False}
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mode", MALFORMED_ACKS)
+def test_authenticated_public_execution_rejects_incomplete_or_malformed_ack_without_retry(tmp_path: Path, mode: str) -> None:
+    async def run() -> None:
+        async with bridge(tmp_path, mode=mode) as (runtime, requests, _):
+            result = await runtime.execute_command("session", "feedback", "native", raw="/feedback once")
+            assert result.command == "feedback"
+            assert result.ok is False and result.code == "command_outcome_unknown"
+            assert result.result == {"executionState": "unknown", "retryable": False}
+            assert len([r for r in requests if r["method"] == "session.executeCommand"]) == 1
+    asyncio.run(run())
+
+
+def test_authenticated_public_execution_preserves_known_validation_without_correlation(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with bridge(tmp_path, mode="validation-failed") as (runtime, requests, _):
+            result = await runtime.execute_command("session", "feedback", "native", raw="/permission")
+            assert not result.ok and result.code == "invalid_command"
+            assert result.result == {} and result.message == "raw mismatch"
+            assert len([r for r in requests if r["method"] == "session.executeCommand"]) == 1
     asyncio.run(run())
