@@ -88,7 +88,7 @@ export class RuntimeCatalogs {
     if (!service) throw new BridgeError('UNSUPPORTED_OPERATION', 'This DSH deployment does not provide permission presets.')
     const permissions = service.catalog().options.map(option => {
       const preset = option.value
-      return { id: permissionSelectionId(preset), title: option.name, selectionId: permissionSelectionId(preset),
+      return { id: permissionSelectionId(preset), title: preset === 'auto' ? 'Auto review' : option.name, selectionId: permissionSelectionId(preset),
         description: option.description, enabled: true, metadata: { preset } }
     })
     const fingerprint = JSON.stringify(permissions)

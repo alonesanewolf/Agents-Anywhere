@@ -4,6 +4,7 @@ import * as React from "react"
 import { ArrowUp, Check, ChevronDown, Loader2, Square } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,13 +38,16 @@ import {
   catalogItemDisabledReason,
   catalogItemEnabled,
   catalogI18nText,
+  isDshAutoReviewPermission,
   modelCatalogDisplayName,
   modelIdsForSelectionId,
   permissionIdForSelectionId,
+  permissionCatalogI18nText,
   selectionIdForModelCatalog,
   selectionIdForPermissionCatalog,
 } from "@/components/session/catalog-selection"
 import { SelectionSettingsDrawer } from "@/components/session/selection-settings-drawer"
+import { AutoReviewPermissionDialog } from "@/components/session/auto-review-permission-dialog"
 import { CAPABILITY, capabilityIsUsable, findCapability, attachmentMimeTypes } from "@/components/session/capabilities"
 import { useElementWidth } from "@/hooks/use-element-width"
 import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runtime-instances"
@@ -177,16 +181,18 @@ export function SessionComposer({
   )
   const showInterrupt = !creatingSession && canUseInterrupt && activeSessionCanInterrupt
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
+  const [pendingAutoReviewPermission, setPendingAutoReviewPermission] = React.useState<string | null>(null)
   const [selectedModel, setSelectedModel] = React.useState("")
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
   const permissionItems = permissionCatalog?.permissions.map((item) => ({
     id: item.id,
-    label: catalogI18nText(tNew, item.metadata, "labelKey", item.displayName),
-    description: catalogI18nText(tNew, item.metadata, "descriptionKey", item.description),
+    label: permissionCatalogI18nText(tNew, permissionCatalog, item, "labelKey"),
+    description: permissionCatalogI18nText(tNew, permissionCatalog, item, "descriptionKey"),
     default: item.default,
     enabled: catalogItemEnabled(item),
     disabledReason: catalogItemDisabledReason(item),
     selectionId: item.selectionId,
+    badge: isDshAutoReviewPermission(permissionCatalog, item.id) ? "EXP" : undefined,
   })) ?? []
   const modelItems = modelCatalog?.models.map((item) => ({
     id: item.id,
@@ -217,7 +223,10 @@ export function SessionComposer({
   const modelValue = modelSelectionValue?.modelId ?? ""
   const effortValue = modelSelectionValue?.reasoningId ?? ""
   const permissionLabel =
-    permissionItems.find((item) => item.id === selectedPermissionMode)?.label ?? (dsh ? actualPermission?.name : null) ?? tNew("permissionMode")
+    permissionItems.find((item) => item.id === selectedPermissionMode)?.label ??
+    (dsh && actualPermission
+      ? catalogI18nText(tNew, { preset: actualPermission.id }, "labelKey", actualPermission.name)
+      : null) ?? tNew("permissionMode")
   const modelLabel = selectedModelItem?.label ?? (dsh && actualModel?.model ? `${actualModel.model}（${actualModel.provider}）` : tNew("model"))
   const effortLabel = effortItems.find((item) => item.id === selectedReasoning)?.label ?? (dsh ? actualModel?.reasoningEffort : null) ?? tNew("reasoning")
   const hasSelectors = Boolean(permissionItems.length > 0 || modelItems.length > 0)
@@ -269,7 +278,7 @@ export function SessionComposer({
   }, [dsh, effortItems, effortValue])
   const selectedModelSelection = selectionIdForModelCatalog(modelCatalog, selectedModel, selectedReasoning) ?? (dsh ? runtimeSelections.model : null)
   const selectedPermissionSelection = selectionIdForPermissionCatalog(permissionCatalog, selectedPermissionMode) ?? (dsh && actualPermission?.id !== 'custom' ? runtimeSelections.permission : null)
-  const choosePermission = (permissionId: string) => {
+  const commitPermission = (permissionId: string) => {
     if (permissionId === selectedPermissionMode) return
     const previousPermission = selectedPermissionMode
     const nextSelection = selectionIdForPermissionCatalog(permissionCatalog, permissionId)
@@ -279,6 +288,19 @@ export function SessionComposer({
       if (!ok && !dsh) setSelectedPermissionMode(previousPermission)
     })
   }
+  const choosePermission = (permissionId: string) => {
+    if (permissionId === selectedPermissionMode) return
+    if (isDshAutoReviewPermission(permissionCatalog, permissionId)) {
+      setPendingAutoReviewPermission(permissionId)
+      return
+    }
+    commitPermission(permissionId)
+  }
+  React.useEffect(() => {
+    if (pendingAutoReviewPermission && !isDshAutoReviewPermission(permissionCatalog, pendingAutoReviewPermission)) {
+      setPendingAutoReviewPermission(null)
+    }
+  }, [pendingAutoReviewPermission, permissionCatalog])
   const chooseModel = (modelId: string, reasoningId: string) => {
     if (modelId === selectedModel && reasoningId === selectedReasoning) return
     const previousModel = selectedModel
@@ -377,6 +399,16 @@ export function SessionComposer({
       onDrop={onDrop}
     >
       <DragOverlay isDragging={isDragging} />
+      <AutoReviewPermissionDialog
+        open={pendingAutoReviewPermission !== null}
+        onOpenChange={(open) => { if (!open) setPendingAutoReviewPermission(null) }}
+        onConfirm={() => {
+          if (pendingAutoReviewPermission && isDshAutoReviewPermission(permissionCatalog, pendingAutoReviewPermission)) {
+            commitPermission(pendingAutoReviewPermission)
+          }
+          setPendingAutoReviewPermission(null)
+        }}
+      />
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {concurrentWriter ? (
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
@@ -493,6 +525,7 @@ export function SessionComposer({
                       >
                         <span className="size-1.5 shrink-0 rounded-full bg-primary" />
                         <span className="min-w-0 truncate text-foreground">{permissionLabel}</span>
+                        {permissionItems.find((item) => item.id === selectedPermissionMode)?.badge ? <Badge variant="secondary">EXP</Badge> : null}
                         <ChevronDown className="size-3.5 opacity-60" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -509,7 +542,10 @@ export function SessionComposer({
                         >
                           <Check className={cn("mt-0.5 size-3.5", selectedPermissionMode === item.id ? "opacity-100" : "opacity-0")} />
                           <span className="min-w-0 flex-1">
-                            <span className="block font-medium leading-none">{item.label}</span>
+                            <span className="flex items-center gap-2 font-medium leading-none">
+                              <span>{item.label}</span>
+                              {item.badge ? <Badge variant="secondary">{item.badge}</Badge> : null}
+                            </span>
                             {(item.enabled ? item.description : item.disabledReason) ? (
                               <span className="mt-1 block whitespace-normal text-xs leading-snug text-muted-foreground">
                                 {item.enabled ? item.description : item.disabledReason}

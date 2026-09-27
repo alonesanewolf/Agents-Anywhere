@@ -171,6 +171,7 @@ test('Auto review contribution changes the live permission catalog and selection
     const withAuto = runtime.catalogs.permissions()
     assert.ok(withAuto.revision > before.revision)
     assert.equal(withAuto.permissions.at(-1)?.metadata.preset, 'auto')
+    assert.equal(withAuto.permissions.at(-1)?.title, 'Auto review')
     await runtime.configuration.validate({ permission: permissionSelectionId('auto') })
 
     changes.length = 0

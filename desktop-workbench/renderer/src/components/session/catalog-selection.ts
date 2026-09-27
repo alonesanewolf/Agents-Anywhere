@@ -45,7 +45,8 @@ function dshPermissionPreset(
   if (catalog?.runtime !== "dsh") return null
   const preset = item.metadata?.preset
   if (typeof preset === "string" && preset) return preset
-  return Object.hasOwn(dshPermissionLabelKeys, item.displayName) ? item.displayName : null
+  return item.displayName === "Auto review" ? "auto"
+    : Object.hasOwn(dshPermissionLabelKeys, item.displayName) ? item.displayName : null
 }
 
 export function permissionCatalogI18nText(
