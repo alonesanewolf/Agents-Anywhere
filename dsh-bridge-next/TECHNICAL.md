@@ -179,6 +179,40 @@ Bridge 的独占锁决定端点文件的写入权。获得锁后会重建残留�
 
 检测到 Desktop 正在运行时，插件跳过 Connector 自动恢复和账号资料刷新，账号、设备与 Connector 交由桌面端管理；插件只保留 DSH runtime 端点（`<DSH_HOME>/agents-anywhere/bridge/endpoint.json`）和桥接日志。Desktop 退出后，插件可以恢复先前已授权的连接。
 
+## 原生命令桥接
+
+私有 runtime 端点提供 `session.listCommands` 与 `session.executeCommand`。两者使用现有
+`sessionId` / `externalSessionId` 身份检查和原生 source 可用性，通过 Session Controller
+取得该会话的权威 Agent，再调用真实 `commands.list` / `commands.execute`；命令文本不会
+作为普通 prompt 发送。目录每次从 registry 读取，包含 Agent 的 scoped override，列表
+支持 `query` 和 1–1000 的 `limit`（默认 50）。未提供 registry/controller 的 Host 不启用
+`session.commands`；旧 Bridge 由 Connector 显示升级原因。
+
+执行参数是 `{command,raw?,args?:string[]}`。`command` 是不带 `/` 的原生名称，必须与
+原生 `parseCommand(raw)` 的名称一致。提供 raw 时原样使用，包括空字符串、空白和换行；
+空 raw 会被校验拒绝，不回退到 args。没有 raw 时，零个 args 构造 `/name`，一个字符串
+构造 `/name ` 加该字符串原文，多个 args 要求提供 raw。非字符串 args、命令身份不匹配
+及非空 attachments 在进入原生 handler 前拒绝。当前 AA 命令接口没有附件传输。
+
+目录沿用公共 RuntimeCommand 字段，metadata 保留原生 `input`、可选 `definitionId`，
+并声明 `attachmentsAvailable:false` 与 `ui:{kind:'execute',argumentHint?,
+acceptsMultiline:true,allowedStatuses:[...]}`。`acceptsArgs` 决定参数编辑行为；原生 handler
+负责 busy 状态和每次调用的语法校验。不要仅因为会话正在运行就屏蔽所有命令。
+
+`commands/change()` 无参数。Bridge 使用既有 runtime/session capability 通知失效目录，
+Connector 最终发出平台 `runtime.capability.updated`（保留可选 sessionId/runtimeId）。
+`session.commands.metadata.catalogRevision` 是跨重启及 registry 变更更新的不透明字符串；
+Web 在相关 revision/availability 变化时刷新打开的目录，重开菜单及重连也读取新目录。
+
+返回结果保留原生 `commandId`、`kind`、`text` 与 `sourceEventSeq`（如有）。普通成功的
+`result.executionState` 为 `accepted`，不能据此断言模型或后台工作完成；原生返回 error
+为 `ok:false,code:'command_error'`，executionState 为 `completed`，表示 handler 已返回
+错误，不代表副作用回滚。未知名称/输入拒绝没有 executionState。handler 抛异常返回
+`command_failed`；取消、超时或断连后无法确认结果返回 `command_outcome_unknown`。
+这些无法确认的结果均为 `ok:false`、`executionState:'unknown'`、`retryable:false`，
+不猜测 correlation，也不自动重试。显式 Python task cancellation 继续向上传播，并发送
+已有 `$/cancelRequest`。UI 应保留失败草稿，提示刷新会话状态后再决定是否重发。
+
 ## 验证范围
 
 自动化覆盖实际 rc.2 Typert Gateway 对编译后 Host 的调用及卸载、OAuth 本地回调和二次跳转、设备复用、取消、重复操作，以及用独立 stdio 测试进程验证 Connector 启停。跨端测试从插件 OAuth 新建开始，经真实共享文件进入 Desktop 首次配对或已删除设备重连，断言只创建一台设备；另覆盖真实 Python CLI/Desktop/插件进程竞争、异常退出后的重试、Desktop 安装信息与 Python ID 写入并发，以及登记失败后保留私有绑定。Web 测试实际挂载页面组件，覆盖 Agent 添加、手机跳过/扫码、二维码过期、权限检查和登录后的路由恢复。

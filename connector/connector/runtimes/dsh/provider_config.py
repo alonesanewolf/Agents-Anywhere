@@ -134,7 +134,7 @@ def dsh_capabilities(reported: dict[str, Any] | None = None) -> dict[str, bool]:
         "startTurn": "session.send_message" in enabled,
         "steerTurn": False,
         "interruptTurn": "session.interrupt" in enabled,
-        "commands": False,
+        "commands": "session.commands" in enabled,
         "interactions": False,
         "attachments": "runtime.attachment" in enabled,
         "ipc": True,

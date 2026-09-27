@@ -64,7 +64,7 @@ export class TextAdapter extends LlmAdapter {
   }
 }
 
-export async function mountAgents(ctx: Context, adapter: LlmAdapter,
+export async function mountAgents(ctx: Context, adapter?: LlmAdapter,
   defaultModel: { provider: string, model: string, reasoningEffort?: string } = { provider: 'test', model: 'text' }): Promise<void> {
   await ctx.plugin(LlmRuntime).await()
   await ctx.plugin(SessionProjection).await()
@@ -74,7 +74,7 @@ export async function mountAgents(ctx: Context, adapter: LlmAdapter,
   await ctx.plugin(AgentLoop, { agents: [] }).await()
   // rc.7 stores defaults in the composition; this fixture has no profile ConfigEditor.
   await ctx.plugin(AgentDefaultModel, defaultModel).await()
-  ctx.llm.registerAdapter(['test'], adapter)
+  if (adapter) ctx.llm.registerAdapter(['test'], adapter)
   const root = await mkdtemp(join(tmpdir(), 'aa-dsh-composition-'))
   ctx.on('dispose', () => rm(root, { recursive: true, force: true }))
   ctx.baseUrl = import.meta.url

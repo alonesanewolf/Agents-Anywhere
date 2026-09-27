@@ -5,16 +5,19 @@ from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
+from connector.logging import logger
 from connector.runtime_protocol import (
     AgentRuntime,
+    RuntimeAttachment,
     RuntimeCapabilitySet,
+    RuntimeCommand,
+    RuntimeCommandResult,
     RuntimeConfig,
     RuntimeIdentity,
-    RuntimeAttachment,
-    RuntimeOperationResult,
-    RuntimeModelCatalog,
-    RuntimePermissionCatalog,
     RuntimeInvalidRequestError,
+    RuntimeModelCatalog,
+    RuntimeOperationResult,
+    RuntimePermissionCatalog,
     RuntimeTimelineSnapshot,
     RuntimeUnavailableError,
     RuntimeUnsupportedError,
@@ -24,13 +27,11 @@ from connector.runtime_protocol import (
     SessionState,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
-from connector.logging import logger
 from connector.runtimes.dsh import discovery, provider_config
 from connector.runtimes.dsh.attachments import staged_attachments
 from connector.runtimes.dsh.bridge import models
 from connector.runtimes.dsh.bridge.client import BridgeClient, BridgeRpcError
 from connector.runtimes.dsh.bridge.sync import SyncRelay
-
 
 BRIDGE_POLL_INTERVAL_SECONDS = 5.0
 
@@ -124,6 +125,54 @@ class DshRuntime(AgentRuntime):
 
     async def list_permission_catalog(self, query: str | None = None, limit: int = 100) -> RuntimePermissionCatalog:
         return models.permission_catalog(await self._request("catalog.listPermissions", {"query": query, "limit": limit}))
+
+    async def _commands_unavailable(self, session_id: str, external_session_id: str | None) -> tuple[str, str] | None:
+        capabilities = await self.get_session_capabilities(session_id, external_session_id)
+        capability = next(item for item in capabilities.capabilities if item.capability_id == "session.commands")
+        if capability.supported and capability.available and capability.allowed:
+            return None
+        upgrade = not capability.supported and not capability.metadata.get("catalogRevision")
+        return (
+            "bridge_upgrade_required" if upgrade else "commands_unavailable",
+            models.COMMAND_BRIDGE_UPGRADE_REASON if upgrade else capability.unavailable_reason or "Native DSH commands are unavailable for this session.",
+        )
+
+    async def list_commands(
+        self, session_id: str, external_session_id: str | None = None,
+        query: str | None = None, limit: int = 50,
+    ) -> tuple[RuntimeCommand, ...]:
+        unavailable = await self._commands_unavailable(session_id, external_session_id)
+        if unavailable:
+            raise RuntimeUnsupportedError(unavailable[1])
+        return models.commands(await self._request("session.listCommands", {
+            **_session_params(session_id, external_session_id), "query": query, "limit": limit,
+        }))
+
+    async def execute_command(
+        self, session_id: str, command: str, external_session_id: str | None = None,
+        raw: str | None = None, args: tuple[str, ...] = (),
+    ) -> RuntimeCommandResult:
+        unavailable = await self._commands_unavailable(session_id, external_session_id)
+        if unavailable:
+            return RuntimeCommandResult(command=command, ok=False, code=unavailable[0], message=unavailable[1])
+        # Ensure transport before dispatch. Once dispatched, losing the response
+        # cannot prove native effects did not occur; never reconnect and retry it.
+        await self._ensure_client()
+        if self._client is None:
+            raise RuntimeUnavailableError("DSH bridge is not running")
+        params = {**_session_params(session_id, external_session_id), "command": command, "args": list(args)}
+        if raw is not None:
+            params["raw"] = raw
+        try:
+            return models.command_result(await self._client.request("session.executeCommand", params), command)
+        except BridgeRpcError as exc:
+            if exc.bridge_code in {"UNSUPPORTED_OPERATION", "METHOD_NOT_FOUND"}:
+                return RuntimeCommandResult(command=command, ok=False, code="bridge_upgrade_required", message=models.COMMAND_BRIDGE_UPGRADE_REASON)
+            if exc.bridge_code in {"INVALID_REQUEST", "INVALID_PARAMS", "SESSION_NOT_FOUND", "SESSION_ARCHIVED"}:
+                return RuntimeCommandResult(command=command, ok=False, code="invalid_command", message=str(exc))
+            return _unknown_command_result(command)
+        except (OSError, TimeoutError, ConnectionError, RuntimeError, ValueError):
+            return _unknown_command_result(command)
 
     async def update_session_selections(
         self, session_id: str, external_session_id: str | None, selections: Mapping[str, str | None],
@@ -522,6 +571,14 @@ class DshRuntime(AgentRuntime):
                 attempt = min(attempt + 1, fast_attempts)
                 # Stay quiet while offline; the exit handler already published health.
                 continue
+
+
+def _unknown_command_result(command: str) -> RuntimeCommandResult:
+    return RuntimeCommandResult(
+        command=command, ok=False, code="command_outcome_unknown",
+        message="DSH command execution could not be confirmed. Refresh session state before deciding whether to submit again.",
+        result={"executionState": "unknown", "retryable": False},
+    )
 
 
 def _object(value: Any) -> dict[str, Any]:

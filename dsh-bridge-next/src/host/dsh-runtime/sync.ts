@@ -310,8 +310,11 @@ export class SyncFeed {
     const ended: [string, Record<string, unknown>][] = []
     let reconcile = false
     for (const change of changes) {
-      if (change.type === 'capabilities') {
+      if (change.type === 'capabilities' || change.type === 'commands') {
         await this.runtimeOperation('capabilities', async () => this.notification('runtime.capability.updated', await this.native.capabilities()))
+        for (const id of this.published.keys()) await this.sessionOperation(id, 'capabilities', async () => {
+          await this.notification('session.capability.updated', await this.native.capabilities(this.published.get(id), id as SessionId))
+        })
         continue
       }
       if (change.type === 'catalogs') {

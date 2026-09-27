@@ -173,8 +173,16 @@ export class RuntimeRouter {
         return this.reader.native.questions.respond(this.namespace, id, params.noticeId, params.actionId, params.inputData)
       }
       case 'session.getCapabilities': {
-        const id = await this.resolve(params, signal)
+        const id = await this.resolve(params, signal, true)
+        await this.reader.native?.ensureKnown(id, signal)
         return this.reader.native?.capabilities(sessionId(this.namespace, id), id) ?? capabilities(sessionId(this.namespace, id))
+      }
+      case 'session.listCommands':
+      case 'session.executeCommand': {
+        const native = this.reader.native
+        if (!native) throw new BridgeError('UNSUPPORTED_OPERATION', 'DSH native commands are unavailable.')
+        const id = await this.resolve(params, signal)
+        return method === 'session.listCommands' ? native.commands.list(id, params, signal) : native.commands.execute(id, params, signal)
       }
       default:
         throw new BridgeError('METHOD_NOT_FOUND', 'The DSH runtime does not support this method.')

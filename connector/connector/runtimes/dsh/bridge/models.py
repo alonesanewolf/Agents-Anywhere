@@ -34,6 +34,9 @@ _STATUSES = {
 }
 
 
+COMMAND_BRIDGE_UPGRADE_REASON = "Upgrade the DSH Bridge to enable native session commands."
+
+
 def capability_set(value: Any, *, connector_id: str) -> RuntimeCapabilitySet:
     data = _mapping(value, "capability set")
     runtime = _runtime(data)
@@ -41,6 +44,12 @@ def capability_set(value: Any, *, connector_id: str) -> RuntimeCapabilitySet:
     capabilities: list[RuntimeCapability] = []
     for raw in _list(data.get("capabilities"), "capabilities"):
         item = _mapping(raw, "capability")
+        if item.get("capabilityId") == "session.commands":
+            # Command support requires negotiated facts, not the name alone.
+            for flag in ("supported", "available", "allowed"):
+                item.setdefault(flag, False)
+            if not item["supported"] and not _dict(item.get("metadata")).get("catalogRevision"):
+                item["unavailableReason"] = COMMAND_BRIDGE_UPGRADE_REASON
         scope = item.get("scope", "session" if session_id else "runtime")
         if scope not in {"runtime", "session"}:
             raise ValueError("DSH capability scope is invalid")
@@ -61,6 +70,12 @@ def capability_set(value: Any, *, connector_id: str) -> RuntimeCapabilitySet:
                 metadata=_dict(item.get("metadata")),
             )
         )
+    if not any(capability.capability_id == "session.commands" for capability in capabilities):
+        capabilities.append(RuntimeCapability(
+            capability_id="session.commands", scope="session" if session_id else "runtime", runtime=runtime,
+            session_id=session_id, connector_id=connector_id, supported=False, available=False, allowed=False,
+            unavailable_reason=COMMAND_BRIDGE_UPGRADE_REASON,
+        ))
     return RuntimeCapabilitySet(
         runtime=runtime,
         revision=_revision(data.get("revision")),
@@ -294,12 +309,19 @@ def commands(value: Any) -> tuple[RuntimeCommand, ...]:
 
 def command_result(value: Any, command: str) -> RuntimeCommandResult:
     data = _mapping(value, "command result")
+    returned_command = _optional_string(data.get("command")) or command
+    if returned_command != command:
+        raise ValueError("DSH returned a different command identity")
+    result = _dict(data.get("result"))
+    native_error = result.get("kind") == "error"
+    if native_error:
+        result["executionState"] = "completed"
     return RuntimeCommandResult(
-        command=_optional_string(data.get("command")) or command,
-        ok=_boolean(data.get("ok"), True),
+        command=returned_command,
+        ok=_boolean(data.get("ok"), True) and not native_error,
         code=_optional_string(data.get("code")),
         message=_optional_string(data.get("message")),
-        result=_dict(data.get("result")),
+        result=result,
     )
 
 
