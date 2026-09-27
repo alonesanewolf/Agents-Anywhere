@@ -412,3 +412,36 @@ async def test_cold_complete_history_uses_native_pages_without_acquiring_owner(
             ]
         finally:
             await adapter.stop()
+
+
+@async_test
+async def test_queue_wakeup_during_running_send_is_not_lost(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from connector.runtimes.codex.coordination import client as module
+
+    runs, entered, release = [], asyncio.Event(), asyncio.Event()
+
+    async def execute(operations, thread_id):
+        runs.append(thread_id)
+        if len(runs) == 1:
+            entered.set()
+            await release.wait()
+        return False
+
+    monkeypatch.setattr(module, "execute_head", execute)
+    adapter = module.CoordinatedCodexClient(
+        RuntimeNative(),
+        SimpleNamespace(is_owner=lambda thread_id: True),
+        kv_store=JsonKeyValueStore(tmp_path / "kv.json"),
+        namespace="runtime",
+    )
+    await adapter.journal.replace_queue("t", [{"id": "head", "text": "queued"}])
+    adapter._kick_queue("t")
+    await entered.wait()
+    adapter._kick_queue("t")
+    release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert runs == ["t", "t"]

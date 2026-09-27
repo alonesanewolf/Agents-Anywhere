@@ -36,6 +36,7 @@ class CoordinatedCodexClient:
         self.locks = defaultdict(asyncio.Lock)
         self.last_emitted = {}
         self.queue_tasks = {}
+        self.queue_wakes = set()
         self.tasks = set()
         self.generation = 0
         self.closed = False
@@ -115,6 +116,8 @@ class CoordinatedCodexClient:
                     generation=generation,
                 )
             return
+        if "id" in message:
+            self.contexts.new_request(thread_id, message["id"], message["method"])
         state = reduce_event(self.peer.get_state(thread_id), message)
         await self.peer.publish_state(thread_id, state)
         if not self.operations.mutation_locks[thread_id].locked():
@@ -334,9 +337,11 @@ class CoordinatedCodexClient:
         if (
             self.closed
             or not self.peer.is_owner(thread_id)
-            or thread_id in self.queue_tasks
             or not self.journal.queue(thread_id)
         ):
+            return
+        if thread_id in self.queue_tasks:
+            self.queue_wakes.add(thread_id)
             return
         task = asyncio.create_task(execute_head(self.operations, thread_id))
         self.queue_tasks[thread_id] = task
@@ -345,6 +350,9 @@ class CoordinatedCodexClient:
             self.queue_tasks.pop(thread_id, None)
             if not completed.cancelled():
                 completed.exception()
+            if thread_id in self.queue_wakes:
+                self.queue_wakes.discard(thread_id)
+                self._kick_queue(thread_id)
 
         task.add_done_callback(done)
 

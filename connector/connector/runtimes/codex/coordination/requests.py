@@ -68,8 +68,14 @@ async def reply(operations, thread_id, suffix, params):
 class ResponseContexts:
     def __init__(self):
         self.tokens = {}
+        self.consumed = set()
 
     def clear(self, thread_id=None):
+        self.consumed = {
+            binding
+            for binding in self.consumed
+            if thread_id is not None and binding[0] != thread_id
+        }
         self.tokens = {
             k: v
             for k, v in self.tokens.items()
@@ -79,6 +85,7 @@ class ResponseContexts:
     def present(self, thread_id, source, requests):
         valid = []
         keep = {}
+        current = set()
         for request in requests:
             binding = (
                 thread_id,
@@ -87,6 +94,9 @@ class ResponseContexts:
                 request["id"],
                 request["method"],
             )
+            current.add(binding)
+            if binding in self.consumed:
+                continue
             token = next(
                 (key for key, value in self.tokens.items() if value == binding), None
             ) or token_urlsafe(24)
@@ -99,7 +109,14 @@ class ResponseContexts:
                     "responseContext": token,
                 }
             )
-        self.clear(thread_id)
+        self.tokens = {
+            key: value for key, value in self.tokens.items() if value[0] != thread_id
+        }
+        self.consumed = {
+            binding
+            for binding in self.consumed
+            if binding[0] != thread_id or binding in current
+        }
         self.tokens.update(keep)
         return valid
 
@@ -107,4 +124,18 @@ class ResponseContexts:
         binding = self.tokens.pop(token, None)
         if binding is None:
             raise ValueError("stale response context")
+        self.consumed.add(binding)
         return binding
+
+    def new_request(self, thread_id, request_id, method):
+        def matches(binding):
+            return (
+                binding[0] == thread_id
+                and exact_id(binding[3], request_id)
+                and binding[4] == method
+            )
+
+        self.tokens = {
+            key: binding for key, binding in self.tokens.items() if not matches(binding)
+        }
+        self.consumed = {binding for binding in self.consumed if not matches(binding)}
