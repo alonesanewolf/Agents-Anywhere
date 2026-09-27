@@ -627,3 +627,79 @@ async def test_new_owner_status_request_rebinds_after_release_without_disconnect
             await asyncio.wait_for(waiting, 0.3)
         assert await asyncio.wait_for(updates.get(), 0.3) == state(2)
         assert follower.get_owner("thread").client_id == next_owner.client.client_id
+
+
+@pytest.mark.parametrize(
+    ("first_kind", "second_kind"),
+    [
+        ("state", "state"),
+        ("patches", "patches"),
+        ("state", "patches"),
+        ("patches", "state"),
+        ("claim", "state"),
+        ("state", "claim"),
+    ],
+)
+@async_test
+async def test_overlapping_owner_publications_keep_own_revision_and_callback_state(
+    monkeypatch, first_kind, second_kind
+):
+    async with peers({}, {}) as (owner, follower):
+        await owner.claim("thread", state())
+        await follower.follow("thread")
+        initial = owner.get_revision("thread")
+        updates = asyncio.Queue()
+        owner.on_state = lambda thread, value: updates.put(value)
+        entered, resume = asyncio.Event(), asyncio.Event()
+        broadcast = owner.client.broadcast
+
+        async def delayed_broadcast(method, params, **kwargs):
+            # Keep the real send, but hold the first publication's I/O completion.
+            await broadcast(method, params, **kwargs)
+            if method == "thread-stream-state-changed" and not entered.is_set():
+                entered.set()
+                await resume.wait()
+
+        monkeypatch.setattr(owner.client, "broadcast", delayed_broadcast)
+
+        async def publish(kind, value):
+            if kind == "claim":
+                return await owner.claim("thread", state(value))
+            if kind == "state":
+                return await owner.publish_state("thread", state(value))
+            return await owner.publish_patches(
+                "thread",
+                [{"op": "replace", "path": ["unknown", "value"], "value": value}],
+            )
+
+        first = asyncio.create_task(publish(first_kind, 1))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            second_revision = await publish(second_kind, 2)
+        finally:
+            resume.set()
+        first_revision = await first
+        assert (first_revision, second_revision) == (initial + 1, initial + 2)
+        assert await asyncio.wait_for(updates.get(), 1) == state(1)
+        assert await asyncio.wait_for(updates.get(), 1) == state(2)
+        assert await follower.wait_revision("thread", second_revision) == state(2)
+
+
+@async_test
+async def test_repeat_claim_releases_existing_revision_waiter_and_notifies_state():
+    async with peers({}) as (owner,):
+        initial = await owner.claim("thread", state())
+        updates = asyncio.Queue()
+        owner.on_state = lambda thread, value: updates.put(value)
+        waiting = asyncio.create_task(
+            owner.wait_revision("thread", initial + 1, timeout=0.1)
+        )
+        await asyncio.sleep(0)  # Install the waiter before the claim transition.
+        assert not waiting.done()
+        revision = await owner.claim(
+            "thread", state(1), supports_untrusted_app_input=True
+        )
+        assert revision == initial + 1
+        assert await waiting == state(1)
+        assert await asyncio.wait_for(updates.get(), 1) == state(1)
+        assert owner.get_owner("thread").supports_untrusted_app_input is True

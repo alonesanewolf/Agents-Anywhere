@@ -245,12 +245,14 @@ class CoordinationPeer:
             supports_untrusted_app_input,
             old.followers if old else set(),
         )
+        revision = self._owned[thread_id].revision
+        self._state_changed(thread_id)
         await self._snapshot(thread_id)
         await self.client.broadcast(
             "thread-stream-following-status-requested",
             {"conversationId": thread_id, "hostId": self.host_id},
         )
-        return self._owned[thread_id].revision
+        return revision
 
     async def release(self, thread_id):
         self._owned.pop(thread_id, None)
@@ -266,9 +268,10 @@ class CoordinationPeer:
             raise IpcError("invalid-state")
         record.state = deepcopy(state)
         record.revision += 1
-        await self._snapshot(thread_id)
+        revision = record.revision
         self._state_changed(thread_id)
-        return record.revision
+        await self._snapshot(thread_id)
+        return revision
 
     async def publish_patches(self, thread_id, patches, *, accepted_text_changes=None):
         self._require_open()
@@ -286,9 +289,10 @@ class CoordinationPeer:
             change["acceptedTextChanges"] = deepcopy(accepted_text_changes)
         record.state = result
         record.revision += 1
-        await self._broadcast_change(thread_id, change, list(record.followers))
+        revision = record.revision
         self._state_changed(thread_id)
-        return record.revision
+        await self._broadcast_change(thread_id, change, list(record.followers))
+        return revision
 
     async def _snapshot(self, thread_id, targets=None):
         record = self._owned[thread_id]
@@ -402,6 +406,9 @@ class CoordinationPeer:
                     self._waiters.pop(thread_id, None)
 
     def _state_changed(self, thread_id):
+        # Commit notifications synchronously with the state transition, before
+        # awaiting transport I/O. Each waiter/callback receives its own snapshot,
+        # even when a later publication finishes sending before this one.
         owner = self.get_owner(thread_id)
         revision = self.get_revision(thread_id)
         for owner_id, expected, future in tuple(self._waiters.get(thread_id, ())):
