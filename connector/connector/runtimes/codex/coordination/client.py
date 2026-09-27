@@ -38,8 +38,8 @@ class CoordinatedCodexClient:
         self.queue_tasks = {}
         self.queue_wakes = set()
         self.tasks = set()
-        self.goal_support = {}
-        self.goal_epochs = defaultdict(int)
+        self.goal_support = self.operations.goal_support
+        self.goal_epochs = self.operations.goal_epochs
         self.generation = 0
         self.closed = False
         self.remover = None
@@ -640,30 +640,28 @@ class CoordinatedCodexClient:
         # Explicit user stop never claims a missing owner or retargets a turn.
         params = {"conversationId": thread_id, "mode": "user-stop"}
         if self.peer.is_owner(thread_id):
-            return await self._owner_operation("thread-follower-interrupt-turn", params)
-        if not self.peer.is_follower(thread_id):
-            raise ValueError("session stop requires an existing owner")
-        return await self.peer.request_owner(
-            thread_id, "thread-follower-interrupt-turn", params
-        )
+            result = await self._owner_operation(
+                "thread-follower-interrupt-turn", params
+            )
+        else:
+            if not self.peer.is_follower(thread_id):
+                raise ValueError("session stop requires an existing owner")
+            result = await self.peer.request_owner(
+                thread_id, "thread-follower-interrupt-turn", params
+            )
+        # Project current canonical state before returning the acknowledgement;
+        # queued state notifications need not have run at this point.
+        await self.refresh_state(thread_id, force=True)
+        return result
 
     async def observe_goal(self, thread_id, goal):
-        from connector.runtimes.codex.turns.goals import validate_goal
+        return await self.operations.observe_goal(thread_id, goal)
 
-        self.operations.state(thread_id)
-        goal = validate_goal(goal, thread_id)
-        self.goal_support[thread_id] = True
-        self.goal_epochs[thread_id] += 1
-        state = reduce_event(
-            self.peer.get_state(thread_id),
-            {
-                "method": "thread/goal/cleared"
-                if goal is None
-                else "thread/goal/updated",
-                "params": {"threadId": thread_id, "goal": goal},
-            },
-        )
-        await self.peer.publish_state(thread_id, state)
+    async def project_goal(self, thread_id):
+        # The canonical projector owns coordinated AA presentation. Callers must
+        # not subsequently repaint a native reply that predates this await.
+        await self.refresh_state(thread_id, force=True)
+        return deepcopy(self.operations.state(thread_id).get("threadGoal"))
 
     async def native_request(self, method, params):
         thread_id = params.get("threadId")
@@ -675,26 +673,13 @@ class CoordinatedCodexClient:
                 self.operations.settings_locks[thread_id],
                 self.operations.mutation_locks[thread_id],
             ):
-                goal_epoch = self.goal_epochs[thread_id]
-                result = await self.operations.call(thread_id, method, params)
                 if method in {
                     "thread/goal/get",
                     "thread/goal/set",
                     "thread/goal/clear",
                 }:
-                    if self.goal_epochs[thread_id] != goal_epoch:
-                        return {
-                            **result,
-                            "goal": deepcopy(
-                                self.peer.get_state(thread_id).get("threadGoal")
-                            ),
-                        }
-                    if method == "thread/goal/clear":
-                        if result.get("cleared") is True:
-                            await self.observe_goal(thread_id, None)
-                    elif "goal" in result:
-                        await self.observe_goal(thread_id, result["goal"])
-                return result
+                    return await self.operations.goal_request(thread_id, method, params)
+                return await self.operations.call(thread_id, method, params)
         finally:
             self.operations.epoch.reset(token)
 

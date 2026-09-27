@@ -6,7 +6,7 @@ from copy import deepcopy
 from .context import prepare_start, require_feature
 from .history import hydrate
 from .projection import active_turn, native_to_state
-from .reducer import merge_settings, reduce_event
+from .reducer import merge_settings
 from .state import enumerate_turns, history_complete
 
 
@@ -94,22 +94,9 @@ async def daybreak(operations, thread_id, params):
 
 
 async def pause_goal(operations, thread_id):
-    result = await operations.call(
+    await operations.goal_request(
         thread_id, "thread/goal/set", {"threadId": thread_id, "status": "paused"}
     )
-    from connector.runtimes.codex.turns.goals import validate_goal
-
-    goal = validate_goal(result.get("goal"), thread_id)
-    if not isinstance(goal, dict) or goal.get("status") != "paused":
-        raise ValueError("Native goal pause was not confirmed")
-    state = reduce_event(
-        operations.state(thread_id),
-        {
-            "method": "thread/goal/updated",
-            "params": {"threadId": thread_id, "goal": goal},
-        },
-    )
-    await operations.peer.publish_state(thread_id, state)
 
 
 async def interrupt(operations, thread_id, params):
@@ -163,7 +150,25 @@ async def interrupt(operations, thread_id, params):
     )
     result = {"ok": True, "interruptedTurnId": turn_id}
     if expected is None and goal.get("status") == "active":
-        result["goalPaused"] = pause_error is None
+        current_goal = operations.state(thread_id).get("threadGoal")
+        current_status = current_goal.get("status") if current_goal else None
+        stopped = current_goal is None or current_status in {
+            "paused",
+            "blocked",
+            "usageLimited",
+            "budgetLimited",
+            "complete",
+        }
+        same_goal = bool(current_goal) and all(
+            current_goal.get(key) == goal.get(key) for key in ("objective", "createdAt")
+        )
+        result.update(
+            goalPaused=pause_error is None and same_goal and current_status == "paused",
+            goalStopped=stopped,
+            goalStatus=current_status,
+        )
+        if not stopped:
+            pause_error = pause_error or "Native goal pause outcome is unknown"
     if pause_error:
         result["goalPauseError"] = pause_error
     return result

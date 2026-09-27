@@ -278,17 +278,16 @@ class CodexCommandController:
             result = await self.client.native_request(
                 method, {"threadId": thread_id, **fields}
             )
-            if action == "clear":
-                if result.get("cleared") is not True:
-                    return {**result, "ok": False}, "completed"
-                goal = validate_goal(result.get("goal"), thread_id)
+            if action == "clear" and result.get("cleared") is not True:
+                return {**result, "ok": False}, "completed"
+            if self.facts(session_id, thread_id).get("goalObservationOwned"):
+                result = {**result, "goal": await self.client.project_goal(thread_id)}
             else:
-                goal = validate_goal(result["goal"], thread_id)
-                if goal is None:
+                goal = validate_goal(result.get("goal"), thread_id)
+                if action != "clear" and goal is None:
                     raise ValueError("Native setter returned no goal")
-            if not self.facts(session_id, thread_id).get("goalObservationOwned"):
                 await self.client.observe_goal(thread_id, goal)
-            await publish_goal(self.states, session_id, thread_id, goal)
+                await publish_goal(self.states, session_id, thread_id, goal)
             return result, "accepted" if fields.get(
                 "status"
             ) == "active" else "completed"

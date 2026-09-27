@@ -43,6 +43,9 @@ def command_facts(client, thread_id, state):
     facts["goal"] = (
         state.metadata.get("codexPresentation", {}).get("threadGoal") if state else None
     )
+    facts["nativeModel"] = (
+        state.metadata.get("codexSettings", {}).get("latestModel") if state else None
+    )
     return facts
 
 
@@ -95,6 +98,15 @@ def list_codex_commands(
             reason = route_reason
         if name in {"plan", "settings", "daybreak", "edit", "queue"}:
             reason = control_reason
+        if (
+            name == "plan"
+            and reason is None
+            and (
+                not isinstance(facts.get("nativeModel"), str)
+                or not facts["nativeModel"]
+            )
+        ):
+            reason = "native_model_unknown"
         if name == "history":
             reason = base_reason or (None if coordinated else "coordination_required")
         if name == "review":

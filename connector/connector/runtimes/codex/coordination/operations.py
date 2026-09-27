@@ -14,6 +14,7 @@ from openai_codex.errors import (
 from .context import prepare_start, require_feature
 from .history import hydrate
 from .projection import active_turn, canonical_turn
+from .reducer import reduce_event
 from .requests import REQUEST_ROUTES, reply
 from .state import enumerate_turns
 
@@ -27,6 +28,8 @@ class OwnerOperations:
         self.epoch = ContextVar("codex_owner_epoch", default=None)
         self.inflight = set()
         self.queue_head = ContextVar("codex_queue_head", default=None)
+        self.goal_epochs = defaultdict(int)
+        self.goal_support = {}
 
     def state(self, thread_id):
         if not self.peer.is_owner(thread_id):
@@ -50,6 +53,49 @@ class OwnerOperations:
         result = await asyncio.shield(task)
         self.state(thread_id)
         return result
+
+    async def observe_goal(self, thread_id, goal):
+        """Commit once, then read current authority after transport publication yields."""
+        from connector.runtimes.codex.turns.goals import validate_goal
+
+        goal = validate_goal(goal, thread_id)
+        state = self.state(thread_id)
+        self.goal_support[thread_id] = True
+        self.goal_epochs[thread_id] += 1
+        state = reduce_event(
+            state,
+            {
+                "method": "thread/goal/cleared"
+                if goal is None
+                else "thread/goal/updated",
+                "params": {"threadId": thread_id, "goal": goal},
+            },
+        )
+        await self.peer.publish_state(thread_id, state)
+        return deepcopy(self.state(thread_id).get("threadGoal"))
+
+    async def goal_request(self, thread_id, method, params):
+        """Called within the owner's existing locks; never reacquire facade locks."""
+        from connector.runtimes.codex.turns.goals import validate_goal
+
+        epoch = self.goal_epochs[thread_id]
+        result = await self.call(thread_id, method, params)
+        if method == "thread/goal/clear":
+            if result.get("cleared") is not True:
+                return result
+            goal = None
+        else:
+            if "goal" not in result:
+                raise ValueError("Native goal was not observed")
+            goal = validate_goal(result["goal"], thread_id)
+            if method == "thread/goal/set" and goal is None:
+                raise ValueError("Native setter returned no goal")
+        if self.goal_epochs[thread_id] == epoch:
+            await self.observe_goal(thread_id, goal)
+        # A notification may arrive during publish_state's broadcast await. The
+        # returned observation is read only after that boundary; native ACK data
+        # must never repaint the pre-publication goal downstream.
+        return {**result, "goal": deepcopy(self.state(thread_id).get("threadGoal"))}
 
     async def handle(self, method, params):
         thread_id = params["conversationId"]

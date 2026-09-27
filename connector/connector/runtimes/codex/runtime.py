@@ -168,7 +168,10 @@ class CodexRuntime(AgentRuntime):
         goal = facts.pop("goal", None)
         metadata = state.metadata if state else {}
         identity = {
-            "coordination": metadata.get("codexCoordination"),
+            "coordination": {
+                key: metadata.get("codexCoordination", {}).get(key)
+                for key in ("role", "ownerClientId", "generation", "available")
+            },
             "settings": metadata.get("codexSettings", {}).get("latestThreadSettings"),
             "facts": facts,
             "goal": {

@@ -100,6 +100,9 @@ async def hydrate_goal(client, states, session_id, thread_id):
         return
     if "goal" not in result:
         raise ValueError("Native goal was not observed")
+    if facts.get("goalObservationOwned"):
+        await client.project_goal(thread_id)
+        return
     goal = validate_goal(result["goal"], thread_id)
     observe = getattr(client, "observe_goal", None)
     if callable(observe) and not facts.get("goalObservationOwned"):

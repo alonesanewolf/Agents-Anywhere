@@ -350,7 +350,10 @@ class CodexTurnActions:
                 result = await stop(external_session_id)
                 if not isinstance(result, dict) or result.get("ok") is not True:
                     raise ValueError("Invalid stop acknowledgement")
-                if result.get("goalPauseError") or result.get("goalPaused") is False:
+                if result.get("goalPauseError") or (
+                    result.get("goalPaused") is False
+                    and result.get("goalStopped") is not True
+                ):
                     return RuntimeOperationResult(
                         ok=False,
                         code="goal_pause_unknown",
