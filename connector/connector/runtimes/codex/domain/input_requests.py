@@ -46,12 +46,12 @@ def question_action(params):
 def question_response(params, data):
     answers = data.get("answers")
     if not isinstance(answers, dict):
-        raise ValueError("question response requires answers mapping")
+        raise ValueError("question response requires answers mapping")  # noqa: TRY004 - missing required response
     result = deepcopy(answers)
     questions = {question["id"]: question for question in params.get("questions", [])}
     for key, value in answers.items():
         if not isinstance(value, dict):
-            raise ValueError("question answer must be an object")
+            raise ValueError("question answer must be an object")  # noqa: TRY004 - correctable response validation
         if "optionIds" not in value and "customText" not in value:
             continue  # Exact native {answers: [...]} and unknown native fields survive.
         if key not in questions:
@@ -74,3 +74,54 @@ def question_response(params, data):
             "answers": chosen,
         }
     return {"answers": result}
+
+
+def elicitation_actions(params):
+    actions = [
+        {"actionId": action, "label": action.title()}
+        for action in ("accept", "decline", "cancel")
+    ]
+    if params.get("mode") == "form":
+        import json
+
+        form = question_action(
+            {
+                "questions": [
+                    {
+                        "id": "content",
+                        "question": "Enter a JSON response matching this schema: "
+                        + json.dumps(
+                            params.get("requestedSchema", {}), ensure_ascii=False
+                        ),
+                        "options": [],
+                    }
+                ]
+            }
+        )
+        actions[0]["input"] = form["input"]
+    return tuple(actions)
+
+
+def elicitation_response(params, action_id, data):
+    import json
+
+    from jsonschema import Draft202012Validator
+
+    payload = {
+        "action": action_id,
+        **{key: data[key] for key in ("content", "_meta") if key in data},
+    }
+    if action_id == "accept" and params.get("mode") == "form":
+        if "content" not in payload and isinstance(data.get("answers"), dict):
+            text = data["answers"].get("content", {}).get("customText")
+            if not isinstance(text, str):
+                raise ValueError("MCP form requires a JSON response")
+            payload["content"] = json.loads(text)
+        errors = list(
+            Draft202012Validator(params.get("requestedSchema") or {}).iter_errors(
+                payload.get("content")
+            )
+        )
+        if errors:
+            raise ValueError("Invalid MCP response: " + errors[0].message)
+    return payload

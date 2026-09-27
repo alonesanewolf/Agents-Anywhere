@@ -74,7 +74,9 @@ class CodexTurnActions:
             return _source_failure_result(cached_source)
         await self.ensure_started()
         effective_selections = dict(selections or {})
-        if not effective_selections:
+        if not effective_selections and not callable(
+            getattr(self.client, "owner_operation", None)
+        ):
             cached = self.session_states.get(session_id)
             effective_selections = dict(cached.selections if cached is not None else {})
         try:
@@ -164,7 +166,16 @@ class CodexTurnActions:
             raise
         turn_id = result.turn_id
         current_state = self.session_states.get(session_id)
-        if turn_completed_before_start_returned(current_state):
+        latest = (
+            current_state.metadata.get("codexLatestTurn") if current_state else None
+        )
+        canonical_terminal = (
+            isinstance(latest, dict)
+            and latest.get("id") == turn_id
+            and latest.get("status")
+            in {"completed", "failed", "interrupted", "cancelled"}
+        )
+        if canonical_terminal or turn_completed_before_start_returned(current_state):
             return RuntimeOperationResult(
                 ok=True,
                 result={

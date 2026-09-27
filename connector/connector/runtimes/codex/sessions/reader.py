@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import time
 import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
@@ -34,9 +34,14 @@ from connector.runtimes.codex.domain.pending_messages import (
     PendingClientMessageRegistry,
 )
 from connector.runtimes.codex.domain.selections import selections_from_thread_state
+from connector.runtimes.codex.domain.thread_state import thread_status
 from connector.runtimes.codex.sdk.runtime_client import CodexRuntimeClient
+from connector.runtimes.codex.sessions.history_index import (
+    read_history_index,
+    source_signature,
+    valid_read_state,
+)
 from connector.runtimes.codex.sessions.inventory import list_all_codex_threads
-from connector.runtimes.codex.sessions.history_index import read_history_index, source_signature, valid_read_state
 from connector.runtimes.codex.timeline.accumulator import CodexTimelineAccumulator
 
 ListModelCatalog = Callable[[str | None, int], Awaitable[RuntimeModelCatalog]]
@@ -68,7 +73,9 @@ class CodexSessionReader:
         default_factory=dict,
         init=False,
     )
-    _observed_threads: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _observed_threads: dict[str, dict[str, Any]] = field(
+        default_factory=dict, init=False
+    )
 
     async def list_sessions(
         self,
@@ -140,14 +147,14 @@ class CodexSessionReader:
                 thread_id = codex_sessions.thread_id_from_result(thread_ref)
                 if thread_id is None:
                     continue
-                sessions_by_thread_id[thread_id] = (
-                    await self._session_meta_from_thread_ref(
-                        thread_id,
-                        thread_ref,
-                        force=force,
-                        availability=availability,
-                        observed_at=observed_at,
-                    )
+                sessions_by_thread_id[
+                    thread_id
+                ] = await self._session_meta_from_thread_ref(
+                    thread_id,
+                    thread_ref,
+                    force=force,
+                    availability=availability,
+                    observed_at=observed_at,
                 )
         return tuple(sessions_by_thread_id.values())
 
@@ -165,7 +172,9 @@ class CodexSessionReader:
         source = await asyncer.asyncify(source_signature)(thread_ref)
         if source is not None:
             # API timestamps have second precision and miss fast changes within a second.
-            sync_marker = hashlib.sha256(json.dumps([sync_marker, source], sort_keys=True).encode()).hexdigest()
+            sync_marker = hashlib.sha256(
+                json.dumps([sync_marker, source], sort_keys=True).encode()
+            ).hexdigest()
         sync_key = _session_sync_key(thread_id)
         previous_sync = await self.host.sync_state_read(sync_key)
         previous_marker = (
@@ -185,9 +194,16 @@ class CodexSessionReader:
             getattr(self.host, "session_namespace", self.host.connector_id),
             thread_id,
         )
-        if (not isinstance(checkpoint, dict) or checkpoint.get("version") != 1
-                or checkpoint.get("sessionId") != session_id or not isinstance(checkpoint.get("items"), dict)
-                or not all(isinstance(k, str) and isinstance(v, str) for k, v in checkpoint["items"].items())):
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("version") != 1
+            or checkpoint.get("sessionId") != session_id
+            or not isinstance(checkpoint.get("items"), dict)
+            or not all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in checkpoint["items"].items()
+            )
+        ):
             changed = True
         sync_state = {
             "marker": sync_marker,
@@ -205,7 +221,9 @@ class CodexSessionReader:
             await self.host.sync_state_write(sync_key, sync_state)
         source_state = SessionSourceState(
             availability="archived" if hidden else "available",
-            reason="codex.thread/list archived" if hidden else "codex.thread/list active",
+            reason="codex.thread/list archived"
+            if hidden
+            else "codex.thread/list active",
             observed_at=observed_at,
             observation_origin="inventory",
         )
@@ -238,19 +256,34 @@ class CodexSessionReader:
                 },
             },
         )
+
     async def prepare_session_timeline_sync(
         self,
         session_id: str,
         external_session_id: str | None = None,
     ) -> PreparedSessionTimelineSync:
         checkpoint_key = f"codex/timeline-sync/{external_session_id}"
-        previous = await self.host.sync_state_read(checkpoint_key) if external_session_id else None
+        previous = (
+            await self.host.sync_state_read(checkpoint_key)
+            if external_session_id
+            else None
+        )
         # Version changes deliberately invalidate projections from older implementations.
-        old_items = previous.get("items") if isinstance(previous, Mapping) and previous.get("version") == 1 and previous.get("sessionId") == session_id else None
-        valid = isinstance(old_items, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in old_items.items())
+        old_items = (
+            previous.get("items")
+            if isinstance(previous, Mapping)
+            and previous.get("version") == 1
+            and previous.get("sessionId") == session_id
+            else None
+        )
+        valid = isinstance(old_items, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in old_items.items()
+        )
         # Capture before any history awaits: a newer scan must not be acknowledged here.
         pending = self._pending_sync_states.get(session_id)
-        indexed = await self._read_indexed_snapshot(session_id, external_session_id, previous if valid else None)
+        indexed = await self._read_indexed_snapshot(
+            session_id, external_session_id, previous if valid else None
+        )
         read_state = None
         prefix = {}
         if indexed is not None:
@@ -260,29 +293,84 @@ class CodexSessionReader:
         if snapshot is None:
             items = ()
         else:
-            items = tuple(item for item in snapshot.items if item.type not in {"turn.start", "turn.end"})
+            items = tuple(
+                item
+                for item in snapshot.items
+                if item.type not in {"turn.start", "turn.end"}
+            )
         fingerprints = dict(prefix)
-        fingerprints.update({
-            item.id: hashlib.sha256(json.dumps(asdict(item), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-            for item in items
-        })
-        canonical_partial = snapshot is not None and snapshot.metadata.get("canonicalComplete") is False
+        fingerprints.update(
+            {
+                item.id: hashlib.sha256(
+                    json.dumps(
+                        asdict(item),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest()
+                for item in items
+            }
+        )
+        canonical_partial = (
+            snapshot is not None and snapshot.metadata.get("canonicalComplete") is False
+        )
         if canonical_partial and valid:
             fingerprints = {**old_items, **fingerprints}
-        removed = valid and not canonical_partial and bool(old_items.keys() - fingerprints.keys())
+        removed = (
+            valid
+            and not canonical_partial
+            and bool(old_items.keys() - fingerprints.keys())
+        )
         if removed and prefix:
             # A replacement must contain the entire surviving timeline, not just its tail.
             snapshot = await self.get_session_snapshot(session_id, external_session_id)
-            items = tuple(item for item in snapshot.items if item.type not in {"turn.start", "turn.end"})
-            fingerprints = {item.id: hashlib.sha256(json.dumps(asdict(item), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest() for item in items}
+            items = tuple(
+                item
+                for item in snapshot.items
+                if item.type not in {"turn.start", "turn.end"}
+            )
+            fingerprints = {
+                item.id: hashlib.sha256(
+                    json.dumps(
+                        asdict(item),
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest()
+                for item in items
+            }
             read_state = None
-        replacement = not canonical_partial and previous is not None and (not valid or removed)
-        delta = items if not valid or replacement else tuple(item for item in items if old_items.get(item.id) != fingerprints[item.id])
-        prepared_snapshot = replace(snapshot, items=delta, complete=bool(replacement)) if snapshot is not None and (delta or replacement) else None
+        replacement = (
+            not canonical_partial and previous is not None and (not valid or removed)
+        )
+        delta = (
+            items
+            if not valid or replacement
+            else tuple(
+                item
+                for item in items
+                if old_items.get(item.id) != fingerprints[item.id]
+            )
+        )
+        prepared_snapshot = (
+            replace(snapshot, items=delta, complete=bool(replacement))
+            if snapshot is not None and (delta or replacement)
+            else None
+        )
+
         async def commit() -> None:
             if external_session_id:
-                await self.host.sync_state_write(checkpoint_key, {"version": 1, "sessionId": session_id, "items": fingerprints,
-                    **({"readState": read_state} if read_state is not None else {})})
+                await self.host.sync_state_write(
+                    checkpoint_key,
+                    {
+                        "version": 1,
+                        "sessionId": session_id,
+                        "items": fingerprints,
+                        **({"readState": read_state} if read_state is not None else {}),
+                    },
+                )
             if pending is not None:
                 sync_key, sync_state = pending
                 await self.host.sync_state_write(sync_key, sync_state)
@@ -292,18 +380,31 @@ class CodexSessionReader:
         return PreparedSessionTimelineSync(snapshot=prepared_snapshot, commit=commit)
 
     async def _read_indexed_snapshot(
-        self, session_id: str, external_session_id: str | None, previous: Mapping[str, Any] | None,
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        previous: Mapping[str, Any] | None,
     ) -> tuple[RuntimeTimelineSnapshot | None, dict[str, Any], dict[str, str]] | None:
         if callable(getattr(self.client, "attach_thread", None)):
             return None
         page_reader = getattr(self.client, "list_thread_turns_page", None)
-        if not external_session_id or not callable(page_reader) or self.timeline is None:
+        if (
+            not external_session_id
+            or not callable(page_reader)
+            or self.timeline is None
+        ):
             return None
         await self.ensure_started()
         thread = self._observed_threads.get(external_session_id)
         if thread is None:
-            result = await self.client.read_thread(external_session_id, include_turns=False)
-            thread = result.thread.model_dump(mode="json", by_alias=True) if isinstance(result.thread, Thread) else dict(result.thread)
+            result = await self.client.read_thread(
+                external_session_id, include_turns=False
+            )
+            thread = (
+                result.thread.model_dump(mode="json", by_alias=True)
+                if isinstance(result.thread, Thread)
+                else dict(result.thread)
+            )
         index = await asyncer.asyncify(read_history_index)(thread)
         if index is None:
             return None
@@ -317,10 +418,17 @@ class CodexSessionReader:
             old_ids = old_index["ids"]
             # Only append preserves the prefix. Deletion, reorder, or source replacement
             # calibrates the entire history, even when the last turn still exists.
-            same_source = all(index["source"].get(k) == old_index.get("source", {}).get(k) for k in ["path", "device", "inode"])
-            usable = same_source and ids[:len(old_ids)] == old_ids
+            same_source = all(
+                index["source"].get(k) == old_index.get("source", {}).get(k)
+                for k in ["path", "device", "inode"]
+            )
+            usable = same_source and ids[: len(old_ids)] == old_ids
             if usable:
-                changed = [n for n, id in enumerate(ids) if index["revisions"][id] != old_index["revisions"].get(id)]
+                changed = [
+                    n
+                    for n, id in enumerate(ids)
+                    if index["revisions"][id] != old_index["revisions"].get(id)
+                ]
                 if not changed and index["settled"] and old_index.get("settled"):
                     # No API history calls on restart when the native index is unchanged.
                     return None, {**old, "index": index}, dict(old_items)
@@ -337,11 +445,13 @@ class CodexSessionReader:
             except RuntimeInvalidRequestError:
                 return None
             page_ids = [turn.get("id") for turn in page.turns]
-            if page_ids != descending_ids[len(fetched):len(fetched) + len(page_ids)]:
+            if page_ids != descending_ids[len(fetched) : len(fetched) + len(page_ids)]:
                 return None
             fetched.extend(page.turns)
             if len(fetched) >= len(wanted):
-                if start == 0 and (page.next_cursor is not None or len(fetched) != len(wanted)):
+                if start == 0 and (
+                    page.next_cursor is not None or len(fetched) != len(wanted)
+                ):
                     return None
                 break
             if page.next_cursor is None:
@@ -351,13 +461,22 @@ class CodexSessionReader:
             seen.add(page.next_cursor)
             cursor = page.next_cursor
         if await asyncer.asyncify(read_history_index)(thread) != index:
-            raise RuntimeError("Codex history changed while reading pages; retry before committing checkpoint")
-        turns = list(reversed(fetched))[-len(wanted):] if wanted else []
-        if any(item.get("type") == "contextCompaction" for turn in turns for item in turn.get("items", [])):
+            raise RuntimeError(
+                "Codex history changed while reading pages; retry before committing checkpoint"
+            )
+        turns = list(reversed(fetched))[-len(wanted) :] if wanted else []
+        if any(
+            item.get("type") == "contextCompaction"
+            for turn in turns
+            for item in turn.get("items", [])
+        ):
             return None
         projected = await asyncer.asyncify(self.timeline.items_from_thread_snapshot)(
-            session_id=session_id, external_session_id=external_session_id,
-            thread={"turns": turns}, limit=None)
+            session_id=session_id,
+            external_session_id=external_session_id,
+            thread={"turns": turns},
+            limit=None,
+        )
         prefix_ids = ids[:start]
         counts = {id: old["counts"][id] for id in prefix_ids} if usable else {}
         item_ids = {id: old["itemIds"][id] for id in prefix_ids} if usable else {}
@@ -373,12 +492,26 @@ class CodexSessionReader:
             counts[item.turn_id] += 1
             if item.type not in {"turn.start", "turn.end"}:
                 item_ids[item.turn_id].append(item.id)
-        items = tuple(replace(item, order_seq=item.order_seq + offset) for item in projected)
-        snapshot = RuntimeTimelineSnapshot(session_id=session_id, external_session_id=external_session_id,
-            runtime="codex", items=items, complete=False, metadata={"source": "codex.thread/turns/list"})
+        items = tuple(
+            replace(item, order_seq=item.order_seq + offset) for item in projected
+        )
+        snapshot = RuntimeTimelineSnapshot(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            runtime="codex",
+            items=items,
+            complete=False,
+            metadata={"source": "codex.thread/turns/list"},
+        )
         state = {"version": 1, "index": index, "counts": counts, "itemIds": item_ids}
-        logger.info("codex indexed history read thread_id={} total_turns={} fetched_turns={} projected_turns={} prefix_turns={}",
-                    external_session_id, len(ids), len(fetched), len(wanted), start)
+        logger.info(
+            "codex indexed history read thread_id={} total_turns={} fetched_turns={} projected_turns={} prefix_turns={}",
+            external_session_id,
+            len(ids),
+            len(fetched),
+            len(wanted),
+            start,
+        )
         return snapshot, state, prefix
 
     async def get_session_state(
@@ -388,13 +521,13 @@ class CodexSessionReader:
     ) -> SessionState | None:
         cached = self.session_states.get(session_id)
         if cached is None and external_session_id is not None:
-            cached = self.session_states.get_by_external_session_id(
-                external_session_id
-            )
+            cached = self.session_states.get_by_external_session_id(external_session_id)
         if cached is not None:
             return cached
         if external_session_id is None:
             return None
+        if callable(getattr(self.client, "attach_thread", None)):
+            return await self.read_coordinated_state(session_id, external_session_id)
         selections = await self._read_session_selections(external_session_id)
         return SessionState(
             session_id=session_id,
@@ -405,10 +538,45 @@ class CodexSessionReader:
             metadata={"source": "codex.thread/read.state"},
         )
 
+    async def read_coordinated_state(self, session_id, external_session_id):
+        await self.ensure_started()
+        result = await self.client.read_thread(external_session_id, include_turns=True)
+        thread = dict(result.thread)
+        return SessionState(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            runtime="codex",
+            status=thread_status(thread),
+            selections=await self.selections_from_thread(thread),
+            metadata={
+                "source": "codex.thread/read.state",
+                "codexCoordination": {"role": result.coordination_role or "unattached"},
+                "codexPresentation": {
+                    key: thread[key]
+                    for key in ("threadGoal", "completedThreadGoal")
+                    if key in thread
+                },
+            },
+        )
+
     async def selections_from_thread(self, thread):
-        return await selections_from_thread_state(thread,
+        settings = {
+            **thread,
+            **thread.get("latestThreadSettings", {}),
+            **thread.get("currentPermissions", {}),
+        }
+        for source, target in (
+            ("latestModel", "model"),
+            ("latestReasoningEffort", "effort"),
+        ):
+            if source in thread:
+                settings[target] = thread[source]
+        result = await selections_from_thread_state(
+            settings,
             lambda: self.list_model_catalog(None, 100),
-            lambda: self.list_permission_catalog(None, 100))
+            lambda: self.list_permission_catalog(None, 100),
+        )
+        return {"model": None, "permission": None, **result}
 
     async def _read_session_selections(
         self,
@@ -462,7 +630,9 @@ class CodexSessionReader:
         snapshot_source = "codex.thread/read"
         list_thread_turns = getattr(self.client, "list_thread_turns", None)
         if callable(getattr(self.client, "attach_thread", None)):
-            result = await self.client.read_thread(external_session_id, include_turns=True)
+            result = await self.client.read_thread(
+                external_session_id, include_turns=True
+            )
         elif callable(list_thread_turns):
             result = await self.client.read_thread(
                 thread_id=external_session_id,
@@ -508,6 +678,9 @@ class CodexSessionReader:
                 external_session_id=external_session_id,
                 thread=thread,
                 limit=limit,
+                preserve_native_ids=callable(
+                    getattr(self.client, "attach_thread", None)
+                ),
             )
         else:
             thread = dict(result.thread)
@@ -534,7 +707,14 @@ class CodexSessionReader:
             runtime="codex",
             items=items,
             complete=result.canonical_complete is True and limit is None,
-            metadata={"source": snapshot_source, **({"canonicalComplete": result.canonical_complete} if result.canonical_complete is not None else {})},
+            metadata={
+                "source": snapshot_source,
+                **(
+                    {"canonicalComplete": result.canonical_complete is True}
+                    if callable(getattr(self.client, "attach_thread", None))
+                    else {}
+                ),
+            },
         )
 
 

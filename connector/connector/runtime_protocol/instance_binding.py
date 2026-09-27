@@ -194,10 +194,16 @@ class RuntimeInstanceHost(RuntimeHostClient):
         return f"{self.connector_id}:{self.instance.runtime_type}:{namespace}"
 
     async def publish_runtime_notifications(
-        self, runtime: str, notifications: list[dict[str, Any]], *, runtime_id: str | None = None
+        self,
+        runtime: str,
+        notifications: list[dict[str, Any]],
+        *,
+        runtime_id: str | None = None,
     ) -> None:
         self._validate_native_runtime(runtime)
-        await self.base.publish_runtime_notifications(runtime, notifications, runtime_id=self.instance.runtime_id)
+        await self.base.publish_runtime_notifications(
+            runtime, notifications, runtime_id=self.instance.runtime_id
+        )
 
     async def session_meta_upsert(
         self,
@@ -437,7 +443,9 @@ class RuntimeInstance(AgentRuntime):
     def sync_mode(self) -> str:
         return self.native_runtime.sync_mode
 
-    async def resynchronize(self, session_id: str | None = None, external_session_id: str | None = None) -> None:
+    async def resynchronize(
+        self, session_id: str | None = None, external_session_id: str | None = None
+    ) -> None:
         await self.native_runtime.resynchronize(session_id, external_session_id)
 
     def __post_init__(self) -> None:
@@ -574,7 +582,9 @@ class RuntimeInstance(AgentRuntime):
             ),
         )
 
-    async def prepare_session_view(self, session_id: str, external_session_id: str | None = None) -> None:
+    async def prepare_session_view(
+        self, session_id: str, external_session_id: str | None = None
+    ) -> None:
         await self.native_runtime.prepare_session_view(session_id, external_session_id)
 
     async def get_session_state(
@@ -623,7 +633,8 @@ class RuntimeInstance(AgentRuntime):
         selections: Mapping[str, str | None] | None = None,
         attachments: tuple[RuntimeAttachment, ...] = (),
         client_message_id: str | None = None,
-        *, runtime_options: Mapping[str, Any] | None = None,
+        *,
+        runtime_options: Mapping[str, Any] | None = None,
     ) -> RuntimeOperationResult:
         return await self.native_runtime.create_and_start_session(
             session_id=session_id,

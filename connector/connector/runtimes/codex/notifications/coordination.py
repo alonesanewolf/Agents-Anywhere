@@ -1,14 +1,24 @@
 """Authoritative snapshot projection, never historical lifecycle event replay."""
 
+import asyncio
+from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 
 from connector.runtime_protocol import SessionNotice
+from connector.runtimes.codex.coordination.projection import state_to_native
+from connector.runtimes.codex.coordination.requests import REQUEST_ROUTES
+from connector.runtimes.codex.coordination.state import history_complete
+from connector.runtimes.codex.domain import sessions as codex_sessions
 from connector.runtimes.codex.domain.approvals import (
     approval_notice_from_request,
     is_approval_request,
 )
-from connector.runtimes.codex.domain.input_requests import question_action
+from connector.runtimes.codex.domain.input_requests import (
+    elicitation_actions,
+    question_action,
+)
+from connector.runtimes.codex.domain.thread_state import thread_status
 
 
 def request_notice(session_id, thread_id, request, token):
@@ -26,15 +36,14 @@ def request_notice(session_id, thread_id, request, token):
             type="interaction",
             title="Codex needs input" if question else "MCP server requests input",
             message=params.get("message"),
-            interaction_type="input_request" if question else "elicitation",
+            interaction_type="input_request"
+            if question or params.get("mode") == "form"
+            else "elicitation",
             response_required=True,
             blocking={"scope": "session", "targetId": session_id},
             actions=(question_action(params),)
             if question
-            else tuple(
-                {"actionId": action, "label": action.title()}
-                for action in ("accept", "decline", "cancel")
-            ),
+            else elicitation_actions(params),
             context={
                 "questions": params.get("questions", []),
                 "requestedSchema": params.get("requestedSchema"),
@@ -61,9 +70,19 @@ class CoordinationSnapshotProjector:
     read_selections: object = None
     published: dict = field(default_factory=dict)
 
+    locks: dict = field(default_factory=lambda: defaultdict(asyncio.Lock))
+
     async def handle(self, session_id, thread_id, params):
+        async with self.locks[thread_id]:
+            await self._handle(session_id, thread_id, params)
+
+    async def _handle(self, session_id, thread_id, params):
         thread = params.get("thread")
         available = isinstance(thread, dict)
+        # Scoped passive-read cleanup has no new native facts. Preserve the last
+        # snapshot; a followed/owned authority loss remains explicitly unavailable.
+        if not available and params.get("coordination", {}).get("role") == "unattached":
+            return
         contexts = params.get("requestContexts", []) if available else []
         pending = {}
         for context in contexts:
@@ -77,13 +96,41 @@ class CoordinationSnapshotProjector:
                 ),
                 None,
             )
-            if request is None:
+            if request is None or request.get("method") not in REQUEST_ROUTES.values():
                 continue
             notice = request_notice(
                 session_id, thread_id, request, context["responseContext"]
             )
+            notice = replace(
+                notice,
+                metadata={
+                    **notice.metadata,
+                    "coordinationAuthority": {
+                        key: params.get("coordination", {}).get(key)
+                        for key in ("ownerClientId", "generation")
+                    },
+                },
+            )
             pending[notice.notice_id] = notice
         for notice in self.notices.current_for_session(session_id):
+            request = notice.context.get("nativeRequest", {})
+            still_pending = any(
+                type(r.get("id")) is type(request.get("id"))
+                and r.get("id") == request.get("id")
+                and r.get("method") == request.get("method")
+                for r in params.get("requests", [])
+            )
+            same_authority = notice.metadata.get("coordinationAuthority") == {
+                key: params.get("coordination", {}).get(key)
+                for key in ("ownerClientId", "generation")
+            }
+            if (
+                notice.status == "unknown"
+                and available
+                and still_pending
+                and same_authority
+            ):
+                continue
             if "responseContext" in notice.context and notice.notice_id not in pending:
                 closed = self.notices.transition(
                     notice.notice_id,
@@ -114,6 +161,15 @@ class CoordinationSnapshotProjector:
                 session_id, thread_id, status="blocked", metadata=metadata
             )
             return
+        await self.host.session_meta_upsert(
+            session_id=session_id,
+            runtime="codex",
+            external_session_id=thread_id,
+            title=codex_sessions.thread_title(thread),
+            cwd=codex_sessions.thread_cwd(thread),
+            ordering_time=codex_sessions.thread_ordering_time(thread),
+            metadata={"source": "codex.coordination/state"},
+        )
         presentation = params.get("presentation")
         if isinstance(presentation, dict):
             cached = self.session_states.get(session_id)
@@ -138,6 +194,11 @@ class CoordinationSnapshotProjector:
                 "latestTurnStartParams",
                 "tokenUsage",
                 "daybreakEnabled",
+                "latestModel",
+                "latestReasoningEffort",
+                "latestThreadSettings",
+                "currentPermissions",
+                "latestTokenUsageInfo",
             )
             if key in thread
         }
@@ -152,9 +213,7 @@ class CoordinationSnapshotProjector:
         status = (
             "waiting_approval"
             if self.notices.open_blocking_for_session(session_id)
-            else "running"
-            if active
-            else "idle"
+            else thread_status(thread)
         )
         native_status = thread.get("status")
         if isinstance(native_status, dict):
@@ -162,6 +221,14 @@ class CoordinationSnapshotProjector:
         if not pending and native_status in ("systemError", "error"):
             status = "error"
         metadata["nativeStatus"] = thread.get("status")
+        metadata["codexLatestTurn"] = (
+            {
+                "id": turns[-1].get("id") or turns[-1].get("turnId"),
+                "status": turns[-1].get("status"),
+            }
+            if turns
+            else None
+        )
         selections = (
             await self.read_selections(thread)
             if self.read_selections is not None
@@ -174,16 +241,26 @@ class CoordinationSnapshotProjector:
             selections=selections,
             metadata=metadata,
         )
+        await self._publish_timeline(
+            session_id, thread_id, thread, params.get("canonicalComplete") is True
+        )
+
+    async def publish_history(self, session_id, thread_id, state):
+        async with self.locks[thread_id]:
+            await self._publish_timeline(
+                session_id, thread_id, state_to_native(state), history_complete(state)
+            )
+
+    async def _publish_timeline(self, session_id, thread_id, thread, complete):
         items = tuple(
             i
             for i in self.timeline.items_from_thread_snapshot(
-                session_id, thread_id, thread, None
+                session_id, thread_id, thread, None, preserve_native_ids=True
             )
             if i.type not in {"turn.start", "turn.end"}
         )
         current = {item.id: item for item in items}
         previous = self.published.get(thread_id, {})
-        complete = params.get("canonicalComplete") is True
         removed = complete and bool(previous.keys() - current.keys())
         changed = tuple(item for item in items if previous.get(item.id) != item)
         if changed or removed or (complete and thread_id not in self.published):

@@ -36,6 +36,16 @@ class CodexNoticeRegistry:
             and notice.blocking is not None
         )
 
+    def unresolved_contexts_for_session(
+        self, session_id: str
+    ) -> tuple[SessionNotice, ...]:
+        return tuple(
+            notice
+            for notice in self.current_for_session(session_id)
+            if notice.context.get("responseContext")
+            and notice.status in {"open", "responding", "unknown"}
+        )
+
     def current_for_session(self, session_id: str) -> tuple[SessionNotice, ...]:
         terminal_statuses = {"closed", "resolved", "cancelled", "expired"}
         return tuple(

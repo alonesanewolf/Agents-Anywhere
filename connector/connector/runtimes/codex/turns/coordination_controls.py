@@ -23,7 +23,7 @@ async def execute_coordination_control(client, thread_id, operation, payload):
     ):
         raise RuntimeUnsupportedError(operation)
     if not isinstance(payload, Mapping):
-        raise ValueError("Codex control payload must be an object")
+        raise TypeError("Codex control payload must be an object")
     if any(
         key in payload
         for key in (

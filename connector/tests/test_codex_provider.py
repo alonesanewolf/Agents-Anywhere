@@ -76,11 +76,17 @@ async def _test_codex_provider_treats_sdk_as_only_active_surface() -> None:
     assert item.reason is None
 
 
-def test_codex_provider_schema_exposes_opt_in_app_integration_without_raw_transport_switches() -> None:
-    asyncio.run(_test_codex_provider_schema_exposes_opt_in_app_integration_without_raw_transport_switches())
+def test_codex_provider_schema_exposes_opt_in_app_integration_without_raw_transport_switches() -> (
+    None
+):
+    asyncio.run(
+        _test_codex_provider_schema_exposes_opt_in_app_integration_without_raw_transport_switches()
+    )
 
 
-async def _test_codex_provider_schema_exposes_opt_in_app_integration_without_raw_transport_switches() -> None:
+async def _test_codex_provider_schema_exposes_opt_in_app_integration_without_raw_transport_switches() -> (
+    None
+):
     provider = CodexProvider(sdk_checker=_available_sdk)
 
     schema = await provider.get_config_schema()
@@ -642,23 +648,33 @@ def test_app_integration_opt_in_wraps_sdk_with_runtime_scoped_storage(tmp_path):
     async def run():
         from connector.core.json_kv import JsonKeyValueStore
         from connector.runtimes.codex.coordination.client import CoordinatedCodexClient
+
         class Host(_NoHost):
             @property
             def runtime_kv(self):
                 return kv
-        kv = JsonKeyValueStore(tmp_path / 'kv')
+
+        kv = JsonKeyValueStore(tmp_path / "kv")
         sdk = _FakeSdkClient()
-        provider = CodexProvider(sdk_checker=_available_sdk, sdk_client_factory=lambda config: sdk)
+        provider = CodexProvider(
+            sdk_checker=_available_sdk, sdk_client_factory=lambda config: sdk
+        )
         schema = await provider.get_config_schema()
-        assert schema.defaults['appIntegration'] is False
+        assert schema.defaults["appIntegration"] is False
         assert schema.revision == 8
         for enabled in (False, True):
-            config = await provider.validate_config({'codexHome': str(tmp_path / 'home'), 'appIntegration': enabled})
-            assert config.values['appIntegration'] is enabled
+            config = await provider.validate_config(
+                {"codexHome": str(tmp_path / "home"), "appIntegration": enabled}
+            )
+            assert config.values["appIntegration"] is enabled
             runtime = await provider.create_runtime(config, Host())
             assert isinstance(runtime.client, CoordinatedCodexClient) is enabled
             if enabled:
                 assert runtime.client.sdk is sdk
-                assert runtime.client.peer.client.endpoint == tmp_path / 'home/ipc/ipc.sock'
+                assert (
+                    runtime.client.peer.client.endpoint
+                    == tmp_path / "home/ipc/ipc.sock"
+                )
                 assert runtime.client.operations.journal.store is kv
+
     asyncio.run(run())

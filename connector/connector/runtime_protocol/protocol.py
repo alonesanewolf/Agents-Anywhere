@@ -31,7 +31,9 @@ class AgentRuntime(ABC):
         """Event runtimes own their acknowledged synchronization lifecycle."""
         return "polling"
 
-    async def resynchronize(self, session_id: str | None = None, external_session_id: str | None = None) -> None:
+    async def resynchronize(
+        self, session_id: str | None = None, external_session_id: str | None = None
+    ) -> None:
         """Request event-stream calibration on reconnect or an explicit refresh."""
         raise RuntimeUnsupportedError("resynchronize")
 
@@ -121,7 +123,9 @@ class AgentRuntime(ABC):
         _ = session_id, external_session_id
         return None
 
-    async def prepare_session_view(self, session_id: str, external_session_id: str | None = None) -> None:
+    async def prepare_session_view(
+        self, session_id: str, external_session_id: str | None = None
+    ) -> None:
         """Prepare a directly viewed session; inventory reads never call this hook."""
 
     async def get_session_state(

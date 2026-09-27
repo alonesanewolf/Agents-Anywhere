@@ -101,13 +101,16 @@ def codex_config_schema() -> dict[str, Any]:
                 "maxLength": MAX_CODEX_HOME_LENGTH,
             },
             "appIntegration": {
-                "type": "boolean", "default": False,
+                "type": "boolean",
+                "default": False,
                 "title": "Codex App and IDE integration",
                 "description": "Follow and control conversations owned by the local Codex App or IDE.",
-                "metadata": {"i18n": {
-                    "labelKey": "dashboard.device.runtimeConfigFields.appIntegration.label",
-                    "descriptionKey": "dashboard.device.runtimeConfigFields.appIntegration.description",
-                }},
+                "metadata": {
+                    "i18n": {
+                        "labelKey": "dashboard.device.runtimeConfigFields.appIntegration.label",
+                        "descriptionKey": "dashboard.device.runtimeConfigFields.appIntegration.description",
+                    }
+                },
             },
             "modelGateway": model_gateway_schema(),
             "customModels": custom_models_schema(),

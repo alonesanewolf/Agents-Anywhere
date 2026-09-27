@@ -3,7 +3,10 @@
 from connector.runtime_protocol import RuntimeOperationResult
 from connector.runtimes.codex.coordination.requests import validate_response
 from connector.runtimes.codex.domain.approvals import approval_response_from_interaction
-from connector.runtimes.codex.domain.input_requests import question_response
+from connector.runtimes.codex.domain.input_requests import (
+    elicitation_response,
+    question_response,
+)
 
 
 async def respond(controller, session_id, notice_id, action_id, input_data):
@@ -21,20 +24,16 @@ async def respond(controller, session_id, notice_id, action_id, input_data):
     request = notice.context["nativeRequest"]
     method = request["method"]
     data = dict(input_data or {})
-    if method == "item/tool/requestUserInput":
-        payload = question_response(request["params"], data)
-    elif method == "mcpServer/elicitation/request":
-        payload = {
-            "action": action_id,
-            **{key: data[key] for key in ("content", "_meta") if key in data},
-        }
-    else:
-        payload = dict(
-            approval_response_from_interaction(action_id, notice.context).payload
-        )
-    # Same pure validator as the facade, before the first await or notice transition.
-    # User input cannot replace native params, permission grants, method or identity.
+    # Validation and form translation occur before any dispatch or token consumption.
     try:
+        if method == "item/tool/requestUserInput":
+            payload = question_response(request["params"], data)
+        elif method == "mcpServer/elicitation/request":
+            payload = elicitation_response(request["params"], action_id, data)
+        else:
+            payload = dict(
+                approval_response_from_interaction(action_id, notice.context).payload
+            )
         validate_response(request, payload)
     except (TypeError, ValueError) as exc:
         failed = controller.notices.transition(
@@ -58,7 +57,7 @@ async def respond(controller, session_id, notice_id, action_id, input_data):
     except Exception as exc:
         failed = controller.notices.transition(
             notice_id,
-            status="closed",
+            status="unknown",
             response_required=False,
             blocking=None,
             actions=(),

@@ -159,7 +159,10 @@ def codex_capability_context(
     has_active_turn: bool = False,
 ) -> CodexCapabilityContext:
     status = state.status if state is not None else "idle"
-    if state is not None and state.metadata.get("codexCoordination", {}).get("available") is False:
+    if (
+        state is not None
+        and state.metadata.get("codexCoordination", {}).get("available") is False
+    ):
         client_available = False
     resolved_external_session_id = (
         state.external_session_id if state is not None else external_session_id

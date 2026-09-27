@@ -38,7 +38,9 @@ class CodexInteractionController:
         if self.client is None:
             raise RuntimeUnsupportedError("respond_interaction")
         if callable(getattr(self.client, "respond_to_request", None)):
-            return await coordinated_interactions.respond(self, session_id, notice_id, action_id, input_data)
+            return await coordinated_interactions.respond(
+                self, session_id, notice_id, action_id, input_data
+            )
         data = dict(input_data or {})
         request_id = data.get("requestId")
         if not isinstance(request_id, str | int):

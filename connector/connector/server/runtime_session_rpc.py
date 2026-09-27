@@ -64,8 +64,13 @@ async def sync_session_snapshot(
     await runtime.prepare_session_view(parsed.session_id, parsed.external_session_id)
     if runtime.sync_mode == "events":
         await runtime.resynchronize(parsed.session_id, parsed.external_session_id)
-        return {"sessionId": parsed.session_id, "externalSessionId": parsed.external_session_id,
-                "items": 0, "complete": False, "pending": True}
+        return {
+            "sessionId": parsed.session_id,
+            "externalSessionId": parsed.external_session_id,
+            "items": 0,
+            "complete": False,
+            "pending": True,
+        }
     started_at = time.monotonic()
     snapshot = await runtime.get_session_snapshot(
         parsed.session_id,

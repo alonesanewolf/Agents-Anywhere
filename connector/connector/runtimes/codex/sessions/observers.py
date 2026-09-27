@@ -33,9 +33,10 @@ class CodexSessionObservers:
     # Leave eight of the peer's 128 follow slots for transient inventory reads.
     LIMIT = 120
 
-    def __init__(self, client, states, notices, active_turn_ids, start):
+    def __init__(self, client, states, notices, active_turn_ids, start, read_state):
         self.client, self.states, self.notices = client, states, notices
         self.active_turn_ids, self.start = active_turn_ids, start
+        self.read_state = read_state
         self.lock = asyncio.Lock()
         self.views = OrderedDict()
         self.busy = Counter()
@@ -60,6 +61,9 @@ class CodexSessionObservers:
                         and old_session not in self.active_turn_ids
                         and not self.busy[old_session]
                         and not self.notices.open_blocking_for_session(old_session)
+                        and not self.notices.unresolved_contexts_for_session(
+                            old_session
+                        )
                     ):
                         await self.client.detach_thread(old_thread)
                         self.views.pop(old_thread)
@@ -70,7 +74,24 @@ class CodexSessionObservers:
                     )
             if self.states.get(session_id) is None:
                 await self.states.update(session_id, thread_id, status="idle")
-            await attach(thread_id)
+            if (
+                thread_id not in self.views
+                or self.states.get(session_id)
+                .metadata.get("codexCoordination", {})
+                .get("available")
+                is False
+            ):
+                await attach(thread_id)
             self.views[thread_id] = session_id
             self.views.move_to_end(thread_id)
-            await self.client.refresh_state(thread_id, force=True)
+            if not self.client.has_canonical_authority(thread_id):
+                state = await self.read_state(session_id, thread_id)
+                await self.states.update(
+                    session_id,
+                    thread_id,
+                    status=state.status,
+                    selections=state.selections,
+                    metadata=state.metadata,
+                )
+            else:
+                await self.client.refresh_state(thread_id, force=True)

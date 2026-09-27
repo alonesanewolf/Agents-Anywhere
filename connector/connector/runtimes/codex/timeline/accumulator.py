@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from openai_codex.generated.v2_all import Thread
@@ -13,7 +13,6 @@ from connector.runtimes.codex.domain.pending_messages import (
     PendingClientMessageRegistry,
 )
 from connector.runtimes.codex.sdk.events import CodexSdkEvent
-from connector.runtimes.codex.timeline.plans import plan_item, plan_items
 from connector.runtimes.codex.timeline.identity import (
     client_message_item_id,
     next_turn_lane_position,
@@ -21,6 +20,7 @@ from connector.runtimes.codex.timeline.identity import (
     turn_position_item_id,
     uses_turn_position_identity,
 )
+from connector.runtimes.codex.timeline.plans import plan_item, plan_items
 
 
 @dataclass(slots=True)
@@ -95,11 +95,17 @@ class CodexTimelineAccumulator:
         event: CodexSdkEvent,
     ) -> RuntimeTimelineItem | None:
         if event.event_type == "turn/plan/updated":
-            return plan_item(session_id, external_session_id, event.params.get("turnId"),
-                {**event.params, "type": "todo-list"})
+            return plan_item(
+                session_id,
+                external_session_id,
+                event.params.get("turnId"),
+                {**event.params, "type": "todo-list"},
+            )
         raw_item = event.params.get("item")
         if isinstance(raw_item, dict) and raw_item.get("type") in {"plan", "todo-list"}:
-            return plan_item(session_id, external_session_id, event.params.get("turnId"), raw_item)
+            return plan_item(
+                session_id, external_session_id, event.params.get("turnId"), raw_item
+            )
         projection = codex_timeline.timeline_projection_from_sdk_event(
             event
         ) or codex_timeline.timeline_projection_from_event(event)
@@ -125,7 +131,11 @@ class CodexTimelineAccumulator:
             else self._projection_by_id.get(item_id)
         )
         merged = projection
-        if projection_is_text_delta(projection, event, "agentMessage"):
+        if projection.raw_type == "plan" and event.event_type == "item/plan/delta":
+            merged = projection.with_text(
+                f"{previous.text if previous and previous.text else ''}{projection.text or ''}"
+            )
+        elif projection_is_text_delta(projection, event, "agentMessage"):
             previous_text = previous.text if previous and previous.text else ""
             merged = projection.with_status(
                 projection.status or "inProgress"
@@ -170,13 +180,13 @@ class CodexTimelineAccumulator:
         external_session_id: str,
         thread: dict[str, Any],
         limit: int | None,
+        *,
+        preserve_native_ids: bool = False,
     ) -> tuple[RuntimeTimelineItem, ...]:
         projections: list[codex_timeline.CodexTimelineProjection] = []
         positioned_items = positioned_raw_snapshot_items(thread)
         snapshot_items = compact_filtered_positioned_snapshot_items(positioned_items)
-        for index, positioned_item in enumerate(
-            limit_snapshot_items(snapshot_items, limit)
-        ):
+        for index, positioned_item in enumerate(snapshot_items):
             raw_item, turn_position = positioned_item
             if raw_item.get("type") in {"todo-list", "plan"}:
                 continue
@@ -189,8 +199,23 @@ class CodexTimelineAccumulator:
             session_id=session_id,
             external_session_id=external_session_id,
             projections=tuple(projections),
+            preserve_native_ids=preserve_native_ids,
         )
-        return items + plan_items(session_id, external_session_id, thread)
+        combined = items + plan_items(session_id, external_session_id, thread)
+        positions = {
+            (raw.get("turnId"), raw.get("id")): index
+            for index, (raw, _) in enumerate(snapshot_items)
+        }
+        ordered = sorted(
+            combined,
+            key=lambda item: positions.get(
+                (item.turn_id, item.source.get("itemId")), item.order_seq
+            ),
+        )
+        limited = limit_snapshot_items(ordered, limit)
+        return tuple(
+            replace(item, order_seq=index) for index, item in enumerate(limited)
+        )
 
     def items_from_sdk_thread_snapshot(
         self,
@@ -214,11 +239,22 @@ class CodexTimelineAccumulator:
         session_id: str,
         external_session_id: str,
         projections: tuple[codex_timeline.CodexTimelineProjection, ...],
+        *,
+        preserve_native_ids: bool = False,
     ) -> tuple[RuntimeTimelineItem, ...]:
         prepared: list[tuple[codex_timeline.CodexTimelineProjection, int]] = []
         index_by_id: dict[str, int] = {}
         for index, projection in enumerate(projections):
             projection = self._attach_client_message_id(external_session_id, projection)
+            if (
+                preserve_native_ids
+                and projection.native_id is not None
+                and not (
+                    projection.effective_role() == "user"
+                    and projection.client_message_id
+                )
+            ):
+                projection = projection.with_platform_id(projection.native_id)
             projection = self.stabilize_projection_identity(
                 external_session_id=external_session_id,
                 projection=projection,
@@ -359,6 +395,18 @@ class CodexTimelineAccumulator:
             )
             if state is not None:
                 state.platform_item_ids.add(item_id)
+        if projection.raw_type == "plan":
+            return plan_item(
+                session_id,
+                external_session_id,
+                projection.turn_id,
+                {
+                    "type": "plan",
+                    "id": projection.native_id,
+                    "text": projection.text or "",
+                },
+                order_seq,
+            )
         codex_item = codex_timeline.timeline_item_from_projection(
             projection=projection,
             external_session_id=external_session_id,

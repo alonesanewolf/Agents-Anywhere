@@ -117,11 +117,11 @@ def timeline_projection_from_sdk_event(
     if isinstance(payload, PlanDeltaNotification):
         return CodexTimelineProjection(
             native_id=payload.item_id,
-            raw_type="systemMessage",
+            raw_type="plan",
             status="inProgress",
             role="system",
             turn_id=payload.turn_id,
-            message=payload.delta,
+            text=payload.delta,
         )
     if isinstance(payload, ReasoningSummaryPartAddedNotification):
         return CodexTimelineProjection(
@@ -316,11 +316,11 @@ def timeline_projection_from_thread_item(
     if isinstance(root, PlanThreadItem):
         return CodexTimelineProjection(
             native_id=root.id,
-            raw_type="systemMessage",
+            raw_type="plan",
             status=event_status,
             role="system",
             turn_id=turn_id,
-            message=root.text,
+            text=root.text,
         )
     if isinstance(root, ContextCompactionThreadItem):
         return CodexTimelineProjection(

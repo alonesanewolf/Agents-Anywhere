@@ -1,5 +1,4 @@
 from __future__ import annotations
-from connector.runtime_protocol.host import runtime_kv_store
 
 import sys
 from collections.abc import Callable, Mapping
@@ -20,7 +19,7 @@ from connector.runtime_protocol import (
     RuntimeUnavailableError,
 )
 from connector.runtime_protocol.filesystem import filesystem_resource_key
-from connector.runtime_protocol.host import RuntimeHostClient
+from connector.runtime_protocol.host import RuntimeHostClient, runtime_kv_store
 from connector.runtimes.codex import provider_config
 from connector.runtimes.codex.runtime import CodexRuntime
 from connector.runtimes.codex.sdk.binary import (
@@ -238,13 +237,21 @@ class CodexProvider(RuntimeProvider):
         provider_config.ensure_codex_home(str(config.values["codexHome"]))
         client = self._sdk_client_factory(config)
         if config.values.get("appIntegration", False):
-            from connector.runtimes.codex.coordination.client import CoordinatedCodexClient
+            from connector.runtimes.codex.coordination.client import (
+                CoordinatedCodexClient,
+            )
             from connector.runtimes.codex.coordination.peer import CoordinationPeer
-            from connector.runtimes.codex.coordination.transport import CoordinationClient
+            from connector.runtimes.codex.coordination.transport import (
+                CoordinationClient,
+            )
 
             peer = CoordinationPeer(CoordinationClient(config.values["codexHome"]))
-            client = CoordinatedCodexClient(client, peer, kv_store=host.runtime_kv,
-                namespace=f"{getattr(host, 'session_namespace', host.connector_id)}:{config.values['codexHome']}")
+            client = CoordinatedCodexClient(
+                client,
+                peer,
+                kv_store=host.runtime_kv,
+                namespace=f"{getattr(host, 'session_namespace', host.connector_id)}:{config.values['codexHome']}",
+            )
         return CodexRuntime(
             config=config,
             host=host,
