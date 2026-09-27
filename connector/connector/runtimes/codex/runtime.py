@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any
+from uuid import uuid4
 
 from connector.core.json_kv import JsonKeyValueStore
 from connector.runtime_protocol import (
@@ -33,7 +35,6 @@ from connector.runtimes.codex.domain.capabilities import (
     codex_runtime_capabilities,
     codex_session_capabilities,
 )
-from connector.runtimes.codex.domain.commands import list_codex_commands
 from connector.runtimes.codex.domain.notices import CodexNoticeRegistry
 from connector.runtimes.codex.domain.pending_messages import (
     PendingClientMessageRegistry,
@@ -51,10 +52,6 @@ from connector.runtimes.codex.sessions.observers import (
 from connector.runtimes.codex.sessions.reader import CodexSessionReader
 from connector.runtimes.codex.timeline.accumulator import CodexTimelineAccumulator
 from connector.runtimes.codex.turns.controller import CodexTurnController
-from connector.runtimes.codex.turns.coordination_controls import (
-    CONTROL_OPERATIONS,
-    execute_coordination_control,
-)
 
 
 @dataclass(slots=True)
@@ -66,6 +63,7 @@ class CodexRuntime(AgentRuntime):
     runtime_version: str = "native-0"
 
     def __post_init__(self) -> None:
+        self._command_epoch = uuid4().hex
         self._active_turn_ids: dict[str, str] = {}
         self._session_states = RuntimeSessionStateCache(
             "codex",
@@ -138,6 +136,10 @@ class CodexRuntime(AgentRuntime):
             timeline=self._timeline,
         )
 
+        self._turns.commands.publish_history = (
+            self._notifications.coordination.publish_history
+        )
+
     @property
     def identity(self) -> RuntimeIdentity:
         return RuntimeIdentity(
@@ -152,9 +154,36 @@ class CodexRuntime(AgentRuntime):
     async def stop(self) -> None:
         await self._lifecycle.stop()
         self._observers.clear()
+        self._command_epoch = uuid4().hex
 
     async def get_config(self) -> RuntimeConfig:
         return self.config
+
+    def _catalog_revision(self, state):
+        facts = (
+            self._turns.commands.facts(state.session_id, state.external_session_id)
+            if state
+            else {}
+        )
+        goal = facts.pop("goal", None)
+        metadata = state.metadata if state else {}
+        identity = {
+            "coordination": metadata.get("codexCoordination"),
+            "settings": metadata.get("codexSettings", {}).get("latestThreadSettings"),
+            "facts": facts,
+            "goal": {
+                key: goal.get(key) for key in ("objective", "status", "tokenBudget")
+            }
+            if isinstance(goal, dict)
+            else None,
+        }
+        return (
+            self._command_epoch
+            + ":"
+            + sha256(
+                json.dumps(identity, sort_keys=True, default=str).encode()
+            ).hexdigest()[:24]
+        )
 
     async def get_runtime_capabilities(self) -> RuntimeCapabilitySet:
         context = codex_capability_context(
@@ -200,6 +229,7 @@ class CodexRuntime(AgentRuntime):
         self, session_id: str, external_session_id: str | None = None
     ) -> None:
         await self._observers.prepare(session_id, external_session_id)
+        await self._turns.commands.hydrate(session_id, external_session_id)
 
     async def get_session_state(
         self,
@@ -242,6 +272,14 @@ class CodexRuntime(AgentRuntime):
             external_session_id=external_session_id,
             state=state,
             has_active_turn=session_id in self._active_turn_ids,
+            catalog_revision=self._catalog_revision(state),
+            goal_stop_supported=callable(getattr(self.client, "stop_session", None))
+            and self._turns.commands.facts(
+                state.session_id, state.external_session_id
+            ).get("role")
+            in {"owner", "follower"}
+            if state
+            else False,
         )
         return codex_session_capabilities(context)
 
@@ -274,6 +312,14 @@ class CodexRuntime(AgentRuntime):
             external_session_id=state.external_session_id,
             state=state,
             has_active_turn=state.session_id in self._active_turn_ids,
+            catalog_revision=self._catalog_revision(state),
+            goal_stop_supported=callable(getattr(self.client, "stop_session", None))
+            and self._turns.commands.facts(
+                state.session_id, state.external_session_id
+            ).get("role")
+            in {"owner", "follower"}
+            if state
+            else False,
         )
         await self.host.session_capabilities_update(codex_session_capabilities(context))
 
@@ -393,15 +439,11 @@ class CodexRuntime(AgentRuntime):
         query: str | None = None,
         limit: int = 50,
     ) -> tuple[RuntimeCommand, ...]:
-        _ = session_id
-        return list_codex_commands(
-            external_session_id=external_session_id,
-            client_available=self.client is not None,
-            query=query,
-            limit=limit,
+        return self._turns.commands.catalog(
+            session_id, external_session_id, query, limit
         )
 
-    @guarded_mutation
+    @guarded_mutation(allow_unavailable=True)
     async def execute_command(
         self,
         session_id: str,
@@ -410,25 +452,6 @@ class CodexRuntime(AgentRuntime):
         raw: str | None = None,
         args: tuple[str, ...] = (),
     ) -> RuntimeCommandResult:
-        operation = command.removeprefix("/")
-        if operation in CONTROL_OPERATIONS and callable(
-            getattr(self.client, "owner_operation", None)
-        ):
-            if external_session_id is None:
-                raise ValueError("Codex command requires a thread")
-            payload = json.loads(" ".join(args)) if args else {}
-            await self.start()
-            result = await execute_coordination_control(
-                self.client, external_session_id, operation, payload
-            )
-            if operation == "load-complete-history":
-                if self.client.has_canonical_authority(external_session_id):
-                    await self.client.refresh_state(external_session_id, force=True)
-                else:
-                    await self._notifications.coordination.publish_history(
-                        session_id, external_session_id, result["state"]
-                    )
-            return RuntimeCommandResult(command=operation, ok=True, result=result)
         return await self._turns.execute_command(
             session_id=session_id,
             command=command,

@@ -1343,9 +1343,21 @@ async def execute_session_command(
         or (result.get("message") is not None and not isinstance(result["message"], str))
     ):
         return _unknown_command_result(payload.command)
+    execution = result["result"].get("executionState")
+    retryable = result["result"].get("retryable")
+    if (
+        (execution is not None and execution not in ("accepted", "completed", "unknown"))
+        or (retryable is not None and type(retryable) is not bool)
+        or (execution == "unknown" and (result["ok"] or retryable is not False))
+    ):
+        return _unknown_command_result(payload.command)
     return SessionCommandResponse(
-        command=result["command"], ok=result["ok"], code=result.get("code"),
-        message=result.get("message"), result=result["result"], serverTime=utc_now(),
+        command=result["command"],
+        ok=result["ok"],
+        code=result.get("code"),
+        message=result.get("message"),
+        result=result["result"],
+        serverTime=utc_now(),
     )
 
 

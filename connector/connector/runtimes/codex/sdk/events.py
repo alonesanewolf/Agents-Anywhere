@@ -35,6 +35,8 @@ from openai_codex.generated.v2_all import (
     ReasoningThreadItem,
     SkillUserInput,
     TextUserInput,
+    ThreadGoalClearedNotification,
+    ThreadGoalUpdatedNotification,
     ThreadItem,
     Turn,
     TurnCompletedNotification,
@@ -64,6 +66,8 @@ CodexKnownNotificationPayload = (
     | ContextCompactedNotification
     | ErrorNotification
     | RawResponseItemCompletedNotification
+    | ThreadGoalUpdatedNotification
+    | ThreadGoalClearedNotification
 )
 
 
@@ -314,6 +318,14 @@ def _sdk_payload_params(
     method: str,
     payload: CodexKnownNotificationPayload,
 ) -> dict[str, Any] | None:
+    if isinstance(payload, ThreadGoalUpdatedNotification):
+        return {
+            "threadId": payload.thread_id,
+            "turnId": payload.turn_id,
+            "goal": payload.goal.model_dump(mode="json", by_alias=True),
+        }
+    if isinstance(payload, ThreadGoalClearedNotification):
+        return {"threadId": payload.thread_id}
     common = _sdk_common_params(payload)
     if isinstance(payload, DeltaNotificationPayload):
         return {

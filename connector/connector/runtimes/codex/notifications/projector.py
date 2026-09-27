@@ -23,6 +23,7 @@ from connector.runtimes.codex.notifications.turn_lifecycle import (
 from connector.runtimes.codex.sdk.events import CodexSdkEvent
 from connector.runtimes.codex.sdk.runtime_client import CodexNotificationMessage
 from connector.runtimes.codex.timeline.accumulator import CodexTimelineAccumulator
+from connector.runtimes.codex.turns.goals import publish_goal, validate_goal
 
 
 @dataclass(slots=True)
@@ -102,6 +103,10 @@ class CodexNotificationProjector:
             return
         if event.event_type == "coordination/state":
             await self.coordination.handle(session_id, thread_id, event.params)
+            return
+        if event.event_type in {"thread/goal/updated", "thread/goal/cleared"}:
+            goal = validate_goal(event.params.get("goal"), thread_id) if event.event_type.endswith("updated") else None
+            await publish_goal(self.session_states, session_id, thread_id, goal)
             return
         source_availability = {
             "thread/archived": "archived",

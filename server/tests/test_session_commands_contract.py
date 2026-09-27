@@ -86,3 +86,32 @@ def test_known_native_error_is_preserved(tmp_path):
     data = client.post(url, headers=headers, json={"command": "compact"}).json()
     assert {key: data[key] for key in result} == result
     assert rpc.calls == 1
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"executionState": "pending"},
+        {"executionState": "unknown", "retryable": False},
+        {"executionState": "accepted", "retryable": "false"},
+    ],
+)
+def test_invalid_execution_state_does_not_report_success(tmp_path, result):
+    client, url, headers, rpc = setup(
+        tmp_path, {"command": "compact", "ok": True, "result": result}
+    )
+    response = client.post(url, headers=headers, json={"command": "compact"})
+    assert response.json()["code"] == "command_outcome_unknown"
+    assert rpc.calls == 1
+
+
+def test_offline_before_command_dispatch_is_known_rejection(tmp_path):
+    client, url, headers, rpc = setup(tmp_path)
+
+    async def offline(_):
+        return False
+
+    rpc.is_online = offline
+    response = client.post(url, headers=headers, json={"command": "compact"})
+    assert response.status_code == 409
+    assert rpc.calls == 0

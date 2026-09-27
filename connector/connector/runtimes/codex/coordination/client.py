@@ -38,6 +38,8 @@ class CoordinatedCodexClient:
         self.queue_tasks = {}
         self.queue_wakes = set()
         self.tasks = set()
+        self.goal_support = {}
+        self.goal_epochs = defaultdict(int)
         self.generation = 0
         self.closed = False
         self.remover = None
@@ -95,6 +97,7 @@ class CoordinatedCodexClient:
                 await self.peer.release(thread_id)
                 await self.refresh_state(thread_id, force=True)
             self.owned.clear()
+            self.goal_support.clear()
             return
         params = message.get("params") or {}
         thread_id = params.get("threadId", (params.get("thread") or {}).get("id"))
@@ -118,6 +121,9 @@ class CoordinatedCodexClient:
             return
         if "id" in message:
             self.contexts.new_request(thread_id, message["id"], message["method"])
+        if message["method"] in {"thread/goal/updated", "thread/goal/cleared"}:
+            self.goal_support[thread_id] = True
+            self.goal_epochs[thread_id] += 1
         state = reduce_event(self.peer.get_state(thread_id), message)
         await self.peer.publish_state(thread_id, state)
         if not self.operations.mutation_locks[thread_id].locked():
@@ -237,7 +243,11 @@ class CoordinatedCodexClient:
             if self.peer.is_follower(thread_id)
             else "unattached",
             "nativeVersion": self.sdk.native_runtime_info().get("version"),
-            "goalControl": self.peer.is_owner(thread_id),
+            "goalControl": self.peer.is_owner(thread_id)
+            and self.command_capabilities(thread_id)["nativeControls"]
+            and self.goal_support.get(thread_id, False),
+            "userSessionStop": self.peer.is_owner(thread_id)
+            or self.peer.is_follower(thread_id),
             "supportsUntrustedAppInput": False,
             "modelCatalogScope": "local-sdk",
             "unsupportedContexts": [
@@ -443,6 +453,26 @@ class CoordinatedCodexClient:
             thread_id, method.removeprefix("thread-follower-"), params
         )
 
+    async def command_owner_operation(self, thread_id, method, params):
+        from .peer import FOLLOWER_METHODS
+
+        if (
+            method not in FOLLOWER_METHODS
+            or method.removeprefix("thread-follower-") in REQUEST_ROUTES
+        ):
+            raise ValueError("unsupported command control")
+        params = {**deepcopy(params), "conversationId": thread_id}
+        if self.peer.is_owner(thread_id):
+            return await self._owner_operation(method, params)
+        if not self.peer.is_follower(thread_id):
+            raise ValueError("command control requires an existing owner")
+        owner = self.peer.get_owner(thread_id)
+        if owner is None:
+            raise ValueError("command control requires an existing owner")
+        return await self.peer.request_owner(
+            thread_id, method, params, expected_owner_client_id=owner.client_id
+        )
+
     async def start_thread(self, request):
         result = await self.sdk.native_thread_start(request)
         thread_id = result["thread"]["id"]
@@ -581,11 +611,92 @@ class CoordinatedCodexClient:
         await self.load_complete_history(thread_id)
         return await self.operations.reconcile(thread_id)
 
+    def command_capabilities(self, thread_id):
+        import re
+
+        from packaging.version import InvalidVersion, Version
+
+        info = self.native_runtime_info()
+        try:
+            verified = Version(
+                re.sub(r"-alpha\.(\d+)(?:\.\d+)*", r"a\1", info.get("version") or "0")
+            ) >= Version("0.155.1")
+        except InvalidVersion:
+            verified = False
+        return {
+            "role": "owner"
+            if self.peer.is_owner(thread_id)
+            else "follower"
+            if self.peer.is_follower(thread_id)
+            else "none",
+            "coordinated": True,
+            "nativeControls": verified and info.get("rawEvents") is True,
+            "nativeVersion": info.get("version"),
+            "goalSupported": self.goal_support.get(thread_id, False),
+            "goalObservationOwned": True,
+        }
+
+    async def stop_session(self, thread_id):
+        # Explicit user stop never claims a missing owner or retargets a turn.
+        params = {"conversationId": thread_id, "mode": "user-stop"}
+        if self.peer.is_owner(thread_id):
+            return await self._owner_operation("thread-follower-interrupt-turn", params)
+        if not self.peer.is_follower(thread_id):
+            raise ValueError("session stop requires an existing owner")
+        return await self.peer.request_owner(
+            thread_id, "thread-follower-interrupt-turn", params
+        )
+
+    async def observe_goal(self, thread_id, goal):
+        from connector.runtimes.codex.turns.goals import validate_goal
+
+        self.operations.state(thread_id)
+        goal = validate_goal(goal, thread_id)
+        self.goal_support[thread_id] = True
+        self.goal_epochs[thread_id] += 1
+        state = reduce_event(
+            self.peer.get_state(thread_id),
+            {
+                "method": "thread/goal/cleared"
+                if goal is None
+                else "thread/goal/updated",
+                "params": {"threadId": thread_id, "goal": goal},
+            },
+        )
+        await self.peer.publish_state(thread_id, state)
+
     async def native_request(self, method, params):
         thread_id = params.get("threadId")
         if not thread_id or not self.peer.is_owner(thread_id):
             raise ValueError("native control requires an already AA-owned thread")
-        return await self.operations.call(thread_id, method, params)
+        token = self.operations.epoch.set(self.sdk.native_generation)
+        try:
+            async with (
+                self.operations.settings_locks[thread_id],
+                self.operations.mutation_locks[thread_id],
+            ):
+                goal_epoch = self.goal_epochs[thread_id]
+                result = await self.operations.call(thread_id, method, params)
+                if method in {
+                    "thread/goal/get",
+                    "thread/goal/set",
+                    "thread/goal/clear",
+                }:
+                    if self.goal_epochs[thread_id] != goal_epoch:
+                        return {
+                            **result,
+                            "goal": deepcopy(
+                                self.peer.get_state(thread_id).get("threadGoal")
+                            ),
+                        }
+                    if method == "thread/goal/clear":
+                        if result.get("cleared") is True:
+                            await self.observe_goal(thread_id, None)
+                    elif "goal" in result:
+                        await self.observe_goal(thread_id, result["goal"])
+                return result
+        finally:
+            self.operations.epoch.reset(token)
 
     def native_runtime_info(self):
         return self.sdk.native_runtime_info()

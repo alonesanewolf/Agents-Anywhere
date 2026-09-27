@@ -40,6 +40,7 @@ async def execute_coordination_control(client, thread_id, operation, payload):
             raise ValueError("load-complete-history takes no arguments")
         state = await client.load_complete_history(thread_id)
         return {"state": state}
-    return await client.owner_operation(
+    dispatch = getattr(client, "command_owner_operation", client.owner_operation)
+    return await dispatch(
         thread_id, "thread-follower-" + operation, dict(payload)
     )

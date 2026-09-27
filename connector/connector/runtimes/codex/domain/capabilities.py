@@ -39,6 +39,9 @@ class CodexCapabilityContext:
     external_session_id: str | None = None
     status: RuntimeStatus = "idle"
     has_active_turn: bool = False
+    has_active_goal: bool = False
+    goal_stop_supported: bool = False
+    catalog_revision: str = ""
 
 
 def codex_runtime_capabilities(context: CodexCapabilityContext) -> RuntimeCapabilitySet:
@@ -117,9 +120,9 @@ def codex_session_capabilities(context: CodexCapabilityContext) -> RuntimeCapabi
             session_capability(
                 context,
                 capability_id=CAPABILITY_SESSION_COMMANDS,
-                supported=False,
-                available=False,
-                unavailable_reason="unsupported",
+                supported=True,
+                available=session_loaded(context),
+                unavailable_reason=session_unloaded_reason(context),
             ),
             session_capability(
                 context,
@@ -157,6 +160,8 @@ def codex_capability_context(
     external_session_id: str | None = None,
     state: SessionState | None = None,
     has_active_turn: bool = False,
+    catalog_revision: str = "",
+    goal_stop_supported: bool = False,
 ) -> CodexCapabilityContext:
     status = state.status if state is not None else "idle"
     if (
@@ -175,6 +180,15 @@ def codex_capability_context(
         external_session_id=resolved_external_session_id,
         status=status,
         has_active_turn=has_active_turn,
+        has_active_goal=bool(
+            state
+            and (
+                state.metadata.get("codexPresentation", {}).get("threadGoal") or {}
+            ).get("status")
+            == "active"
+        ),
+        catalog_revision=catalog_revision,
+        goal_stop_supported=goal_stop_supported,
     )
 
 
@@ -210,6 +224,9 @@ def session_capability(
         supported=supported,
         available=available,
         unavailable_reason=unavailable_reason,
+        metadata={"catalogRevision": context.catalog_revision}
+        if capability_id == CAPABILITY_SESSION_COMMANDS
+        else {},
     )
 
 
@@ -224,6 +241,8 @@ def session_can_send_message(context: CodexCapabilityContext) -> bool:
 def session_can_interrupt(context: CodexCapabilityContext) -> bool:
     if not session_loaded(context):
         return False
+    if context.has_active_goal:
+        return context.goal_stop_supported
     if not context.has_active_turn:
         return False
     return context.status in ACTIVE_TURN_STATUSES
@@ -268,6 +287,8 @@ def active_turn_unavailable_reason(context: CodexCapabilityContext) -> str | Non
     unloaded_reason = session_unloaded_reason(context)
     if unloaded_reason is not None:
         return unloaded_reason
+    if context.has_active_goal:
+        return None if context.goal_stop_supported else "goal_stop_unavailable"
     if not context.has_active_turn:
         return "no_active_turn"
     if context.status in ACTIVE_TURN_STATUSES:

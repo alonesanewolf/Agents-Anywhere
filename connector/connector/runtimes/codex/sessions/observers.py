@@ -5,14 +5,20 @@ from collections import Counter, OrderedDict
 from functools import wraps
 
 
-def guarded_mutation(function):
+def guarded_mutation(function=None, *, allow_unavailable=False):
+    if function is None:
+        return lambda decorated: guarded_mutation(
+            decorated, allow_unavailable=allow_unavailable
+        )
+
     @wraps(function)
     async def invoke(runtime, *args, **kwargs):
         session_id = kwargs.get("session_id") or args[0]
         observers = runtime._observers
         cached = observers.states.get(session_id)
         if (
-            cached is not None
+            not allow_unavailable
+            and cached is not None
             and cached.metadata.get("codexCoordination", {}).get("available") is False
         ):
             raise ValueError(

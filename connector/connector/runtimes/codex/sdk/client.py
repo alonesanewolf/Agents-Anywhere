@@ -130,6 +130,7 @@ class CodexSdkClient:
             str, asyncio.Future[Mapping[str, Any]]
         ] = {}
         self._entered_client: Any | None = None
+        self._command_online = False
         self._threads: dict[str, Any] = {}
         self._loaded_thread_ids: set[str] = set()
         self._turns: dict[str, Any] = {}
@@ -161,6 +162,7 @@ class CodexSdkClient:
             await maybe_await(call_with_optional_handler(start, handler))
         elif hasattr(self._client, "__aenter__"):
             self._entered_client = await self._client.__aenter__()
+        self._command_online = True
         self.start_global_notification_task()
 
     def set_native_event_handler(self, handler) -> None:
@@ -184,6 +186,15 @@ class CodexSdkClient:
         params = codex_thread_start_params(request, self._model_gateway)
         return await self.native_request("thread/start", params.model_dump(by_alias=True, exclude_none=True, mode="json"))
 
+    def command_capabilities(self, thread_id):
+        # Generic native_request is not ownership evidence. Only a live locally
+        # started/resumed thread can use compact; goal/review need coordinated
+        # raw-event ownership and are explicitly unavailable in this SDK path.
+        return {
+            "role": "owner" if self._command_online and thread_id in self._loaded_thread_ids else "none",
+            "coordinated": False, "nativeControls": False,
+        }
+
     def native_runtime_info(self) -> dict[str, Any]:
         sync = getattr(getattr(self._client, "_client", None), "_sync", None)
         return {"version": getattr(sync, "_runtime_version", None),
@@ -202,6 +213,8 @@ class CodexSdkClient:
                                           thread_id=thread_id, method=method)
 
     async def stop(self) -> None:
+        self._command_online = False
+        self._loaded_thread_ids.clear()
         if self._native_bridge is not None:
             await self._native_bridge.close()
         self.cancel_pending_approval_responses()
@@ -254,6 +267,7 @@ class CodexSdkClient:
         )
 
     def handle_global_notification_task_done(self, task: asyncio.Task[None]) -> None:
+        self._command_online = False
         if self._global_notification_task is task:
             self._global_notification_task = None
         try:

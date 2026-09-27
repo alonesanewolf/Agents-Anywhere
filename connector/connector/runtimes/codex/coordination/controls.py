@@ -6,7 +6,7 @@ from copy import deepcopy
 from .context import prepare_start, require_feature
 from .history import hydrate
 from .projection import active_turn, native_to_state
-from .reducer import merge_settings
+from .reducer import merge_settings, reduce_event
 from .state import enumerate_turns, history_complete
 
 
@@ -93,6 +93,25 @@ async def daybreak(operations, thread_id, params):
     return {"ok": True}
 
 
+async def pause_goal(operations, thread_id):
+    result = await operations.call(
+        thread_id, "thread/goal/set", {"threadId": thread_id, "status": "paused"}
+    )
+    from connector.runtimes.codex.turns.goals import validate_goal
+
+    goal = validate_goal(result.get("goal"), thread_id)
+    if not isinstance(goal, dict) or goal.get("status") != "paused":
+        raise ValueError("Native goal pause was not confirmed")
+    state = reduce_event(
+        operations.state(thread_id),
+        {
+            "method": "thread/goal/updated",
+            "params": {"threadId": thread_id, "goal": goal},
+        },
+    )
+    await operations.peer.publish_state(thread_id, state)
+
+
 async def interrupt(operations, thread_id, params):
     state = operations.state(thread_id)
     active = active_turn(state)
@@ -113,21 +132,13 @@ async def interrupt(operations, thread_id, params):
         try:
             if mode == "user-stop":
                 async with asyncio.timeout(0.5):
-                    await operations.call(
-                        thread_id,
-                        "thread/goal/set",
-                        {"threadId": thread_id, "status": "paused"},
-                    )
+                    await pause_goal(operations, thread_id)
             else:
-                await operations.call(
-                    thread_id,
-                    "thread/goal/set",
-                    {"threadId": thread_id, "status": "paused"},
-                )
-        except Exception as exc:
+                await pause_goal(operations, thread_id)
+        except Exception:
             if mode != "user-stop":
                 raise
-            pause_error = str(exc) or type(exc).__name__
+            pause_error = "Native goal pause outcome is unknown"
     if turn_id is not None:
         # Never retarget an intervening turn even for unguarded user stop.
         current = active_turn(operations.state(thread_id))
@@ -142,19 +153,17 @@ async def interrupt(operations, thread_id, params):
         and mode == "descendant-cleanup"
     ):
         try:
-            await operations.call(
-                thread_id,
-                "thread/goal/set",
-                {"threadId": thread_id, "status": "paused"},
-            )
-        except Exception as exc:  # noqa: BLE001 - preserve confirmed interrupt outcome
-            pause_error = str(exc) or type(exc).__name__
+            await pause_goal(operations, thread_id)
+        except Exception:  # noqa: BLE001 - preserve confirmed interrupt outcome
+            pause_error = "Native goal pause outcome is unknown"
     from .queue import pause_queue
 
     await pause_queue(
         operations, thread_id, "Interrupted before the steer was accepted."
     )
     result = {"ok": True, "interruptedTurnId": turn_id}
+    if expected is None and goal.get("status") == "active":
+        result["goalPaused"] = pause_error is None
     if pause_error:
         result["goalPauseError"] = pause_error
     return result

@@ -343,6 +343,46 @@ class CodexTurnActions:
         state = self.session_states.get(session_id)
         external_session_id = state.external_session_id if state is not None else None
         turn_id = self.active_turn_ids.get(session_id)
+        stop = getattr(self.client, "stop_session", None)
+        if callable(stop) and external_session_id is not None:
+            await self.ensure_started()
+            try:
+                result = await stop(external_session_id)
+                if not isinstance(result, dict) or result.get("ok") is not True:
+                    raise ValueError("Invalid stop acknowledgement")
+                if result.get("goalPauseError") or result.get("goalPaused") is False:
+                    return RuntimeOperationResult(
+                        ok=False,
+                        code="goal_pause_unknown",
+                        message="Turn interruption was acknowledged, but goal pause is unconfirmed. Refresh the session.",
+                        result={
+                            **result,
+                            "executionState": "unknown",
+                            "retryable": False,
+                        },
+                    )
+                return RuntimeOperationResult(
+                    ok=True, result={**result, "executionState": "accepted"}
+                )
+            except Exception:  # noqa: BLE001 - never retry an ambiguous session stop
+                return RuntimeOperationResult(
+                    ok=False,
+                    code="stop_outcome_unknown",
+                    message="Session stop outcome is unknown. Refresh the session.",
+                    result={"executionState": "unknown", "retryable": False},
+                )
+        if (
+            state
+            and (
+                state.metadata.get("codexPresentation", {}).get("threadGoal") or {}
+            ).get("status")
+            == "active"
+        ):
+            return RuntimeOperationResult(
+                ok=False,
+                code="goal_stop_unavailable",
+                message="This backend cannot confirm a session-level goal stop.",
+            )
         if turn_id is None:
             await self._set_session_state(
                 session_id=session_id,

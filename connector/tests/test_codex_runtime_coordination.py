@@ -19,6 +19,9 @@ class CoordinatedFake(FakeCodexClient):
         self.thread = {"id": "thread_1", "turns": [], "model": "owner-model"}
         self.tokens = []
 
+    def command_capabilities(self, thread_id):
+        return {"role": "follower" if thread_id in self.attached else "none", "coordinated": True, "nativeControls": False}
+
     async def attach_thread(self, thread_id):
         self.attached.add(thread_id)
 
@@ -420,9 +423,10 @@ def test_control_commands_route_structured_payload_without_native_fallback():
 
         async def operation(thread, method, params):
             calls.append((thread, method, params))
-            return {"applied": True}
+            return {"ok": True}
 
         client.owner_operation = operation
+        await runtime.prepare_session_view("s", "thread_1")
         result = await runtime.execute_command(
             "s", "update-daybreak", "thread_1", args=('{"daybreakEnabled":true}',)
         )
@@ -430,13 +434,11 @@ def test_control_commands_route_structured_payload_without_native_fallback():
         assert calls == [
             ("thread_1", "thread-follower-update-daybreak", {"daybreakEnabled": True})
         ]
-        with pytest.raises(ValueError):
-            await runtime.execute_command(
-                "s",
-                "update-thread-settings",
-                "thread_1",
-                args=('{"conversationId":"other"}',),
-            )
+        rejected = await runtime.execute_command(
+            "s", "update-thread-settings", "thread_1",
+            args=('{"conversationId":"other"}',),
+        )
+        assert not rejected.ok and rejected.code == "invalid_command"
         assert len(calls) == 1
 
     asyncio.run(run())
