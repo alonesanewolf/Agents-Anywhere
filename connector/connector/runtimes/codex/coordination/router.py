@@ -312,7 +312,11 @@ class CoordinationRouter:
             self._discoveries,
             10,
         )
-        if response.get("response", {}).get("canHandle") is not True:
+        discovery_result = response.get("response")
+        if (
+            not isinstance(discovery_result, dict)
+            or discovery_result.get("canHandle") is not True
+        ):
             raise IpcError("client-cannot-handle-request")
         return peer
 

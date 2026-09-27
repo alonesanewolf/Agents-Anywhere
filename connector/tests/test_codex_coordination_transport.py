@@ -608,3 +608,114 @@ async def test_predicate_failure_declines_and_request_handler_error_is_explicit(
         with pytest.raises(IpcError) as error:
             await source.request("typed-error", {}, target_client_id=owner.client_id)
         assert error.value.code == "unsupported-operation"
+
+
+@async_test
+async def test_malformed_discovery_response_declines_without_stranding_request(
+    tmp_path,
+):
+    async with clients(tmp_path, 1) as (source,):  # noqa: SIM117 - raw connection depends on selected endpoint
+        async with raw_peer(source.endpoint) as (reader, writer, raw_id):
+            pending = asyncio.create_task(
+                source.request("malformed", {}, target_client_id=raw_id, timeout=0.5)
+            )
+            discovery = await read_kind(reader, "client-discovery-request")
+            writer.write(
+                frame(
+                    {
+                        "type": "client-discovery-response",
+                        "requestId": discovery["requestId"],
+                        "response": [],
+                    }
+                )
+            )
+            await writer.drain()
+            with pytest.raises(IpcError, match="no-client-found"):
+                await pending
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"resultType": "future"},
+        {"resultType": "success", "method": "wrong"},
+        {"resultType": "success", "handledByClientId": "dishonest"},
+    ],
+)
+@async_test
+async def test_client_rejects_non_success_or_mismatched_native_response(
+    tmp_path, result
+):
+    endpoint = tmp_path / "native.sock"
+    tasks = []
+
+    async def native(reader, writer):
+        try:
+            initialize = await read_frame(reader)
+            writer.write(
+                frame(
+                    {
+                        "type": "response",
+                        "requestId": initialize["requestId"],
+                        "resultType": "success",
+                        "method": "initialize",
+                        "handledByClientId": "self",
+                        "result": {"clientId": "self"},
+                    }
+                )
+            )
+            await writer.drain()
+            request = await read_frame(reader)
+            writer.write(
+                frame(
+                    {
+                        "type": "response",
+                        "requestId": request["requestId"],
+                        "resultType": "success",
+                        "method": "echo",
+                        "handledByClientId": "owner",
+                        "result": {},
+                        **result,
+                    }
+                )
+            )
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    def accept(reader, writer):
+        tasks.append(asyncio.create_task(native(reader, writer)))
+
+    server = await listen_stream(accept, endpoint)
+    peer = CoordinationClient(tmp_path, endpoint=endpoint, start_router=False)
+    try:
+        await peer.start()
+        await peer.wait_initialized()
+        with pytest.raises(IpcError, match="invalid-response"):
+            await peer.request("echo", {}, target_client_id="owner")
+    finally:
+        await peer.close()
+        server.close()
+        await asyncio.gather(*tasks)
+        await server.wait_closed()
+
+
+@async_test
+async def test_concurrent_client_start_initializes_once_and_all_tasks_stop(tmp_path):
+    peer = CoordinationClient(tmp_path, endpoint=tmp_path / "ipc.sock")
+    events = asyncio.Queue()
+    peer.add_broadcast_handler(events.put)
+    original_tasks = asyncio.all_tasks()
+    try:
+        await asyncio.gather(peer.start(), peer.start())
+        await peer.wait_initialized()
+        connected = await asyncio.wait_for(events.get(), 1)
+        assert connected["params"]["status"] == "connected"
+        await asyncio.sleep(0.03)
+        assert events.empty()
+    finally:
+        await peer.close()
+    await asyncio.sleep(0)
+    assert not (asyncio.all_tasks() - original_tasks)

@@ -54,12 +54,17 @@ class CoordinationClient:
         self._tasks: set[asyncio.Task] = set()
         self._broadcast_queue = asyncio.Queue()
         self._broadcast_task = None
+        self._lifecycle_lock = asyncio.Lock()
 
     @property
     def client_id(self):
         return self._client_id
 
     async def start(self):
+        async with self._lifecycle_lock:
+            await self._start()
+
+    async def _start(self):
         if self._closed:
             raise IpcError("disposed")
         if self._runner is not None:
@@ -129,7 +134,21 @@ class CoordinationClient:
             await send_frame(self._writer, message)
             response = await asyncio.wait_for(future, timeout)
             if response.get("resultType") == "error":
-                raise IpcError(response.get("error", "request-failed"))
+                code = response.get("error")
+                if not isinstance(code, str):
+                    raise IpcError("invalid-response")
+                raise IpcError(code)
+            if (
+                response.get("resultType") != "success"
+                or response.get("method") != method
+                or not isinstance(response.get("handledByClientId"), str)
+                or "result" not in response
+                or (
+                    target_client_id is not None
+                    and response.get("handledByClientId") != target_client_id
+                )
+            ):
+                raise IpcError("invalid-response")
             return response
         except TimeoutError as exc:
             # Never resend: the selected owner may already have executed it.
@@ -182,11 +201,15 @@ class CoordinationClient:
                 while not self._closed:
                     message = await read_frame(reader)
                     if message.get("type") == "response":
+                        if not isinstance(message.get("requestId"), str):
+                            raise IpcError("invalid-envelope")
                         future = self._pending.get(message.get("requestId"))
                         if future is not None and not future.done():
                             future.set_result(message)
                     elif message.get("type") == "broadcast":
                         targets = message.get("targetClientIds")
+                        if targets is not None and not isinstance(targets, list):
+                            raise IpcError("invalid-envelope")
                         if targets is None or self._client_id in targets:
                             self._broadcast_queue.put_nowait(message)
                     else:
@@ -363,6 +386,10 @@ class CoordinationClient:
                 future.set_exception(IpcError(code))
 
     async def close(self):
+        async with self._lifecycle_lock:
+            await self._close()
+
+    async def _close(self):
         if self._closed:
             return
         self._closed = True
