@@ -9,6 +9,12 @@ import { commandRuntime } from '../fixtures/command-runtime.js'
 import { SyncFeed, type SyncBatch } from '../../src/host/dsh-runtime/sync.js'
 import { BridgeError } from '../../src/host/dsh-runtime/errors.js'
 import { RuntimeCommands } from '../../src/host/dsh-runtime/commands.js'
+import { nativeRuntime } from '../fixtures/native-runtime.js'
+import { mountAgents } from '../fixtures/agent-runtime.js'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 const signal = () => new AbortController().signal
 type Descriptor = { id: string, description: string, acceptsArgs: boolean, enabled: boolean, metadata: Record<string, any> }
@@ -164,3 +170,28 @@ test('registry change refreshes existing capability signals with a restart-safe 
     assert.deepEqual(errors, [])
   } finally { feed.close() }
 }))
+
+test('compiled native Host and actual Python public adapters execute commands over authenticated transport', { timeout: 30_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'aa-commands-wire-'))
+  const f = await nativeRuntime(home, ctx => mountAgents(ctx))
+  try {
+    const id = SessionId('commands-wire')
+    await f.ctx.sessionController.create({ sessionId: id, cwd: home, agentPreset: 'minimal' })
+    const agent = f.ctx.agents.get(id)!
+    agent.session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'seed' }] }), { surfaceOp: 'append' })
+    f.ctx.commands.register({ name: 'echo', description: 'echo', input: { hint: 'text' }, handler: inv => {
+      const event = inv.agent.session.append('session/title', { title: 'echo', source: { kind: 'user' }, messageSeqs: [] })
+      return { kind: 'success', text: inv.rawInput, sourceEventSeq: event.seq }
+    } })
+    f.ctx.commands.register({ name: 'wait', description: 'wait', handler: () => new Promise(() => {}) })
+    const { stdout } = await promisify(execFile)('uv', ['run', '--frozen', 'python', 'tests/dsh_commands_probe.py', home], {
+      cwd: new URL('../../../connector/', import.meta.url), timeout: 20_000,
+    })
+    assert.match(stdout, /DSH compiled native command integration passed/)
+    assert.equal(f.ctx.permissionPresets.current(agent.session), 'workspace-write')
+    const events = agent.session.snapshotEvents()
+    assert.equal(events.filter(e => e.type === 'command/run' && e.data.name === 'wait').length, 1)
+    assert.equal(events.filter(e => e.type === 'turn/start').length, 0)
+    assert.equal(events.filter(e => e.type === 'user/message').length, 1)
+  } finally { await f.ctx.fiber.dispose(); await rm(home, { recursive: true, force: true }) }
+})
