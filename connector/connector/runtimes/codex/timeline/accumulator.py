@@ -13,6 +13,7 @@ from connector.runtimes.codex.domain.pending_messages import (
     PendingClientMessageRegistry,
 )
 from connector.runtimes.codex.sdk.events import CodexSdkEvent
+from connector.runtimes.codex.timeline.plans import plan_item, plan_items
 from connector.runtimes.codex.timeline.identity import (
     client_message_item_id,
     next_turn_lane_position,
@@ -93,6 +94,12 @@ class CodexTimelineAccumulator:
         external_session_id: str,
         event: CodexSdkEvent,
     ) -> RuntimeTimelineItem | None:
+        if event.event_type == "turn/plan/updated":
+            return plan_item(session_id, external_session_id, event.params.get("turnId"),
+                {**event.params, "type": "todo-list"})
+        raw_item = event.params.get("item")
+        if isinstance(raw_item, dict) and raw_item.get("type") in {"plan", "todo-list"}:
+            return plan_item(session_id, external_session_id, event.params.get("turnId"), raw_item)
         projection = codex_timeline.timeline_projection_from_sdk_event(
             event
         ) or codex_timeline.timeline_projection_from_event(event)
@@ -171,16 +178,19 @@ class CodexTimelineAccumulator:
             limit_snapshot_items(snapshot_items, limit)
         ):
             raw_item, turn_position = positioned_item
+            if raw_item.get("type") in {"todo-list", "plan"}:
+                continue
             raw = dict(raw_item)
             projection = codex_timeline.timeline_projection_from_raw(raw)
             if turn_position is not None:
                 projection = projection.with_turn_position(turn_position)
             projections.append(projection)
-        return self.items_from_snapshot_projections(
+        items = self.items_from_snapshot_projections(
             session_id=session_id,
             external_session_id=external_session_id,
             projections=tuple(projections),
         )
+        return items + plan_items(session_id, external_session_id, thread)
 
     def items_from_sdk_thread_snapshot(
         self,

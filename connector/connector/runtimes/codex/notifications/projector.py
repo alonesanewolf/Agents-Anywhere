@@ -11,6 +11,7 @@ from connector.runtimes.codex.domain import sessions as codex_sessions
 from connector.runtimes.codex.domain.approvals import is_approval_request
 from connector.runtimes.codex.domain.notices import CodexNoticeRegistry
 from connector.runtimes.codex.notifications.notices import CodexNoticeHandler
+from connector.runtimes.codex.notifications.coordination import CoordinationSnapshotProjector
 from connector.runtimes.codex.notifications.timeline_activity import (
     CodexTimelineActivityHandler,
 )
@@ -36,7 +37,10 @@ class CodexNotificationProjector:
     turn_lifecycle: CodexTurnLifecycleHandler = field(init=False)
     timeline_activity: CodexTimelineActivityHandler = field(init=False)
 
+    coordination: CoordinationSnapshotProjector = field(init=False)
+
     def __post_init__(self) -> None:
+        self.coordination = CoordinationSnapshotProjector(self.host, self.session_states, self.active_turn_ids, self.timeline, self.notices)
         self.notice_handler = CodexNoticeHandler(
             host=self.host,
             session_states=self.session_states,
@@ -87,6 +91,9 @@ class CodexNotificationProjector:
                     thread_id,
                 )
         if session_id is None or thread_id is None:
+            return
+        if event.event_type == "coordination/state":
+            await self.coordination.handle(session_id, thread_id, event.params)
             return
         source_availability = {
             "thread/archived": "archived",

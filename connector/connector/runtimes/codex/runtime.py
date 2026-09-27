@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -44,8 +45,10 @@ from connector.runtimes.codex.sdk.runtime_client import (
     CodexRuntimeClient,
 )
 from connector.runtimes.codex.sessions.reader import CodexSessionReader
+from connector.runtimes.codex.sessions.observers import CodexSessionObservers, guarded_mutation
 from connector.runtimes.codex.timeline.accumulator import CodexTimelineAccumulator
 from connector.runtimes.codex.turns.controller import CodexTurnController
+from connector.runtimes.codex.turns.coordination_controls import CONTROL_OPERATIONS, execute_coordination_control
 
 
 @dataclass(slots=True)
@@ -104,6 +107,8 @@ class CodexRuntime(AgentRuntime):
             pending_messages=self._pending_messages,
             timeline=self._timeline,
         )
+        self._notifications.coordination.read_selections = self._session_reader.selections_from_thread
+        self._observers = CodexSessionObservers(self.client, self._session_states, self._notices, self._active_turn_ids, self.start)
         self._turns = CodexTurnController(
             host=self.host,
             client=self.client,
@@ -131,6 +136,7 @@ class CodexRuntime(AgentRuntime):
 
     async def stop(self) -> None:
         await self._lifecycle.stop()
+        self._observers.clear()
 
     async def get_config(self) -> RuntimeConfig:
         return self.config
@@ -174,6 +180,9 @@ class CodexRuntime(AgentRuntime):
             page_size,
             force,
         )
+
+    async def prepare_session_view(self, session_id: str, external_session_id: str | None = None) -> None:
+        await self._observers.prepare(session_id, external_session_id)
 
     async def get_session_state(
         self,
@@ -275,6 +284,7 @@ class CodexRuntime(AgentRuntime):
             external_session_id,
         )
 
+    @guarded_mutation
     async def create_and_start_session(
         self,
         session_id: str,
@@ -299,6 +309,7 @@ class CodexRuntime(AgentRuntime):
             client_message_id=client_message_id,
         )
 
+    @guarded_mutation
     async def start_turn(
         self,
         session_id: str,
@@ -319,6 +330,7 @@ class CodexRuntime(AgentRuntime):
             client_message_id=client_message_id,
         )
 
+    @guarded_mutation
     async def steer_turn(
         self,
         session_id: str,
@@ -335,6 +347,7 @@ class CodexRuntime(AgentRuntime):
             client_message_id=client_message_id,
         )
 
+    @guarded_mutation
     async def interrupt_session(
         self,
         session_id: str,
@@ -345,6 +358,7 @@ class CodexRuntime(AgentRuntime):
             reason=reason,
         )
 
+    @guarded_mutation
     async def update_session_selections(
         self,
         session_id: str,
@@ -372,6 +386,7 @@ class CodexRuntime(AgentRuntime):
             limit=limit,
         )
 
+    @guarded_mutation
     async def execute_command(
         self,
         session_id: str,
@@ -380,6 +395,14 @@ class CodexRuntime(AgentRuntime):
         raw: str | None = None,
         args: tuple[str, ...] = (),
     ) -> RuntimeCommandResult:
+        operation = command.removeprefix("/")
+        if operation in CONTROL_OPERATIONS and callable(getattr(self.client, "owner_operation", None)):
+            if external_session_id is None:
+                raise ValueError("Codex command requires a thread")
+            payload = json.loads(" ".join(args)) if args else {}
+            await self.start()
+            result = await execute_coordination_control(self.client, external_session_id, operation, payload)
+            return RuntimeCommandResult(command=operation, ok=True, result=result)
         return await self._turns.execute_command(
             session_id=session_id,
             command=command,
@@ -388,6 +411,7 @@ class CodexRuntime(AgentRuntime):
             args=args,
         )
 
+    @guarded_mutation
     async def respond_interaction(
         self,
         session_id: str,

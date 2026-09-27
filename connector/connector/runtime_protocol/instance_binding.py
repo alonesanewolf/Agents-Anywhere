@@ -574,6 +574,9 @@ class RuntimeInstance(AgentRuntime):
             ),
         )
 
+    async def prepare_session_view(self, session_id: str, external_session_id: str | None = None) -> None:
+        await self.native_runtime.prepare_session_view(session_id, external_session_id)
+
     async def get_session_state(
         self,
         session_id: str,

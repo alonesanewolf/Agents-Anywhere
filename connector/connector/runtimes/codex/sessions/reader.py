@@ -266,14 +266,17 @@ class CodexSessionReader:
             item.id: hashlib.sha256(json.dumps(asdict(item), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
             for item in items
         })
-        removed = valid and bool(old_items.keys() - fingerprints.keys())
+        canonical_partial = snapshot is not None and snapshot.metadata.get("canonicalComplete") is False
+        if canonical_partial and valid:
+            fingerprints = {**old_items, **fingerprints}
+        removed = valid and not canonical_partial and bool(old_items.keys() - fingerprints.keys())
         if removed and prefix:
             # A replacement must contain the entire surviving timeline, not just its tail.
             snapshot = await self.get_session_snapshot(session_id, external_session_id)
             items = tuple(item for item in snapshot.items if item.type not in {"turn.start", "turn.end"})
             fingerprints = {item.id: hashlib.sha256(json.dumps(asdict(item), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest() for item in items}
             read_state = None
-        replacement = previous is not None and (not valid or removed)
+        replacement = not canonical_partial and previous is not None and (not valid or removed)
         delta = items if not valid or replacement else tuple(item for item in items if old_items.get(item.id) != fingerprints[item.id])
         prepared_snapshot = replace(snapshot, items=delta, complete=bool(replacement)) if snapshot is not None and (delta or replacement) else None
         async def commit() -> None:
@@ -291,6 +294,8 @@ class CodexSessionReader:
     async def _read_indexed_snapshot(
         self, session_id: str, external_session_id: str | None, previous: Mapping[str, Any] | None,
     ) -> tuple[RuntimeTimelineSnapshot | None, dict[str, Any], dict[str, str]] | None:
+        if callable(getattr(self.client, "attach_thread", None)):
+            return None
         page_reader = getattr(self.client, "list_thread_turns_page", None)
         if not external_session_id or not callable(page_reader) or self.timeline is None:
             return None
@@ -400,6 +405,11 @@ class CodexSessionReader:
             metadata={"source": "codex.thread/read.state"},
         )
 
+    async def selections_from_thread(self, thread):
+        return await selections_from_thread_state(thread,
+            lambda: self.list_model_catalog(None, 100),
+            lambda: self.list_permission_catalog(None, 100))
+
     async def _read_session_selections(
         self,
         external_session_id: str,
@@ -451,7 +461,9 @@ class CodexSessionReader:
         started_at = time.monotonic()
         snapshot_source = "codex.thread/read"
         list_thread_turns = getattr(self.client, "list_thread_turns", None)
-        if callable(list_thread_turns):
+        if callable(getattr(self.client, "attach_thread", None)):
+            result = await self.client.read_thread(external_session_id, include_turns=True)
+        elif callable(list_thread_turns):
             result = await self.client.read_thread(
                 thread_id=external_session_id,
                 include_turns=False,
@@ -521,8 +533,8 @@ class CodexSessionReader:
             external_session_id=external_session_id,
             runtime="codex",
             items=items,
-            complete=False,
-            metadata={"source": snapshot_source},
+            complete=result.canonical_complete is True and limit is None,
+            metadata={"source": snapshot_source, **({"canonicalComplete": result.canonical_complete} if result.canonical_complete is not None else {})},
         )
 
 

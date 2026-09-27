@@ -14,6 +14,7 @@ from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.codex.domain.approvals import approval_response_from_interaction
 from connector.runtimes.codex.domain.notices import CodexNoticeRegistry
 from connector.runtimes.codex.sdk.runtime_client import CodexRuntimeClient
+from connector.runtimes.codex.turns import coordinated_interactions
 
 EnsureStarted = Callable[[], Awaitable[None]]
 
@@ -36,6 +37,8 @@ class CodexInteractionController:
     ) -> RuntimeOperationResult:
         if self.client is None:
             raise RuntimeUnsupportedError("respond_interaction")
+        if callable(getattr(self.client, "respond_to_request", None)):
+            return await coordinated_interactions.respond(self, session_id, notice_id, action_id, input_data)
         data = dict(input_data or {})
         request_id = data.get("requestId")
         if not isinstance(request_id, str | int):

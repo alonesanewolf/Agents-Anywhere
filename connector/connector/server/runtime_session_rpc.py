@@ -61,6 +61,7 @@ async def sync_session_snapshot(
     params: dict[str, Any],
 ) -> dict[str, Any]:
     parsed = SessionReadParams.parse(params)
+    await runtime.prepare_session_view(parsed.session_id, parsed.external_session_id)
     if runtime.sync_mode == "events":
         await runtime.resynchronize(parsed.session_id, parsed.external_session_id)
         return {"sessionId": parsed.session_id, "externalSessionId": parsed.external_session_id,
@@ -124,6 +125,7 @@ async def read_session_state(
     params: dict[str, Any],
 ) -> dict[str, Any]:
     parsed = SessionReadParams.parse(params)
+    await runtime.prepare_session_view(parsed.session_id, parsed.external_session_id)
     state = await runtime.get_session_state(
         parsed.session_id, parsed.external_session_id
     )
@@ -159,6 +161,7 @@ async def read_session_notices(
     params: dict[str, Any],
 ) -> dict[str, Any]:
     parsed = SessionReadParams.parse(params)
+    await runtime.prepare_session_view(parsed.session_id, parsed.external_session_id)
     notices = await runtime.get_session_notices(
         parsed.session_id,
         parsed.external_session_id,

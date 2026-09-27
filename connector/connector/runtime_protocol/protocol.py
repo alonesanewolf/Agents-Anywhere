@@ -121,6 +121,9 @@ class AgentRuntime(ABC):
         _ = session_id, external_session_id
         return None
 
+    async def prepare_session_view(self, session_id: str, external_session_id: str | None = None) -> None:
+        """Prepare a directly viewed session; inventory reads never call this hook."""
+
     async def get_session_state(
         self,
         session_id: str,

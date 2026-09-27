@@ -35,7 +35,7 @@ from connector.runtimes.model_gateway import model_gateway_from_config
 
 SdkChecker = Callable[[], dict[str, Any]]
 SdkClientFactory = Callable[[RuntimeConfig], Any]
-CODEX_CONFIG_SCHEMA_REVISION = 7
+CODEX_CONFIG_SCHEMA_REVISION = 8
 
 
 class CodexProvider(RuntimeProvider):
@@ -122,6 +122,7 @@ class CodexProvider(RuntimeProvider):
                     "useSystemCodex",
                     "codexExecutablePath",
                     "codexHome",
+                    "appIntegration",
                     "modelGateway",
                     "environment",
                     "customModels",
@@ -134,6 +135,7 @@ class CodexProvider(RuntimeProvider):
             },
             defaults={
                 "useSystemCodex": True,
+                "appIntegration": False,
                 "environment": {},
                 "customModels": [],
             },
@@ -201,6 +203,7 @@ class CodexProvider(RuntimeProvider):
 
         normalized_values: dict[str, Any] = {
             "useSystemCodex": use_system_codex,
+            "appIntegration": raw_values.get("appIntegration", False),
             "environment": dict(raw_values.get("environment") or {}),
             "customModels": normalize_custom_models(raw_values.get("customModels")),
             "codexHome": codex_home,
@@ -234,6 +237,14 @@ class CodexProvider(RuntimeProvider):
             raise RuntimeUnavailableError("Codex SDK is not available")
         provider_config.ensure_codex_home(str(config.values["codexHome"]))
         client = self._sdk_client_factory(config)
+        if config.values.get("appIntegration", False):
+            from connector.runtimes.codex.coordination.client import CoordinatedCodexClient
+            from connector.runtimes.codex.coordination.peer import CoordinationPeer
+            from connector.runtimes.codex.coordination.transport import CoordinationClient
+
+            peer = CoordinationPeer(CoordinationClient(config.values["codexHome"]))
+            client = CoordinatedCodexClient(client, peer, kv_store=host.runtime_kv,
+                namespace=f"{getattr(host, 'session_namespace', host.connector_id)}:{config.values['codexHome']}")
         return CodexRuntime(
             config=config,
             host=host,
