@@ -1,5 +1,5 @@
 import { isAbsolute, join } from 'node:path'
-import { DEFAULT_CONNECTOR_SETTINGS, PYPI_MIRRORS, type ConnectorSettings } from '../../contracts/connector.js'
+import { DEFAULT_CONNECTOR_SETTINGS, PYPI_MIRRORS, PYTHON_MIRRORS, type ConnectorSettings } from '../../contracts/connector.js'
 import type { ResolvedConfig } from '../config.js'
 import { readJson, writeJson } from '../storage/files.js'
 import { systemLanguages } from './environment.js'
@@ -11,6 +11,10 @@ function defaultPypiIndexUrl(languages: readonly string[]): string {
     ? PYPI_MIRRORS.find(mirror => mirror.id === 'aliyun')!.url : ''
 }
 
+function defaultPythonMirror(languages: readonly string[]): string {
+  return languages.some(language => /^zh(?:[-_]|$)/i.test(language.trim())) ? PYTHON_MIRRORS[1].url : ''
+}
+
 export function validateConnectorSettings(value: unknown): ConnectorSettings {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Connector 配置格式无效。')
   const fields = value as Record<string, unknown>
@@ -20,6 +24,7 @@ export function validateConnectorSettings(value: unknown): ConnectorSettings {
   settings.uvPath = settings.uvPath.trim()
   if (settings.uvPath && !isAbsolute(settings.uvPath)) throw new Error('请填写 uv 可执行文件的绝对路径，或留空自动查找。')
   if (!PYPI_MIRRORS.some(mirror => mirror.url === settings.uvPypiIndexUrl)) throw new Error('请选择列表中的 PyPI 镜像。')
+  if (!PYTHON_MIRRORS.some(mirror => mirror.url === settings.uvPythonInstallMirror)) throw new Error('请选择列表中的 Python 下载镜像。')
   if (!Number.isInteger(settings.syncIntervalSeconds) || settings.syncIntervalSeconds < 1 || settings.syncIntervalSeconds > 3600) {
     throw new Error('同步间隔必须是 1–3600 之间的整数。')
   }
@@ -43,14 +48,18 @@ export class ConnectorSettingsStore {
       const migrating = RETIRED_SETTINGS.some(key => Object.hasOwn(fields, key))
       for (const key of RETIRED_SETTINGS) delete fields[key]
       const needsMirror = !Object.hasOwn(fields, 'uvPypiIndexUrl')
+      const needsPythonMirror = !Object.hasOwn(fields, 'uvPythonInstallMirror')
+      const languages = needsMirror || needsPythonMirror ? await this.readLanguages() : []
+      if (needsPythonMirror) fields['uvPythonInstallMirror'] = defaultPythonMirror(languages)
       // A persisted empty string means the user chose the official PyPI index.
-      if (needsMirror) fields['uvPypiIndexUrl'] = defaultPypiIndexUrl(await this.readLanguages())
+      if (needsMirror) fields['uvPypiIndexUrl'] = defaultPypiIndexUrl(languages)
       this.current = validateConnectorSettings(fields)
-      if (migrating || needsMirror) await writeJson(this.path, this.current)
+      if (migrating || needsMirror || needsPythonMirror) await writeJson(this.path, this.current)
     } else this.current = validateConnectorSettings(saved)
   }
   async reset(): Promise<void> {
-    await this.save({ ...DEFAULT_CONNECTOR_SETTINGS, uvPypiIndexUrl: defaultPypiIndexUrl(await this.readLanguages()) })
+    const languages = await this.readLanguages()
+    await this.save({ ...DEFAULT_CONNECTOR_SETTINGS, uvPypiIndexUrl: defaultPypiIndexUrl(languages), uvPythonInstallMirror: defaultPythonMirror(languages) })
   }
   async save(value: unknown): Promise<void> {
     const settings = validateConnectorSettings(value)

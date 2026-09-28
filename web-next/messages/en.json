@@ -325,6 +325,15 @@
       "settings": "Settings",
       "team": "Team"
     },
+    "agentPresets": {
+      "label": "Agent preset",
+      "unavailable": "Agent presets unavailable",
+      "loading": "Loading presets...",
+      "standard": "Standard mode",
+      "minimal": "Minimal mode",
+      "ptc": "PTC mode",
+      "cordis": "Creator mode"
+    },
     "new": {
       "askApproval": "Ask approval",
       "attach": "Attach files",
@@ -345,9 +354,12 @@
       "permissionMode": "Permission mode",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "read-only" },
-          "workspaceWrite": { "label": "workspace-write" },
-          "fullAccess": { "label": "danger-full-access" }
+          "readOnly": { "label": "Read Only" },
+          "workspaceWrite": { "label": "Workspace Write" },
+          "fullAccess": { "label": "Full access" },
+          "auto": {
+            "label": "Auto review"
+          }
         },
         "requestApproval": {
           "label": "Request approval",
@@ -754,6 +766,7 @@
     },
     "panels": {
       "files": {
+        "allDrives": "All drives",
         "addToComposer": "Add to Composer",
         "addToComposerNoSession": "Enable Takeover in a session to add this path.",
         "title": "Files",
@@ -916,6 +929,10 @@
       "loadOlder": "Load earlier messages",
       "expandMessage": "Show more",
       "collapseMessage": "Show less",
+      "mermaidDiagram": "Mermaid diagram",
+      "mermaidUpdateFailed": "Showing the last valid diagram. The latest source could not be rendered.",
+      "mermaidSource": "View source",
+      "tableFullscreen": "View table fullscreen",
       "copyCode": "Copy code",
       "copyItemId": "Copy item ID",
       "copyItemJson": "Copy item JSON",

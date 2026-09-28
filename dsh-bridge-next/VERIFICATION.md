@@ -1,5 +1,35 @@
 # DSH Bridge Next 验证记录
 
+## DSH 0.2.0-rc.1 适配（2026-09-28）
+
+插件源码版本保持 `2.0.1`，DSH 依赖和 Typert peer 锁定到 `0.2.0-rc.1`，运行时上报的 DSH 版本与技术说明同步更新。`corepack yarn check` 完成类型检查、Host/Client 构建、产物检查和 **174 项插件测试**，全部通过；测试使用新版官方 Gateway、SessionQuery、AgentLoop 和 Python Connector 链路。
+
+在全新临时 `DSH_HOME` 中，使用官方 `@deepseek-ai/dsh@0.2.0-rc.1` 的 `dsh plugin --profile aa-rc1-smoke add "link:$PWD"` 安装成功，`--dump-config` 包含 `agents-anywhere-bridge-next` 配置行。未进行 DSH Desktop、Windows、付费模型或手机实机验收。当前源码仍使用已发布的 `2.0.1` 版本号；此记录只验证本地源码。
+
+## DSH 0.1.7-rc.2 适配（2026-09-25）
+
+开发依赖切换到 npm 发布的 `0.1.7-rc.2`，按新版包元数据更新 Cordis、Loader 和 Schemastery。历史投影读取新版顶层 tool-role 结果及 `tool/ptc-dispatch*` 事件，同时保留旧日志格式；投影版本升为 3，旧检查点触发快照重建，Connector 同时接受版本 2 和 3。预设测试组合迁移到官方 preset registry / preset 插件，补齐新版文件系统和模型目录要求。
+
+类型检查、构建、发布产物及真实官方 Client primitives 的 DOM 交互检查通过，插件 **167 项测试全部通过**；Connector 的 provider、契约、bridge client、事件同步、检查点和 live transport 共 **60 项通过**。新增回归覆盖工具结果的多块内容、空内容、错误状态、调用身份、PTC 父子关系、冷历史与实时结果一致，以及旧投影检查点重建。
+
+使用已安装的 DSH `0.1.7-rc.2`，在全新临时 `DSH_HOME` 下执行 `dsh plugin --profile aa-rc7-smoke add "link:$PWD"`；profile manifest 正确记录依赖与 bundle，`--dump-config` 包含 `agents-anywhere-bridge-next` 配置行。真实 Loader/patch、官方会话与持久化、Python Connector → AA Server 链路由集成测试覆盖。没有进行付费模型或手机实机验收；使用外部 CLI Connector 时需与插件一起更新。
+
+## PR #73 主线集成复核（2026-09-14）
+
+与 `287fc57a` 主线合并时，保留主线的 OS 管理租约与 `unlink` 接管实现：它已覆盖存活 PID 的陈旧 endpoint，且能处理损坏的描述文件。本 PR 保留贡献者新增的独立存活进程 PID 回归测试，不恢复旧的 PID 判断或 JSON 读取前置条件。
+
+macOS 本地重新构建插件后，`runtime.test.ts` 与 `runtime-ownership.test.ts` 共 8 项全部通过，覆盖 PID 复用、崩溃释放租约、并发独占、错误凭据、清理归属和真实 Python adapter 工作流。`tsc -p tsconfig.host.json` 通过。本轮没有执行 Windows 实机测试，也不代表全项目 CI 已通过。
+
+## 陈旧 endpoint 的 pid 复用误判（2026-09-12）
+
+Windows 实机报告「本机连接被占用，无法启动」。`<DSH_HOME>/agents-anywhere/bridge/endpoint.json` 残留了当天 15:03 首次启动写入的记录（`pid 7444`），该 pid 随后被系统复用为无关系统进程；`processExists()` 只执行 `process.kill(pid, 0)`，因此每次重试都在 `RuntimeServer.open` 抛 `Another DSH bridge owns this DSH_HOME endpoint`（`BRIDGE_IN_USE`），只有手工删除该文件后重启才恢复。删除后 18:45 重新发布端点，Connector 随后接入并完成 10 个会话的首次同步。
+
+管理租约（由 endpoint 目录 realpath 推导的确定性回环端口）才是归属权威：活着的桥接会持有该端口，因此能进入 `open()` 就已证明本路径没有活着的桥接，文件里记录的 pid 不构成证据。现已移除该存活门并始终接管陈旧发布；`dispose()` 仍按 token 与 pid 匹配后才删除端点。
+
+新增回归用例：以另一个存活但无关的进程 pid 伪造陈旧 endpoint，断言桥接仍能启动、端点被替换且可完成 RPC。该用例在未修改的 `b4133309` 上以与实机相同的错误失败，修复后通过。
+
+插件全量 133 项、通过 112 项（含新增 1 项）；未修改的 main 为 132 项、通过 111 项，两边失败集合完全相同（21 项，均为 Windows 本地的 `ERR_INVALID_URL_SCHEME` 等既有环境问题，CI 在 ubuntu 上运行）。类型检查的三处错误（TS2344、两处 TS2717）在未修改的 `b4133309` 上同样复现，与本改动无关。
+
 ## 桥接日志页与实机定位（2026-09-08）
 
 插件新增「手机连接 → 桥接日志」：固定读取本插件两份运行日志，最近 200 条，每两秒刷新，可暂停；不依赖 Connector 所有权、账号或安装检测成功。DSH 日志分类与文件均记录错误码、读取阶段、会话 ID 和去除异常正文后的堆栈，Python 同时记录插件发出的 `runtime.error`。
@@ -164,3 +194,13 @@ Connector 全量检查有 720 项通过、1 项旧参数签名约束失败；随
 迁移测试使用临时 SQLite，实际运行仍要求 PostgreSQL。重启现有 `local-up.sh`
 会自动应用 `v2_33`，然后需完全重启 DSH 以加载新的插件 Python 进程。本轮
 未启动或重启真实服务，也未宣称已完成原环境的 409 实测验收。
+
+## 2026-09-14：Connector 日志、环境依赖与远程审批
+
+- 插件依赖统一为 npm `next` 标签对应的 DSH `0.1.5-rc.2`。uv 使用现成的 `@dataiku/uv@0.12.0` 平台可选依赖，直接执行原生二进制，不依赖 postinstall。
+- `yarn typecheck`、`yarn build`、`yarn check:build` 通过。macOS arm64 上实际执行 npm uv 的 `--version` 通过；其他平台没有实机验证。
+- 全部 148 项测试在 `tsx --test --test-concurrency=4 tests/unit/*.test.ts tests/integration/*.test.ts` 下通过。日志测试包含退出码 2 的 stderr 留存、脱敏、10,000 行保留、200 行分页、重启与恢复出厂设置；审批测试使用官方 rc.2 服务，覆盖单次批准、拒绝、取消、多端作答、重连与计划审批。
+- 默认高并发全量测试曾在不同临时目录之间触发既有的本地端口锁碰撞：一次来自插件 manager 锁，一次来自 Python runtime owner 锁。降低测试并发后全量通过；目录哈希映射端口的实现仍可能误冲突，本次仅修复 Bridge 对残留 PID/损坏 endpoint 文件的误判。
+- Web 与 Desktop 前端未修改。插件自身新增日志来源切换和 Connector 终端日志列表；计划审批沿用现有 inputRequest v1 协议，未新增前端协议或专用页面。
+
+合入最新 main 时，两个 Python 集成探针已适配 Connector 访问令牌新增的 credential_hash 参数。重新构建及产物检查通过；并发 4 时再次出现既有端口锁竞争，随后以 --test-concurrency=1 运行全部 148 项测试通过（0 失败）。

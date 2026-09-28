@@ -12,7 +12,7 @@ export class QuestionForm {
     const ids = new Set<string>()
     this.questions = value.map(raw => {
       const q = record(raw)
-      if (typeof q.id !== 'string' || !q.id || ids.has(q.id) || typeof q.question !== 'string' || !q.question.trim() || q.intent != null) {
+      if (typeof q.id !== 'string' || !q.id || ids.has(q.id) || typeof q.question !== 'string' || !q.question.trim()) {
         invalid('Unsupported DSH question definition.')
       }
       ids.add(q.id)
@@ -25,16 +25,23 @@ export class QuestionForm {
         if (typeof o.label !== 'string' || !o.label || labels.has(o.label) || (o.description != null && typeof o.description !== 'string')) invalid('Invalid DSH option.')
         labels.add(o.label)
       }
+      const intent = q.intent == null ? undefined : record(q.intent)
+      if (intent && (intent.kind !== 'plan-review' || typeof intent.approve !== 'string' || !labels.has(intent.approve)
+        || typeof q.detail !== 'string' || !q.detail.trim() || q.multiSelect === true)) invalid('Invalid DSH plan review.')
       return { id: q.id, question: q.question,
+        ...(intent ? { intent: { kind: 'plan-review' as const, approve: intent.approve as string } } : {}),
         ...(typeof q.header === 'string' ? { header: q.header } : {}),
         ...(typeof q.detail === 'string' ? { detail: q.detail } : {}),
         multiSelect: q.multiSelect === true, options: options as NonNullable<AskUserQuestionItem['options']> }
     })
   }
 
+  get hasPlanReview(): boolean { return this.questions.some(question => question.intent?.kind === 'plan-review') }
+
   input() {
     const questions = this.questions.map(q => ({ id: q.id, prompt: q.detail ? `${q.question}\n\n${q.detail}` : q.question,
-      ...(q.header ? { header: q.header } : {}), multiple: q.multiSelect === true, allowCustom: true,
+      ...(q.header ? { header: q.header } : q.intent ? { header: '计划审批' } : {}),
+      ...(q.intent ? { intent: { kind: 'plan-review', approveOptionId: `o_${q.options!.findIndex(option => option.label === q.intent!.approve)}` } } : {}), multiple: q.multiSelect === true, allowCustom: true,
       options: (q.options ?? []).map((o, i) => ({ id: `o_${i}`, label: o.label, ...(o.description ? { description: o.description } : {}) })) }))
     return { required: true,
       schema: { type: 'object', required: ['answers'], additionalProperties: false, properties: {

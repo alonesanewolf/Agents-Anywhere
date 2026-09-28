@@ -12,7 +12,8 @@ import type { MobileLoginSnapshot } from '../../contracts/mobile.js'
 import { join } from 'node:path'
 import { stateRoot } from '../config.js'
 import { readBridgeLogs } from '../dsh-runtime/log-reader.js'
-import type { BridgeLogSnapshot } from '../../contracts/logs.js'
+import { readConnectorLogs } from '../connector/logs.js'
+import type { ConnectorLogPage, ConnectorLogQuery, BridgeLogSnapshot } from '../../contracts/logs.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context { agentsAnywhereOnboarding: OnboardingService }
@@ -79,6 +80,8 @@ export class OnboardingService extends TypertRemoteService implements Onboarding
   openDesktop(): Promise<DesktopLaunch> { return this.manager.openDesktop() }
   @Remote('readBridgeLogs')
   readBridgeLogs(): Promise<BridgeLogSnapshot> { return readBridgeLogs(this.logsDirectory) }
+  @Remote('readConnectorLogs')
+  readConnectorLogs(query?: ConnectorLogQuery): Promise<ConnectorLogPage> { return readConnectorLogs(this.logsDirectory, query) }
   @Remote('begin')
   begin(input?: LoginRequest): Promise<{ url: string }> { return this.manager.begin(input) }
   @Remote('cancel')

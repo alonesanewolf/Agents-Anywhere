@@ -359,14 +359,17 @@
         "dsh": {
           "readOnly": { "label": "仅可查看" },
           "workspaceWrite": { "label": "工作区内修改" },
-          "fullAccess": { "label": "完全权限" }
+          "fullAccess": { "label": "完全权限" },
+          "auto": {
+            "label": "Auto review"
+          }
         },
         "requestApproval": {
           "label": "请求批准",
           "description": "编辑外部文件和使用互联网时始终询问"
         },
         "autoReview": {
-          "label": "替我审批",
+          "label": "Auto review",
           "description": "仅对检测到的风险操作请求批准"
         },
         "fullAccess": {
@@ -981,6 +984,9 @@
       "loadOlder": "加载更早消息",
       "expandMessage": "展开",
       "collapseMessage": "收起",
+      "mermaidDiagram": "Mermaid 图表",
+      "mermaidUpdateFailed": "当前显示上一次成功生成的图表，最新源码暂时无法渲染。",
+      "mermaidSource": "查看源码",
       "copyCode": "复制代码",
       "copyItemId": "复制 item ID",
       "copyItemJson": "复制 item JSON",

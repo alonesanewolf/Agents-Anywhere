@@ -35,3 +35,18 @@ test('platform rules reject skipped, forged and conflicting answers before respo
   assert.throws(() => new QuestionForm([...questions, questions[0]]))
   assert.throws(() => new QuestionForm([{ id: 'plan', question: '批准计划？', intent: { kind: 'plan-review', approve: '好' } }]))
 })
+
+test('plan review preserves the full plan and maps the declared approval option independently of position', () => {
+  const detail = '# 计划\n\n1. 检查配置\n2. 修改文件\n\n```ts\nconst value = 1\n```'
+  const plan = { id: 'plan', question: '是否批准？', detail, intent: { kind: 'plan-review', approve: '批准计划' }, options: [{ label: '修改计划' }, { label: '批准计划' }] }
+  const form = new QuestionForm([plan])
+  assert.equal(form.hasPlanReview, true)
+  assert.equal(form.input().uiSchema.questions[0]?.prompt, `是否批准？\n\n${detail}`)
+  assert.equal(form.input().uiSchema.questions[0]?.intent?.approveOptionId, 'o_1')
+  assert.deepEqual(form.answer({ answers: { plan: { optionIds: ['o_1'] } } }), { answers: [{ id: 'plan', selected: ['批准计划'] }] })
+  assert.deepEqual(form.answer({ answers: { plan: { customText: '先不要修改文件' } } }), { answers: [{ id: 'plan', selected: [], custom: '先不要修改文件' }] })
+  assert.throws(() => new QuestionForm([{ ...plan, detail: '' }]))
+  assert.throws(() => new QuestionForm([{ ...plan, intent: { kind: 'future-review', approve: '批准计划' } }]))
+  assert.throws(() => new QuestionForm([{ ...plan, intent: { kind: 'plan-review', approve: '不是选项' } }]))
+  assert.throws(() => new QuestionForm([{ ...plan, multiSelect: true }]))
+})

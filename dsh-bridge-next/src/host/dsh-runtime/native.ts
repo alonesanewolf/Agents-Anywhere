@@ -5,6 +5,7 @@ import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionRecord } from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-storage-domain'
+import type {} from '@deepseek-ai/dsh-permission-presets'
 import { realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { canonicalJson, digest, userMessageId } from './identity.js'
@@ -12,6 +13,7 @@ import { BridgeError } from './errors.js'
 import { ClientPresence } from './visibility.js'
 import { NativeSessionSource } from './sessions/source.js'
 import { record } from './types.js'
+import { UserApprovals } from './approvals.js'
 import { UserQuestions } from './questions.js'
 import { RuntimeDiagnostics } from './diagnostics.js'
 import { RuntimeCatalogs } from './catalogs.js'
@@ -28,8 +30,8 @@ export type NativeChange = { type: 'stream', id: string, turn: number, step: num
   | { type: 'event', id: string, event: SessionEvent }
   | { type: 'session', id: string } | { type: 'status', id: string }
   | { type: 'refresh', id: string }
-  | { type: 'question', id: string } | { type: 'capabilities' }
-  | { type: 'visibility' } | { type: 'catalogs' }
+  | { type: 'question', id: string } | { type: 'approval', id: string } | { type: 'capabilities' }
+  | { type: 'visibility' } | { type: 'catalogs', catalogType: 'model' | 'permission' }
 export interface NativeWorkspace { id: string, title: string, path: string, sessionIds: string[] }
 
 /** Configuration facts a session state read needs, without retaining the event log. */
@@ -48,6 +50,7 @@ export function lastTurnEndKind(events: readonly SessionEvent[]): string | undef
 export class NativeRuntime {
   readonly presence: ClientPresence
   readonly questions: UserQuestions
+  readonly approvals: UserApprovals
   private listeners = new Set<(change: NativeChange) => void>()
   readonly source: NativeSessionSource
   readonly catalogs: RuntimeCatalogs
@@ -56,22 +59,16 @@ export class NativeRuntime {
   private closed = false
   private creations: CreationIntents
   readonly attachments: RuntimeAttachments
-  // Successful feed checkpoints live only for this Host process. A new Host imports everything.
-  private readonly syncCheckpoints = new Map<string, Map<string, string>>()
-  checkpoints(namespace: string): Map<string, string> {
-    let checkpoints = this.syncCheckpoints.get(namespace)
-    if (!checkpoints) { checkpoints = new Map(); this.syncCheckpoints.set(namespace, checkpoints) }
-    return checkpoints
-  }
   private readonly facts = new Map<string, { revision: string, value: SessionFacts }>()
 
   constructor(readonly ctx: Context, creationDirectory: string,
     readonly diagnostics = new RuntimeDiagnostics(ctx.logger('agents-anywhere-runtime'))) {
     this.creations = new CreationIntents(creationDirectory)
     this.attachments = new RuntimeAttachments(join(dirname(creationDirectory), 'attachments'))
-    this.catalogs = new RuntimeCatalogs(ctx, () => this.emit({ type: 'catalogs' }))
+    this.catalogs = new RuntimeCatalogs(ctx, () => this.emit({ type: 'catalogs', catalogType: 'model' }))
     this.configuration = new RuntimeConfiguration(ctx)
     ctx.on('llm/adapters-updated', () => this.catalogs.invalidate(), { global: true })
+    ctx.on('permission-presets/catalog-changed', () => this.emit({ type: 'catalogs', catalogType: 'permission' }), { global: true })
     for (const key of ['sessionController', 'permissionPresets', 'commands', 'agentPresets', 'attachments', 'fileUploads'] as const) {
       ctx.inject([key], child => {
         this.emit({ type: 'capabilities' })
@@ -80,7 +77,8 @@ export class NativeRuntime {
     }
     this.presence = new ClientPresence(() => {})
     this.source = new NativeSessionSource(ctx, diagnostics)
-    this.questions = new UserQuestions(ctx, id => this.visible(id), id => this.emit(id ? { type: 'question', id } : { type: 'capabilities' }))
+    this.approvals = new UserApprovals(ctx, id => this.visible(id), id => this.emit(id ? { type: 'approval', id } : { type: 'capabilities' }), this.diagnostics)
+    this.questions = new UserQuestions(ctx, id => this.visible(id), id => this.emit(id ? { type: 'question', id } : { type: 'capabilities' }), this.diagnostics)
     ctx.on('session/created', session => {
       this.source.observe(session)
       this.emit({ type: 'session', id: session.id })
@@ -88,6 +86,7 @@ export class NativeRuntime {
     ctx.on('session/event', (session, event) => {
       this.source.observe(session, event)
       this.questions.observe(session.id, event)
+      this.approvals.observe(session.id, event)
       this.emit({ type: 'event', id: session.id, event })
     }, { global: true })
     ctx.on('session/disposed', session => this.emit({ type: 'session', id: session.id }), { global: true })
@@ -126,7 +125,6 @@ export class NativeRuntime {
     return () => this.listeners.delete(callback)
   }
   refresh(id: string): void {
-    for (const checkpoints of this.syncCheckpoints.values()) checkpoints.delete(id)
     this.source.retry(id); this.emit({ type: 'refresh', id })
   }
   private emit(change: NativeChange): void {
@@ -149,7 +147,7 @@ export class NativeRuntime {
     // model. Each model's reasoningItems describes its own effort support.
     const effort = Boolean(catalog?.models.some(item => item.enabled && item.reasoningItems.some(option => option.enabled)))
     const result = capabilities(platformId, Boolean(this.ctx.get('sessionController')), this.questions.available,
-      { model, effort, attachments: Boolean(this.ctx.get('attachments')), files: Boolean(this.ctx.get('fileUploads')),
+      { model, effort, approval: this.approvals.available, attachments: Boolean(this.ctx.get('attachments')), files: Boolean(this.ctx.get('fileUploads')),
         permission: this.configuration.canSelectPermission && (!id || !this.ctx.get('agents')?.get(id) || Boolean(this.ctx.get('commands')!.find(this.ctx.get('agents')!.get(id)!, 'permission'))) })
     return { ...result, metadata: { ...result.metadata,
       ...(catalog ? { modelCatalogFailures: catalog.metadata.failures } : {}) } }
@@ -320,9 +318,9 @@ export class NativeRuntime {
     this.presence.close()
     this.source.close()
     await this.questions.close()
+    await this.approvals.close()
     this.listeners.clear()
     await Promise.allSettled([...this.writes.values()])
     this.facts.clear()
-    this.syncCheckpoints.clear()
   }
 }

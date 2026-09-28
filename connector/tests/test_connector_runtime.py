@@ -2066,6 +2066,12 @@ def test_connector_runtime_reconnects_quietly_on_websocket_close(monkeypatch) ->
     asyncio.run(_exercise_websocket_close_reconnect(monkeypatch))
 
 
+def test_access_token_rejection_reconnects_without_invalidating_saved_credential(monkeypatch) -> None:
+    asyncio.run(_exercise_websocket_close_reconnect(
+        monkeypatch, Close(1008, "invalid connector access token")
+    ))
+
+
 def test_runtime_sync_task_survives_websocket_reconnect(monkeypatch) -> None:
     asyncio.run(_exercise_runtime_sync_task_survives_websocket_reconnect(monkeypatch))
 
@@ -2659,7 +2665,7 @@ async def wait_for_ws_response(
     raise AssertionError(f"websocket response not received: {request_id}")
 
 
-async def _exercise_websocket_close_reconnect(monkeypatch) -> None:
+async def _exercise_websocket_close_reconnect(monkeypatch, close_frame=None) -> None:
     client = _client(reconnect_seconds=0)
     calls = 0
     sleeps: list[float] = []
@@ -2668,7 +2674,7 @@ async def _exercise_websocket_close_reconnect(monkeypatch) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            close = Close(1012, "service restart")
+            close = close_frame or Close(1012, "service restart")
             raise ConnectionClosedError(close, close, True)
         raise asyncio.CancelledError
 
@@ -3475,4 +3481,89 @@ def test_reconnect_recovers_an_unchanged_polling_session_once():
         await runner.sync_existing_once()
         assert len(batches) == recovered
 
+    asyncio.run(run())
+
+
+def test_failed_session_does_not_repeat_successful_recovery_but_changes_still_sync():
+    from collections import Counter
+    from unittest.mock import AsyncMock
+
+    async def run():
+        reads = Counter()
+        class Runtime(FakeAgentRuntime):
+            changed = False
+            broken = True
+
+            async def list_sessions(self, **kwargs):
+                assert kwargs["force"] is False
+                return tuple(SessionMeta(session_id=id, external_session_id=id, runtime="codex",
+                    metadata={"sync": {"changed": self.changed and id == "healthy", "requires_timeline_sync": self.changed and id == "healthy"}})
+                    for id in ["healthy", "broken"])
+
+            async def prepare_session_timeline_sync(self, id, external):
+                reads[id] += 1
+                if id == "broken" and self.broken:
+                    raise RuntimeError("invalid paginated history lineage: cycle detected")
+                return PreparedSessionTimelineSync(snapshot=None, commit=AsyncMock())
+
+        runtime = Runtime()
+        runner = RuntimeSyncRunner(config=_client().config, supervisor=FakeRuntimeSupervisor(runtime),
+            host=RecordingRuntimeHost(), preferences_reader=dict,
+            send_notification=unused_notification_sender, ingest_notifications=AsyncMock())
+        await runner.reconnect_event_runtimes()
+        await runner.sync_existing_once()
+        await runner.sync_existing_once()
+        assert reads == {"healthy": 1, "broken": 2}
+        runtime.changed = True
+        await runner.sync_existing_once()
+        assert reads == {"healthy": 2, "broken": 3}
+        runtime.changed = False
+        runtime.broken = False
+        await runner.sync_existing_once()
+        await runner.sync_existing_once()
+        assert reads == {"healthy": 2, "broken": 4}
+        await runner.reconnect_event_runtimes()
+        await runner.sync_existing_once()
+        assert reads == {"healthy": 3, "broken": 5}
+    asyncio.run(run())
+
+
+def test_active_recovery_does_not_commit_a_deferred_timeline_replacement():
+    from unittest.mock import AsyncMock
+
+    async def run():
+        commit = AsyncMock()
+        class Runtime(FakeAgentRuntime):
+            active = True
+
+            async def list_sessions(self, **kwargs):
+                return (SessionMeta(session_id="session", external_session_id="external", runtime="codex",
+                                    metadata={"sync": {"changed": False}}),)
+
+            async def get_session_state(self, *args):
+                return SessionState(session_id="session", external_session_id="external", runtime="codex", status="running" if self.active else "idle")
+
+            async def prepare_session_timeline_sync(self, *args):
+                return PreparedSessionTimelineSync(
+                    snapshot=RuntimeTimelineSnapshot(session_id="session", external_session_id="external",
+                                                     runtime="codex", items=(), complete=True), commit=commit)
+
+        runtime = Runtime()
+        ingest = AsyncMock()
+        runner = RuntimeSyncRunner(config=_client().config, supervisor=FakeRuntimeSupervisor(runtime),
+            host=RecordingRuntimeHost(), preferences_reader=dict,
+            send_notification=unused_notification_sender, ingest_notifications=ingest)
+        await runner.sync_existing_session(runtime, SessionMeta(session_id="session", external_session_id="external",
+            runtime="codex", metadata={"sync": {"changed": True, "requires_timeline_sync": True}}), recovering=True)
+        commit.assert_not_awaited()
+        notices = ingest.call_args.args[0]
+        assert next(n for n in notices if n["method"] == "timeline.sync")["params"]["complete"] is False
+        await runner.reconnect_event_runtimes()
+        await runner.sync_existing_once()
+        commit.assert_not_awaited()
+        assert runner._recovered.get("codex", 0) != runner._recovery_generation
+        runtime.active = False
+        await runner.sync_existing_once()
+        commit.assert_awaited_once()
+        assert runner._recovered["codex"] == runner._recovery_generation
     asyncio.run(run())

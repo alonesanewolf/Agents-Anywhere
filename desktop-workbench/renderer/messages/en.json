@@ -357,9 +357,12 @@
       "permissionMode": "Permission mode",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "read-only" },
-          "workspaceWrite": { "label": "workspace-write" },
-          "fullAccess": { "label": "danger-full-access" }
+          "readOnly": { "label": "Read Only" },
+          "workspaceWrite": { "label": "Workspace Write" },
+          "fullAccess": { "label": "Full access" },
+          "auto": {
+            "label": "Auto review"
+          }
         },
         "requestApproval": {
           "label": "Request approval",
@@ -981,6 +984,9 @@
       "loadOlder": "Load earlier messages",
       "expandMessage": "Show more",
       "collapseMessage": "Show less",
+      "mermaidDiagram": "Mermaid diagram",
+      "mermaidUpdateFailed": "Showing the last valid diagram. The latest source could not be rendered.",
+      "mermaidSource": "View source",
       "copyCode": "Copy code",
       "copyItemId": "Copy item ID",
       "copyItemJson": "Copy item JSON",

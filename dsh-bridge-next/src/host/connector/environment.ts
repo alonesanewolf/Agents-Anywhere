@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access, mkdir } from 'node:fs/promises'
 import { userInfo } from 'node:os'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { delimiter, dirname, isAbsolute, join } from 'node:path'
+import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
 import type { ResolvedConfig } from '../config.js'
 import type { ConnectorSettings } from '../../contracts/connector.js'
@@ -27,6 +28,18 @@ export async function systemLanguages(): Promise<string[]> {
 
 export async function resolveUv(config: ResolvedConfig, settings: ConnectorSettings): Promise<string | null> {
   const command = settings.uvPath || config.uvPath
+  if (!settings.uvPath && config.uvPath === 'uv') {
+    try {
+      // Resolve through the declared dependency so pnpm's isolated layout works.
+      // Use the native binary directly, including when install scripts are disabled.
+      const require = createRequire(import.meta.url)
+      const provider = require.resolve('@dataiku/uv/package.json')
+      const binaryPackage = createRequire(provider).resolve(`@dataiku/uv-${process.platform}-${process.arch}/package.json`)
+      const bundled = join(dirname(binaryPackage), 'bin', process.platform === 'win32' ? 'uv.exe' : 'uv')
+      await access(bundled, constants.X_OK)
+      return bundled
+    } catch { /* Missing optional dependency or unsupported platform: try system uv. */ }
+  }
   const home = userInfo().homedir
   const paths = [
     ...(process.env['PATH'] ?? process.env['Path'] ?? '').split(delimiter).filter(Boolean),

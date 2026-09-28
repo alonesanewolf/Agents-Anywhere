@@ -2,7 +2,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { itemId, sessionId } from './identity.js'
 import { QuestionForm } from './question-form.js'
-import { QuestionStream, type QuestionOutcome } from './question-stream.js'
+import { InteractionStream, type InteractionOutcome } from './interaction-stream.js'
+import type { RuntimeDiagnostics } from './diagnostics.js'
 
 interface Question {
   eventId: string, agentId: string, form: QuestionForm,
@@ -13,11 +14,11 @@ interface Question {
 /** Only runtime-owned questions are retained. Connector/modal lifetimes never own the wait. */
 export class UserQuestions {
   private entries = new Map<string, Question>()
-  private stream: QuestionStream
+  private stream: InteractionStream
   get available(): boolean { return this.stream.available }
   constructor(ctx: Context, private visible: (id: string) => Promise<boolean>,
-    private changed: (id?: string) => void) {
-    this.stream = new QuestionStream(ctx, frame => this.receive(frame), () => this.changed())
+    private changed: (id?: string) => void, diagnostics?: RuntimeDiagnostics) {
+    this.stream = new InteractionStream(ctx, frame => this.receive(frame), () => this.changed(), 'userQuestions', diagnostics)
   }
 
   private async receive(frame: Record<string, unknown>): Promise<void> {
@@ -33,7 +34,7 @@ export class UserQuestions {
       if (frame.event === 'user-questions/request' && typeof frame.agentId === 'string' && await this.visible(frame.agentId)) {
         form = new QuestionForm((frame.request as { questions?: unknown } | undefined)?.questions)
       }
-    } catch { /* Unsupported intents, including plan-review, stay with official clients. */ }
+    } catch { /* Unknown future intents stay with official clients. */ }
     if (!form) { await this.stream.reply(frame.eventId, { kind: 'next' }); return }
     const entry: Question = { eventId: frame.eventId, agentId: frame.agentId as string, form,
       status: 'open', withdrawn: false, revision: 1 }
@@ -57,10 +58,10 @@ export class UserQuestions {
     return [...this.entries.values()].filter(e => e.agentId === id).map(e => {
       const pending = this.pending(e)
       return { noticeId: itemId(platformId, 'question', e.eventId), sessionId: platformId, runtime: 'dsh',
-        type: 'interaction', interactionType: 'input_request', title: '需要你的回答', severity: 'info',
+        type: 'interaction', interactionType: 'input_request', title: e.form.hasPlanReview ? '请审阅计划' : '需要你的回答', severity: 'info',
         status: e.status, revision: e.revision, responseRequired: pending,
         blocking: pending ? { scope: 'session', targetId: platformId } : null,
-        source: { runtime: 'dsh', component: 'dsh.ask_user_question' },
+        source: { runtime: 'dsh', component: e.form.hasPlanReview ? 'dsh.plan_review' : 'dsh.ask_user_question' },
         context: {}, metadata: { eventId: e.eventId },
         actions: pending ? [
           { actionId: 'submit', label: '提交回答', style: 'primary', input: e.form.input() },
@@ -72,7 +73,7 @@ export class UserQuestions {
   async respond(namespace: string, id: string, noticeId: string, actionId: string, input: unknown) {
     const entry = [...this.entries.values()].find(e => e.agentId === id && itemId(sessionId(namespace, id), 'question', e.eventId) === noticeId)
     if (!entry || entry.status !== 'open' || !await this.visible(id)) return { ok: false, code: 'dsh_question_not_pending', message: '这个问题已处理或已失效。' }
-    let outcome: QuestionOutcome
+    let outcome: InteractionOutcome
     if (actionId === 'submit') outcome = { kind: 'result', value: entry.form.answer(input) }
     else if (actionId === 'cancel') outcome = { kind: 'rejected', error: { name: 'UserQuestionError', code: 'ASK_CANCELLED', message: '用户取消了问答。' } }
     else return { ok: false, code: 'dsh_question_invalid_action', message: '未知的问答操作。' }

@@ -1,12 +1,18 @@
 export interface ConnectorSettings {
   uvPath: string
   uvPypiIndexUrl: string
+  uvPythonInstallMirror: string
   syncIntervalSeconds: number
 }
 
 export const DEFAULT_CONNECTOR_SETTINGS: ConnectorSettings = {
-  uvPath: '', uvPypiIndexUrl: '', syncIntervalSeconds: 30,
+  uvPath: '', uvPypiIndexUrl: '', uvPythonInstallMirror: '', syncIntervalSeconds: 30,
 }
+
+export const PYTHON_MIRRORS = [
+  { id: 'default', label: '官方源', url: '' },
+  { id: 'npmmirror', label: 'npmmirror', url: 'https://registry.npmmirror.com/-/binary/python-build-standalone' },
+] as const
 
 export const SYNC_INTERVALS = [15, 30, 60, 300] as const
 export const PYPI_MIRRORS = [

@@ -21,3 +21,9 @@ details[open] > .summary::before { transform: rotate(90deg); }
 .detail p { margin: 0; font-size: 11px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 .entry pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .empty { padding: 24px 0; color: var(--dsw-alias-label-secondary); line-height: 1.7; }
+
+.sources { display: flex; gap: 8px; margin-bottom: 16px; }
+.terminal { height: 52dvh; min-height: 180px; overflow: auto; overscroll-behavior: contain; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; user-select: text; }
+.terminalLine { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.terminalLine time { color: var(--dsw-alias-label-secondary); }
+.terminal:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }

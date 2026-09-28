@@ -1,35 +1,26 @@
 "use client"
 
 import * as React from "react"
-import { Download, Loader2, PanelRight } from "lucide-react"
+import { Download, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { Input } from "@/components/ui/input"
+import { WorkspaceHeader } from "@/components/workspace-header"
+import { WorkspaceSidebarToggleButton } from "@/components/workspace-sidebar-toggle-button"
 import { DashboardSidebarToggle } from "@/components/dashboard-sidebar-toggle"
 import { useWorkspace } from "@/components/workspace-context"
+import { useAuth } from "@/components/auth/auth-context"
+import { dshAgentPresetLabel, dshAgentPresetOptions } from "@/features/dashboard/dsh-agent-presets"
+import { rememberDshSessionPreset, useDshSessionPreset } from "@/features/dashboard/dsh-session-presets"
 import type { SessionMemorySnapshot } from "@/components/session-detail"
 import { cn } from "@/lib/utils"
 import { useTranslations } from "next-intl"
 import type { SessionView as SessionViewModel } from "@/lib/demo-api"
 import { runtimeLabel } from "@/components/session/session-utils"
-import { sessionRuntimeType } from "@/features/dashboard/runtime-instances"
-
-const HEADER_BLUR_LAYERS = buildBlurGradientLayers({
-  height: 56,
-  layerCount: 9,
-  maxBlur: 10,
-  minBlur: 0,
-  overlap: 8,
-  gamma: 1.85,
-})
-
-type BlurLayerStyle = React.CSSProperties & {
-  WebkitBackdropFilter?: string
-  WebkitMaskImage?: string
-}
+import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runtime-instances"
 
 type SessionViewHeaderProps = {
   session: SessionViewModel
@@ -52,11 +43,34 @@ export function SessionViewHeader({
   toolsOpen,
   onToggleTools,
 }: SessionViewHeaderProps) {
-  const { renameSession } = useWorkspace()
+  const { renameSession, runtimes } = useWorkspace()
+  const { session: authSession } = useAuth()
   const tSession = useTranslations("dashboard.session")
+  const tPreset = useTranslations("dashboard.agentPresets")
   const [editingTitle, setEditingTitle] = React.useState(false)
   const [titleDraft, setTitleDraft] = React.useState(session.title ?? "")
   const [renaming, setRenaming] = React.useState(false)
+  const runtimeId = sessionRuntimeId(session)
+  const isDsh = sessionRuntimeType(session) === "dsh"
+  const cachedPreset = useDshSessionPreset(authSession?.userId, isDsh ? session : null)
+  const agentPresetRuntime = runtimes.find((runtime) => runtime.connectorId === session.connectorId && runtime.runtimeId === runtimeId)
+  const currentSnapshot = memorySnapshot?.session.id === session.id ? memorySnapshot : null
+  const agentPreset = currentSnapshot?.state?.metadata.agentPreset
+  const snapshotPresetId = isDsh && typeof agentPreset === "string" && agentPreset.trim() ? agentPreset.trim() : null
+  const agentPresetId = snapshotPresetId ?? cachedPreset?.id
+  const agentPresetLabel = dshAgentPresetOptions(agentPresetRuntime).find((option) => option.id === agentPresetId)?.label
+    ?? (cachedPreset?.id === agentPresetId ? cachedPreset?.label : undefined)
+  const agentPresetName = agentPresetId ? dshAgentPresetLabel(
+    agentPresetId,
+    [{ id: agentPresetId, label: agentPresetLabel ?? agentPresetId, enabled: true }],
+    tPreset,
+  ) : null
+
+  React.useEffect(() => {
+    if (agentPresetId) rememberDshSessionPreset(
+      authSession?.userId, { id: session.id, connectorId: session.connectorId }, agentPresetId, agentPresetLabel,
+    )
+  }, [agentPresetId, agentPresetLabel, authSession?.userId, session.connectorId, session.id])
 
   React.useEffect(() => {
     if (!editingTitle) setTitleDraft(session.title ?? "")
@@ -89,13 +103,9 @@ export function SessionViewHeader({
   }, [cancelRename, renameSession, renaming, session.id, session.title, tSession, titleDraft])
 
   return (
-    <header className="pointer-events-none absolute inset-x-0 top-0 z-10 h-14 overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-background/80 to-background/0" />
-      {HEADER_BLUR_LAYERS.map((layer) => (
-        <div key={layer.key} className={layer.className} style={layer.style} />
-      ))}
-      <div className="pointer-events-auto relative flex h-14 items-center gap-3 px-3">
-        <DashboardSidebarToggle />
+    <WorkspaceHeader overlay>
+      <DashboardSidebarToggle />
+      <div className="flex min-w-0 items-center">
         {editingTitle ? (
           <Input
             autoFocus
@@ -130,69 +140,34 @@ export function SessionViewHeader({
             {session.title}
           </button>
         )}
-        <SessionMetaBadge
-          session={session}
-          connectorName={connectorName}
-          memorySnapshot={memorySnapshot}
-          onExportMemoryTimeline={onExportMemoryTimeline}
-          onExportRemoteTimeline={onExportRemoteTimeline}
-          exporting={exporting}
-        />
-        <div className="ml-auto flex items-center gap-1">
-          {!toolsOpen ? (
-            <Button variant="ghost" size="icon-sm" type="button"
-              aria-label={tSession("tools.toggle")} title={tSession("tools.toggle")}
-              data-slot="session-tool-sidebar-toggle" onClick={onToggleTools}>
-              <PanelRight />
-            </Button>
-          ) : null}
-        </div>
+        {agentPresetName ? (
+          <span
+            className="flex min-w-0 shrink-0 items-center text-sm font-medium"
+            aria-label={`${tPreset("label")}: ${agentPresetName}`}
+            title={`${tPreset("label")}: ${agentPresetName}`}
+          >
+            <span aria-hidden="true">·</span>
+            <span className="max-w-32 truncate px-1">{agentPresetName}</span>
+          </span>
+        ) : null}
       </div>
-    </header>
+      <SessionMetaBadge
+        session={session}
+        connectorName={connectorName}
+        memorySnapshot={memorySnapshot}
+        onExportMemoryTimeline={onExportMemoryTimeline}
+        onExportRemoteTimeline={onExportRemoteTimeline}
+        exporting={exporting}
+      />
+      <div className="ml-auto flex items-center gap-1">
+        {!toolsOpen ? (
+          <WorkspaceSidebarToggleButton side="right" aria-expanded={false}
+            aria-label={tSession("tools.toggle")} title={tSession("tools.toggle")}
+            data-slot="session-tool-sidebar-toggle" onClick={onToggleTools} />
+        ) : null}
+      </div>
+    </WorkspaceHeader>
   )
-}
-
-function buildBlurGradientLayers({
-  height,
-  layerCount,
-  maxBlur,
-  minBlur,
-  overlap,
-  gamma,
-}: {
-  height: number
-  layerCount: number
-  maxBlur: number
-  minBlur: number
-  overlap: number
-  gamma: number
-}) {
-  const step = height / layerCount
-  return Array.from({ length: layerCount }, (_, index) => {
-    const start = Math.max(0, Math.round(index * step - overlap * 0.5))
-    const end = Math.min(height, Math.round((index + 1) * step + overlap))
-    const progress = index / Math.max(1, layerCount - 1)
-    const blur = minBlur + (maxBlur - minBlur) * Math.pow(1 - progress, gamma)
-    const fadeIn = index === 0 ? 0 : 26
-    const fadeOut = index === layerCount - 1 ? 72 : 76
-    const mask =
-      index === 0
-        ? `linear-gradient(to bottom, black 0%, black ${fadeOut}%, transparent 100%)`
-        : `linear-gradient(to bottom, transparent 0%, black ${fadeIn}%, black ${fadeOut}%, transparent 100%)`
-
-    return {
-      key: `${index}-${start}-${end}-${blur.toFixed(2)}`,
-      className: "absolute inset-x-0",
-      style: {
-        top: `${start}px`,
-        height: `${Math.max(1, end - start)}px`,
-        backdropFilter: `blur(${blur.toFixed(2)}px)`,
-        WebkitBackdropFilter: `blur(${blur.toFixed(2)}px)`,
-        maskImage: mask,
-        WebkitMaskImage: mask,
-      } satisfies BlurLayerStyle,
-    }
-  })
 }
 
 function SessionMetaBadge({
