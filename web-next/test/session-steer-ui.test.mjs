@@ -235,6 +235,47 @@ test('pending permission intent survives observations until acknowledgement, the
   assert.deepEqual(sends, [{ permission: 'permission:request' }])
 })
 
+for (const scenario of [
+  { field: 'permission', catalog: 'permissionCatalog', original: 'permission:request', first: 'permission:grant', second: 'permission:read', firstLabel: 'Full access', secondLabel: 'Read only', originalLabel: 'Request approval',
+    items: { permissions: [...permissionCatalog.permissions, { ...permissionCatalog.permissions[0], id: 'grant', displayName: 'Full access', selectionId: 'permission:grant', default: false }, { ...permissionCatalog.permissions[0], id: 'read', displayName: 'Read only', selectionId: 'permission:read', default: false }] } },
+  { field: 'model', catalog: 'modelCatalog', original: 'model:astra', first: 'model:nova', second: 'model:orbit', firstLabel: 'Nova', secondLabel: 'Orbit', originalLabel: 'Astra',
+    items: { models: [...modelCatalog.models, { ...modelCatalog.models[0], id: 'nova', displayName: 'Nova', selectionId: 'model:nova', default: false }, { ...modelCatalog.models[0], id: 'orbit', displayName: 'Orbit', selectionId: 'model:orbit', default: false }] } },
+]) {
+  test(`superseded ${scenario.field} acknowledgement survives a later failed choice and yields to native`, async t => {
+    const sends = []
+    const pending = []
+    function Host() {
+      const [selections, setSelections] = useState({ [scenario.field]: scenario.original })
+      const [value, setValue] = useState('continue')
+      window.observeSupersededSelection = id => setSelections({ [scenario.field]: id })
+      return h(SessionComposer, props({
+        runtimeState: { status: 'idle', selections, metadata: {} }, value, onValueChange: setValue,
+        effectiveCapabilities: capability('session.send_message', `catalog.${scenario.field}`),
+        [scenario.catalog]: scenario.items,
+        onSelectionChange: () => new Promise(resolve => pending.push(resolve)),
+        onSend: async (_text, _files, selected) => { sends.push(selected); return true },
+      }))
+    }
+    const host = await mount(t, h(Host))
+    const choose = async label => {
+      const trigger = host.querySelector('button[aria-haspopup="menu"]')
+      await act(async () => trigger.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 })))
+      const item = [...document.querySelectorAll('[role="menuitem"]')].find(element => element.textContent.includes(label))
+      assert.ok(item)
+      await act(async () => item.click())
+    }
+    await choose(scenario.firstLabel)
+    await choose(scenario.secondLabel)
+    assert.equal(pending.length, 2)
+    await act(async () => { window.observeSupersededSelection(scenario.first); pending[0](true) })
+    await act(async () => pending[1](false))
+    await act(async () => window.observeSupersededSelection(scenario.original))
+    assert.match(host.textContent, new RegExp(scenario.originalLabel))
+    await act(async () => host.querySelector('button[aria-label="Send"]').click())
+    assert.deepEqual(sends, [{ [scenario.field]: scenario.original }])
+  })
+}
+
 test('an explicit model choice writes settings while an untouched permission remains inherited', async t => {
   const writes = []
   const sent = []
