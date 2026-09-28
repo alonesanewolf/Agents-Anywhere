@@ -55,6 +55,7 @@ class CoordinatedCodexClient:
         self.handler = None
         self.attached = set()
         self.owned = set()
+        self._owned_claims = {}
         self.acquiring = {}
         self.starting = {}
         self.locks = defaultdict(asyncio.Lock)
@@ -133,6 +134,7 @@ class CoordinatedCodexClient:
                 await self.peer.release(thread_id)
                 await self.refresh_state(thread_id, force=True)
             self.owned.clear()
+            self._owned_claims.clear()
             self.goal_support.clear()
             return
         params = message.get("params") or {}
@@ -384,7 +386,7 @@ class CoordinatedCodexClient:
                 self.attached.add(thread_id)
                 return
             authority.revalidate()
-            self.acquiring[thread_id] = []
+            pending = self.acquiring[thread_id] = []
             try:
                 result = await self.sdk.native_thread_resume(
                     thread_id, settings=authority.params()
@@ -397,12 +399,11 @@ class CoordinatedCodexClient:
                 try:
                     current()
                 except IpcError:
-                    if self.peer.ownership_token(thread_id) is claim:
-                        self.owned.discard(thread_id)
-                        await self.peer.release(thread_id, expected_token=claim)
+                    await self._release_claim(thread_id, claim)
                     raise
             finally:
-                self.acquiring.pop(thread_id, None)
+                if self.acquiring.get(thread_id) is pending:
+                    self.acquiring.pop(thread_id)
 
     async def _route(self, thread_id, suffix, params):
         await self._acquire(thread_id)
@@ -671,6 +672,14 @@ class CoordinatedCodexClient:
             before_dispatch=before_dispatch,
         )
 
+    async def _release_claim(self, thread_id, claim):
+        # Peer ownership and facade registration may each have been replaced.
+        # Clear only this acquisition's bookkeeping and exact inserted record.
+        if self._owned_claims.get(thread_id) is claim:
+            self._owned_claims.pop(thread_id)
+            self.owned.discard(thread_id)
+        await self.peer.release(thread_id, expected_token=claim)
+
     async def _claim_observed(self, thread_id, state):
         pending = self.acquiring[thread_id]
         for message in pending:
@@ -679,12 +688,17 @@ class CoordinatedCodexClient:
         claim = None
         try:
             # The peer rolls back insertion if its own publication fails.
-            await self.peer.claim(thread_id, state, supports_untrusted_app_input=False)
-            claim = self.peer.ownership_token(thread_id)
+            _, claim = await self.peer.claim_with_token(
+                thread_id, state, supports_untrusted_app_input=False
+            )
+            if self.peer.ownership_token(thread_id) is not claim:
+                raise IpcError("claim-superseded")
+            self._owned_claims[thread_id] = claim
             self.owned.add(thread_id)
             # Drain the observations received during publication from the current
             # state. Any failure in this second phase also revokes our claim.
-            self.acquiring.pop(thread_id)
+            if self.acquiring.get(thread_id) is pending:
+                self.acquiring.pop(thread_id)
             if pending:
                 state = self.peer.get_state(thread_id)
                 for message in pending:
@@ -699,21 +713,23 @@ class CoordinatedCodexClient:
                         )
                     state = reduce_event(state, message)
                 await self.peer.publish_state(thread_id, state)
+                if self.peer.ownership_token(thread_id) is not claim:
+                    raise IpcError("claim-superseded")
             return claim
         except BaseException:
-            if claim is not None and self.peer.ownership_token(thread_id) is claim:
-                self.owned.discard(thread_id)
-                await self.peer.release(thread_id, expected_token=claim)
+            if claim is not None:
+                await self._release_claim(thread_id, claim)
             raise
 
     async def start_thread(self, request):
         token, pending = object(), []
         self.starting[token] = pending
         thread_id = None
+        observations = None
         try:
             result = await self.sdk.native_thread_start(request)
             thread_id = result["thread"]["id"]
-            self.acquiring[thread_id] = [
+            observations = self.acquiring[thread_id] = [
                 message
                 for message in pending
                 if message.get("params", {}).get(
@@ -729,8 +745,8 @@ class CoordinatedCodexClient:
             return CodexThreadResult(thread_id=thread_id, payload=result)
         finally:
             self.starting.pop(token, None)
-            if thread_id is not None:
-                self.acquiring.pop(thread_id, None)
+            if observations is not None and self.acquiring.get(thread_id) is observations:
+                self.acquiring.pop(thread_id)
 
     async def start_turn(self, request):
         choices = (request.approval_policy, request.approvals_reviewer, request.sandbox)

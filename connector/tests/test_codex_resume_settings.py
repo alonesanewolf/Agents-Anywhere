@@ -1,9 +1,11 @@
 """Cold acquisition exercises real SDK serialization, never a preset resume result."""
 
 import asyncio
+from copy import deepcopy
 
 import pytest
 from codex_resume_fixture import RolloutNative
+from connector.runtimes.codex.coordination.wire import IpcError
 from connector.runtimes.codex.sdk.runtime_client import CodexStartTurnRequest
 from test_codex_owner_absence_budget import THREAD, network
 
@@ -521,7 +523,7 @@ def test_cancelled_claim_does_not_release_replacement_owner(tmp_path):
             task = asyncio.create_task(facade._acquire(THREAD))
             await asyncio.wait_for(entered.wait(), 1)
             old = caller.ownership_token(THREAD)
-            state = caller.get_state(THREAD)
+            state = {"id": THREAD, "turns": [], "requests": [], "replacement": True}
             caller._snapshot = snapshot
             await caller.claim(THREAD, state)
             replacement = caller.ownership_token(THREAD)
@@ -530,8 +532,164 @@ def test_cancelled_claim_does_not_release_replacement_owner(tmp_path):
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert caller.ownership_token(THREAD) is replacement
+            assert caller.get_state(THREAD) == state
+            assert THREAD not in facade.owned
             assert not facade.acquiring
             assert not [p for m, p in n.calls if m == "turn/start"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("ending", ["cancel", "error"])
+def test_superseded_initial_claim_never_adopts_or_observes_replacement(tmp_path, ending):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = RolloutNative(tmp_path)
+            facade.sdk = facade.operations.sdk = native.sdk
+            entered, resume, pending = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            snapshot = caller._snapshot
+            error = RuntimeError("pending publication failed")
+
+            async def initial(thread_id):
+                await snapshot(thread_id)
+                entered.set()
+                await resume.wait()
+
+            async def second(thread_id):
+                await snapshot(thread_id)
+                pending.set()
+                if ending == "error":
+                    raise error
+                await asyncio.Event().wait()
+
+            caller._snapshot = initial
+            task = asyncio.create_task(
+                facade.start_turn(CodexStartTurnRequest(thread_id=THREAD, content="once"))
+            )
+            waiter = asyncio.create_task(pending.wait())
+            try:
+                await asyncio.wait_for(entered.wait(), 1)
+                original = caller.ownership_token(THREAD)
+                caller._snapshot = snapshot
+                state = {
+                    "id": THREAD,
+                    "turns": [],
+                    "requests": [],
+                    "status": {"type": "active"},
+                    "replacement": True,
+                }
+                revision = await caller.claim(THREAD, state)
+                replacement = caller.ownership_token(THREAD)
+                assert replacement is not original
+                for method, params in [
+                    ("thread/status/changed", {"status": {"type": "idle"}}),
+                    ("thread/settings/changed", {"settings": {"model": "queued"}}),
+                ]:
+                    await facade._native_event(
+                        {"method": method, "params": {"threadId": THREAD, **params}}, 1
+                    )
+                epochs = deepcopy(facade.operations.settings_epochs)
+                caller._snapshot = second
+                resume.set()
+                # A correct implementation rejects before second publication;
+                # the old implementation reaches it and is cancelled/fails there.
+                done, _ = await asyncio.wait(
+                    {task, waiter}, timeout=1, return_when=asyncio.FIRST_COMPLETED
+                )
+                assert done
+                if pending.is_set() and ending == "cancel":
+                    task.cancel()
+                outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+                assert caller.ownership_token(THREAD) is replacement
+                assert caller.get_state(THREAD) == state
+                assert caller.get_revision(THREAD) == revision
+                assert not pending.is_set()
+                assert facade.operations.settings_epochs == epochs
+                assert THREAD not in facade.owned and not facade.acquiring
+                assert isinstance(outcome, IpcError) and outcome.code == "claim-superseded"
+                assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
+                assert not [p for m, p in native.calls if m == "turn/start"]
+            finally:
+                task.cancel()
+                waiter.cancel()
+                await asyncio.gather(task, waiter, return_exceptions=True)
+                caller._snapshot = snapshot
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("replacement_kind", ["peer", "facade"])
+@pytest.mark.parametrize("ending", ["cancel", "error", "return"])
+def test_superseded_pending_claim_preserves_replacement_and_its_bookkeeping(
+    tmp_path, ending, replacement_kind
+):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = RolloutNative(tmp_path)
+            facade.sdk = facade.operations.sdk = native.sdk
+            entered, resume = asyncio.Event(), asyncio.Event()
+            snapshot = caller._snapshot
+            error = RuntimeError("pending publication failed")
+            publications = 0
+
+            async def publish(thread_id):
+                nonlocal publications
+                publications += 1
+                await snapshot(thread_id)
+                if publications == 1:
+                    await facade._native_event(
+                        {
+                            "method": "thread/status/changed",
+                            "params": {"threadId": thread_id, "status": {"type": "idle"}},
+                        },
+                        1,
+                    )
+                    return
+                entered.set()
+                await resume.wait()
+                if ending == "error":
+                    raise error
+
+            caller._snapshot = publish
+            task = asyncio.create_task(
+                facade.start_turn(CodexStartTurnRequest(thread_id=THREAD, content="once"))
+            )
+            try:
+                await asyncio.wait_for(entered.wait(), 1)
+                original = caller.ownership_token(THREAD)
+                assert THREAD in facade.owned
+                caller._snapshot = snapshot
+                state = {"id": THREAD, "turns": [], "requests": [], "replacement": True}
+                if replacement_kind == "facade":
+                    facade.acquiring[THREAD] = []
+                    await facade._claim_observed(THREAD, state)
+                else:
+                    await caller.claim(THREAD, state)
+                replacement = caller.ownership_token(THREAD)
+                revision = caller.get_revision(THREAD)
+                assert replacement is not original
+                if ending == "cancel":
+                    task.cancel()
+                else:
+                    resume.set()
+                outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+                assert caller.ownership_token(THREAD) is replacement
+                assert caller.get_state(THREAD) == state
+                assert caller.get_revision(THREAD) == revision
+                assert (THREAD in facade.owned) == (replacement_kind == "facade")
+                assert not facade.acquiring
+                if ending == "cancel":
+                    assert isinstance(outcome, asyncio.CancelledError)
+                elif ending == "error":
+                    assert outcome is error
+                else:
+                    assert isinstance(outcome, IpcError) and outcome.code == "claim-superseded"
+                assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
+                assert not [p for m, p in native.calls if m == "turn/start"]
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                caller._snapshot = snapshot
 
     asyncio.run(run())
 

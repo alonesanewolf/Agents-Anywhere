@@ -254,6 +254,15 @@ class CoordinationPeer:
             pass
 
     async def claim(self, thread_id, state, *, supports_untrusted_app_input=False):
+        revision, _ = await self.claim_with_token(
+            thread_id, state, supports_untrusted_app_input=supports_untrusted_app_input
+        )
+        return revision
+
+    async def claim_with_token(
+        self, thread_id, state, *, supports_untrusted_app_input=False
+    ):
+        """Return the inserted revision and identity, even if publication overlaps a claim."""
         self._require_open()
         if not isinstance(state, dict):
             raise IpcError("invalid-state")
@@ -267,7 +276,7 @@ class CoordinationPeer:
             old.followers if old else set(),
         )
         self._owned[thread_id] = record
-        revision = self._owned[thread_id].revision
+        revision = record.revision
         self._state_changed(thread_id)
         try:
             await self._snapshot(thread_id)
@@ -284,7 +293,7 @@ class CoordinationPeer:
                 else:
                     await self.release(thread_id, expected_token=record)
             raise
-        return revision
+        return revision, record
 
     async def release(self, thread_id, *, expected_token=None):
         if (
