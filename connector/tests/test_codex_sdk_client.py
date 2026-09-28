@@ -84,8 +84,11 @@ def test_codex_sdk_resume_conflict_never_sends_or_caches_thread(conflict) -> Non
             raise error
         native.low_level.thread_resume = blocked
         request = CodexStartTurnRequest(thread_id="thread_existing", content="hello")
-        with pytest.raises(RuntimeConflictError if conflict else InvalidRequestError):
+        with pytest.raises(RuntimeConflictError if conflict else InvalidRequestError) as caught:
             await client.start_turn(request)
+        if conflict:
+            assert "Codex App/IDE integration" in str(caught.value)
+            assert "退出对应客户端" not in str(caught.value)
         assert native.low_level.turn_start_inputs == []
         assert "thread_existing" not in client._loaded_thread_ids
         native.low_level.thread_resume = resume

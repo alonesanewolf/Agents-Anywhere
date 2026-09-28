@@ -7,8 +7,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
+from openai_codex import InvalidRequestError
 
 from connector.core.json_kv import JsonKeyValueStore
+from connector.runtime_protocol import RuntimeConflictError
 from connector.runtimes.codex.coordination import peer as peer_module
 from connector.runtimes.codex.coordination import router as router_module
 from connector.runtimes.codex.coordination import transport as transport_module
@@ -238,6 +240,28 @@ def test_passive_view_accepts_formal_negative_without_native_mutation():
             assert router.last_error == "no-client-found"
             assert not sdk.calls
             assert not caller.is_owner(THREAD)
+
+    asyncio.run(run())
+
+
+def test_native_writer_without_ipc_owner_refuses_before_message_dispatch():
+    async def run():
+        async with network(silent=False) as (router, caller, _, facade, sdk):
+            attempts = []
+
+            async def locked_resume(thread_id, *, settings=None):
+                attempts.append(thread_id)
+                raise InvalidRequestError(
+                    -32600, f"thread {thread_id} already has an active writer"
+                )
+
+            sdk.native_thread_resume = locked_resume
+            with pytest.raises(RuntimeConflictError, match="IPC 发布 owner"):
+                await facade.start_turn(message())
+            assert attempts == [THREAD]
+            assert router.last_error == "no-client-found"
+            assert not sdk.calls and not caller.is_owner(THREAD)
+            assert facade.journal.operation(THREAD) is None
 
     asyncio.run(run())
 

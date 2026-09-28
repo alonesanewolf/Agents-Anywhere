@@ -16,6 +16,8 @@ The read-only probe uses a narrower connection mode: `CoordinationClient(start_r
 
 This is a transport-level adoption, not a second connection or an alternative owner. `CoordinationPeer` still handles discovery, exact-owner requests, follow revisions, subscription and reconnect; `CoordinatedCodexClient` maps the canonical state and native operations into AA's runtime contract. The AA server and Web/mobile clients consume that contract and never open the machine-local IPC socket. The SDK's current `ModernCodexFollower` is outbound-only and has no owner request handlers, router election or reconnect journal. Replacing AA's peer with it now would lose App-to-AA takeover, live state and recovery. Extend the SDK to those capabilities, prove equivalence with the coordination suite, then replace the transport/peer in a separate change. Keep absent-owner reads within the existing one-second fast-discovery path and never interpret a timeout as permission to start another writer.
 
+If sending reports an active native writer, first check the runtime's `appIntegration` setting: without it, AA uses the independent SDK writer and cannot follow the App. With it enabled, a confirmed IPC owner receives the follower request. If discovery confirms no owner but native resume reports an active writer, the other client has not published an IPC route for that thread. AA stops before sending the message or claiming ownership. Closing the other client can release the lock for a separate cold resume, but does not demonstrate seamless App/IDE handoff; do not use that as acceptance evidence.
+
 ## Safe structural probe
 
 From `connector/`, with the installed App already running and owning the specified thread:

@@ -4,7 +4,9 @@ import asyncio
 from collections import defaultdict
 from copy import deepcopy
 
-from connector.runtime_protocol import RuntimeInvalidRequestError
+from openai_codex import JsonRpcError
+
+from connector.runtime_protocol import RuntimeConflictError, RuntimeInvalidRequestError
 from connector.runtimes.codex.sdk.client import (
     codex_approval_settings,
     codex_approvals_reviewer,
@@ -396,9 +398,22 @@ class CoordinatedCodexClient:
             authority.revalidate()
             pending = self.acquiring[thread_id] = []
             try:
-                result = await self.sdk.native_thread_resume(
-                    thread_id, settings=authority.params()
-                )
+                try:
+                    result = await self.sdk.native_thread_resume(
+                        thread_id, settings=authority.params()
+                    )
+                except JsonRpcError as exc:
+                    if (
+                        exc.code == -32600
+                        and "already has an active writer" in exc.message
+                    ):
+                        raise RuntimeConflictError(
+                            "原 Codex 客户端仍持有此会话的写入锁，但没有通过 IPC 发布 owner。"
+                            "AA 无法安全转发消息，也不会另起一个写入者。"
+                            "请在原客户端重新打开会话，待 AA 显示 IPC follower 后重试。"
+                            "本次消息尚未发送。"
+                        ) from exc
+                    raise
                 current()
                 authority.validate_result(result)
                 state = native_response_to_state(result, host_id=self.peer.host_id)

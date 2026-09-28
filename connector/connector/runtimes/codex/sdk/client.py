@@ -584,8 +584,10 @@ class CodexSdkClient:
         except JsonRpcError as exc:
             if exc.code == -32600 and "already has an active writer" in exc.message:
                 raise RuntimeConflictError(
-                    "该 Codex 会话正由其他进程持有写入权限，AA 尚未接管。"
-                    "请先在原 Codex 客户端释放该会话；若仍被占用，退出对应客户端后重试。"
+                    "该 Codex 会话正由其他进程持有写入权限。"
+                    "若要从 AA 跟随 Codex App 或 IDE，请在 Codex runtime 中启用 "
+                    "Codex App/IDE integration。若已启用仍遇到冲突，"
+                    "原客户端可能没有通过 IPC 发布此会话的 owner，AA 无法安全转发。"
                     "本次消息尚未发送。"
                 ) from exc
             raise
