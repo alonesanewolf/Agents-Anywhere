@@ -74,7 +74,6 @@ def test_nonpermission_settings_are_applied_from_serialized_resume(tmp_path, nul
                         "mode": "plan",
                         "developer_instructions": "configured plan instructions",
                     },
-                    **({"service_tier": None, "personality": None} if nullable else {}),
                 },
             )
             facade.sdk = facade.operations.sdk = native.sdk
@@ -88,11 +87,8 @@ def test_nonpermission_settings_are_applied_from_serialized_resume(tmp_path, nul
             assert wire["config"]["model_reasoning_summary"] == (
                 None if nullable else "concise"
             )
-            assert ("serviceTier" in wire) is not nullable
-            assert ("personality" in wire) is not nullable
-            if not nullable:
-                assert wire["serviceTier"] == "priority"
-                assert wire["personality"] == "pragmatic"
+            assert wire["serviceTier"] == (None if nullable else "priority")
+            assert wire["personality"] == (None if nullable else "pragmatic")
             assert "collaborationMode" not in wire
             settings = caller.get_state(THREAD)["latestThreadSettings"]
             assert settings["model"] == "gpt-example"
@@ -166,6 +162,17 @@ def test_incompatible_native_defaults_cannot_echo_historical_authority(tmp_path,
             native = RolloutNative(tmp_path)
             if field in {"service_tier", "personality"}:
                 native.settings[field] = None
+                original = native.request
+
+                async def request(method, params, **kwargs):
+                    if method == "thread/resume":
+                        params = deepcopy(params)
+                        params.pop(
+                            "serviceTier" if field == "service_tier" else "personality"
+                        )
+                    return await original(method, params, **kwargs)
+
+                native.request = request
             elif field == "mode":
                 native.settings["collaboration_mode"]["mode"] = "plan"
             else:
@@ -173,6 +180,7 @@ def test_incompatible_native_defaults_cannot_echo_historical_authority(tmp_path,
                     "developer_instructions"
                 ] = "old instructions"
             native.records[1] = native.applied()
+            native.records[2] = native.context()
             native.save()
             facade.sdk = facade.operations.sdk = native.sdk
             with pytest.raises(
@@ -217,6 +225,8 @@ def test_refuses_unproven_authority_without_physical_turn(tmp_path, fault):
                 n.records[0]["payload"]["history_base"] = {"thread_id": "other"}
             if fault == "missing-settings":
                 n.records.pop(1)
+                # Missing settings cannot authorize an incomplete legacy context.
+                n.records[-1]["payload"].pop("workspace_roots")
             if fault == "missing-context":
                 n.records.pop()
             if fault == "wrong-id":
@@ -467,8 +477,6 @@ def test_settings_only_override_acquires_latest_disabled_policy_without_turn(tmp
 
 def restricted_roots(native):
     """Native authority with nondefault tmp exclusions and an additional root."""
-    from copy import deepcopy
-
     extra = native.cwd + "/additional"
     native.settings["runtime_workspace_roots"] = [native.cwd, extra]
     entries = native.settings["permission_profile"]["file_system"]["entries"]
@@ -487,11 +495,10 @@ def restricted_roots(native):
         for name in (".git", ".agents", ".codex")
     )
     native.records[1] = native.applied()
-    context = native.records[-1]["payload"]
-    context["permission_profile"] = deepcopy(native.settings["permission_profile"])
-    context["sandbox_policy"].update(
+    native.sandbox.update(
         writable_roots=[extra], exclude_tmpdir_env_var=True, exclude_slash_tmp=True
     )
+    native.records[-1] = native.context()
     native.save()
     return extra
 

@@ -101,17 +101,16 @@ class RolloutNative:
             "exclude_slash_tmp": False,
         }
         self.records = [
-            {"type": "session_meta", "payload": {"id": thread_id, "cwd": self.cwd}},
-            self.applied(),
             {
-                "type": "turn_context",
+                "type": "session_meta",
                 "payload": {
-                    "turn_id": "old",
+                    "id": thread_id,
                     "cwd": self.cwd,
-                    "permission_profile": profile(self.cwd),
-                    "sandbox_policy": self.sandbox,
+                    "model_provider": self.settings["model_provider_id"],
                 },
             },
+            self.applied(),
+            self.context(),
         ]
         self.save()
         self.calls, self.post_mode = [], "append"
@@ -120,6 +119,36 @@ class RolloutNative:
         self.sdk._model_gateway = None
         self.sdk.native_generation = 1
         self.sdk._native_bridge = None
+
+    def context(self):
+        settings = self.settings
+        fs = deepcopy(settings["permission_profile"]["file_system"])
+        fs["kind"] = fs.pop("type")
+        return {
+            "type": "turn_context",
+            "payload": {
+                **{
+                    key: deepcopy(settings[key])
+                    for key in (
+                        "model",
+                        "approval_policy",
+                        "approvals_reviewer",
+                        "permission_profile",
+                        "cwd",
+                        "personality",
+                        "collaboration_mode",
+                        "disabled_plugin_ids",
+                    )
+                },
+                "turn_id": "old",
+                "root_turn_id": "old",
+                "workspace_roots": deepcopy(settings["runtime_workspace_roots"]),
+                "effort": settings["reasoning_effort"],
+                "summary": settings["reasoning_summary"],
+                "sandbox_policy": deepcopy(self.sandbox),
+                "file_system_sandbox_policy": fs,
+            },
+        }
 
     def applied(self):
         return {
@@ -141,6 +170,7 @@ class RolloutNative:
             "path": str(self.path),
             "turns": [{"id": "old", "status": "completed", "items": []}],
             "status": {"type": "idle"},
+            "modelProvider": self.settings["model_provider_id"],
             **deepcopy(self.thread_fields),
         }
 

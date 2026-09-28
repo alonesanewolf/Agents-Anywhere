@@ -566,7 +566,7 @@ async def test_resume_authority_restores_mode_over_null_or_missing_envelope(
         assert state["latestThreadSettings"]["serviceTier"] is None
         wire = next(p for m, p in fixture.calls if m == "thread/resume")
         assert wire["config"]["model_reasoning_effort"] == effort
-        assert "serviceTier" not in wire
+        assert wire["serviceTier"] is None
         assert "collaborationMode" not in wire
         assert not [p for m, p in native.calls if m == "turn/start"]
 

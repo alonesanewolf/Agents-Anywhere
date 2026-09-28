@@ -266,7 +266,12 @@ async def test_current_completion_after_item_before_start_ack_stays_terminal(tmp
         assert result.ok
         assert runtime._session_states.get("view").status == "idle"
         assert "view" not in runtime._active_turn_ids
-        assert adapter.peer.get_state("remote")["turns"][0]["status"] == "completed"
+        accepted = next(
+            turn
+            for turn in adapter.peer.get_state("remote")["turns"]
+            if turn["id"] == "accepted"
+        )
+        assert accepted["status"] == "completed"
 
 
 @async_test

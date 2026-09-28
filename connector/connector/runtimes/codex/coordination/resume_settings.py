@@ -31,6 +31,22 @@ MAX_ROLLOUT_BYTES = 32 * 1024 * 1024
 MAX_RECORD_BYTES = 1024 * 1024
 MAX_RECORDS = 100_000
 
+CONTEXT_FIELDS = {
+    "model": "model",
+    "approval_policy": "approval_policy",
+    "approvals_reviewer": "approvals_reviewer",
+    "permission_profile": "permission_profile",
+    "cwd": "cwd",
+    "workspace_roots": "runtime_workspace_roots",
+    "effort": "reasoning_effort",
+    "summary": "reasoning_summary",
+    "personality": "personality",
+    "collaboration_mode": "collaboration_mode",
+    "disabled_plugin_ids": "disabled_plugin_ids",
+}
+CONTEXT_KNOWN_FIELDS = frozenset(CONTEXT_FIELDS.values()) | {"model_provider_id"}
+SETTINGS_FIELDS = CONTEXT_KNOWN_FIELDS | {"service_tier"}
+
 
 def unavailable():
     raise ResumeSettingsError("codex_resume_settings_unavailable")
@@ -166,25 +182,10 @@ def policy(settings):
     }
 
 
-def validate_settings(settings, cwd):
-    required = {
-        "model",
-        "model_provider_id",
-        "service_tier",
-        "approval_policy",
-        "approvals_reviewer",
-        "permission_profile",
-        "cwd",
-        "runtime_workspace_roots",
-        "reasoning_effort",
-        "reasoning_summary",
-        "personality",
-        "collaboration_mode",
-        "disabled_plugin_ids",
-    }
+def validate_settings(settings, cwd, known_fields=SETTINGS_FIELDS):
     if (
         not isinstance(settings, dict)
-        or not required <= settings.keys()
+        or not known_fields <= settings.keys()
         or settings["cwd"] != cwd
     ):
         unavailable()
@@ -210,17 +211,77 @@ def validate_settings(settings, cwd):
     mode = settings["collaboration_mode"]
     if (
         not isinstance(mode, dict)
+        or set(mode) != {"mode", "settings"}
         or mode.get("mode") not in ("default", "plan")
         or not isinstance(mode.get("settings"), dict)
+        or set(mode["settings"])
+        != {"model", "reasoning_effort", "developer_instructions"}
         or mode["settings"].get("model") != settings["model"]
         or mode["settings"].get("reasoning_effort") != settings["reasoning_effort"]
+        or not (
+            mode["settings"]["developer_instructions"] is None
+            or isinstance(mode["settings"]["developer_instructions"], str)
+        )
     ):
         unavailable()
+    for key in ("reasoning_effort", "reasoning_summary", "personality", "service_tier"):
+        if (
+            key in known_fields
+            and settings[key] is not None
+            and not isinstance(settings[key], str)
+        ):
+            unavailable()
     policy(settings)
 
 
+def projection(settings, known_fields):
+    """Compare represented settings, retaining exact mode instructions and rules."""
+    result = {key: deepcopy(settings[key]) for key in known_fields}
+    result["permission_profile"] = normalized_profile(result["permission_profile"])
+    return result
+
+
+def context_settings(context, cwd, provider):
+    """Only this complete current format has initial settings authority."""
+    if (
+        not CONTEXT_FIELDS.keys() <= context.keys()
+        or context.get("root_turn_id") != context.get("turn_id")
+        or "service_tier" in context
+    ):
+        unavailable()
+    settings = {
+        target: deepcopy(context[source]) for source, target in CONTEXT_FIELDS.items()
+    }
+    settings["model_provider_id"] = provider
+    validate_settings(settings, cwd, CONTEXT_KNOWN_FIELDS)
+    mode, flags = policy(settings)
+    legacy = deepcopy(context.get("sandbox_policy"))
+    if isinstance(legacy, dict) and mode == "workspace-write":
+        legacy.setdefault("writable_roots", [])
+    if legacy != {"type": mode, **(flags or {})}:
+        unavailable()
+    profile = settings["permission_profile"]
+    fs = context.get("file_system_sandbox_policy")
+    if profile["type"] == "disabled":
+        # Current native serializes explicit disabled + danger-full-access with
+        # no separate filesystem field, rather than an inferred unrestricted one.
+        if "file_system_sandbox_policy" in context:
+            unavailable()
+    else:
+        if (
+            not isinstance(fs, dict)
+            or set(fs) != {"kind", "entries"}
+            or fs["kind"] != profile["file_system"]["type"]
+            or not isinstance(fs["entries"], list)
+            or {canonical(e) for e in fs["entries"]}
+            != {canonical(e) for e in profile["file_system"]["entries"]}
+        ):
+            unavailable()
+    return settings
+
+
 def scan(data, thread):
-    latest = context = None
+    latest = context = meta = None
     for index, record in enumerate(records(data)):
         kind, payload = record.get("type"), record["payload"]
         event = payload.get("type", "")
@@ -230,6 +291,7 @@ def scan(data, thread):
         ):
             unavailable()
         if index == 0:
+            meta = payload
             if (
                 kind != "session_meta"
                 or payload.get("id") != thread.get("id")
@@ -252,30 +314,48 @@ def scan(data, thread):
         if kind == "event_msg" and event == "thread_settings_applied":
             if payload.get("thread_id") != thread["id"]:
                 unavailable()
-            latest = payload.get("thread_settings")
+            latest = (index, payload.get("thread_settings"))
         if kind == "turn_context":
-            context = payload
+            context = (index, payload)
     turns = thread.get("turns")
     if (
-        latest is None
-        or context is None
+        context is None
         or not isinstance(turns, list)
         or not turns
-        or context.get("turn_id") != turns[-1].get("id")
-        or context.get("cwd") != thread["cwd"]
+        or not isinstance(turns[-1], dict)
+        or not isinstance(turns[-1].get("id"), str)
+        or not turns[-1]["id"]
     ):
         unavailable()
-    validate_settings(latest, thread["cwd"])
-    # A context is corroboration only. A newer settings-only profile takes priority.
-    if context.get("permission_profile") == latest["permission_profile"]:
-        mode, flags = policy(latest)
-        legacy = deepcopy(context.get("sandbox_policy"))
-        expected = {"type": mode, **(flags or {})}
-        if isinstance(legacy, dict) and mode == "workspace-write":
-            legacy.setdefault("writable_roots", [])
-        if legacy != expected:
+    ordinal, context = context
+    if (
+        context.get("turn_id") != turns[-1]["id"]
+        or context.get("cwd") != thread["cwd"]
+        or context.get("root_turn_id", context["turn_id"]) != context["turn_id"]
+        or any(
+            context.get(key)
+            for key in ("history_base", "forked_from_id", "parent_thread_id")
+        )
+    ):
+        unavailable()
+    if latest is None:
+        provider = meta.get("model_provider")
+        if provider != thread.get("modelProvider"):
             unavailable()
-    return latest
+        settings = context_settings(context, thread["cwd"], provider)
+        return settings, "initial_context", ordinal, CONTEXT_KNOWN_FIELDS
+    settings_ordinal, settings = latest
+    validate_settings(settings, thread["cwd"])
+    if ordinal > settings_ordinal:
+        # A later execution context must corroborate, never replace, settings.
+        corroboration = context_settings(
+            context, thread["cwd"], settings["model_provider_id"]
+        )
+        if projection(corroboration, CONTEXT_KNOWN_FIELDS) != projection(
+            settings, CONTEXT_KNOWN_FIELDS
+        ):
+            unavailable()
+    return settings, "settings_applied", settings_ordinal, SETTINGS_FIELDS
 
 
 @dataclass
@@ -285,6 +365,9 @@ class ResumeSettings:
     data: bytes
     stamp: tuple
     settings: dict
+    source_kind: str
+    source_ordinal: int
+    known_fields: frozenset[str]
 
     @classmethod
     def resolve(cls, raw, thread_id):
@@ -304,10 +387,19 @@ class ResumeSettings:
             unavailable()
         data, stamp = read_source(path)
         try:
-            settings = scan(data, thread)
-        except (TypeError, ValueError, AttributeError, RecursionError):
+            settings, source_kind, source_ordinal, known_fields = scan(data, thread)
+        except (TypeError, ValueError, AttributeError, KeyError, RecursionError):
             unavailable()
-        return cls(path, thread, data, stamp, settings)
+        return cls(
+            path,
+            thread,
+            data,
+            stamp,
+            settings,
+            source_kind,
+            source_ordinal,
+            known_fields,
+        )
 
     def revalidate(self):
         data, stamp = read_source(self.path)
@@ -326,7 +418,7 @@ class ResumeSettings:
         }
         if flags is not None:
             config["sandbox_workspace_write"] = flags
-        return {
+        params = {
             "threadId": self.thread["id"],
             "cwd": s["cwd"],
             "model": s["model"],
@@ -334,10 +426,12 @@ class ResumeSettings:
             "sandbox": mode,
             "approvalPolicy": s["approval_policy"],
             "approvalsReviewer": s["approvals_reviewer"],
-            "serviceTier": s["service_tier"],
             "personality": s["personality"],
             "config": config,
         }
+        if "service_tier" in self.known_fields:
+            params["serviceTier"] = s["service_tier"]
+        return params
 
     def validate_result(self, result):
         try:
@@ -389,12 +483,8 @@ class ResumeSettings:
             raise ResumeSettingsError(
                 "codex_resume_effective_settings_unavailable"
             ) from exc
-        expected = deepcopy(self.settings)
-        actual = deepcopy(observed)
-        expected["permission_profile"] = normalized_profile(
-            expected["permission_profile"]
-        )
-        actual["permission_profile"] = normalized_profile(actual["permission_profile"])
+        expected = projection(self.settings, self.known_fields)
+        actual = projection(observed, self.known_fields)
         if (
             actual != expected
             or result.get("thread", {}).get("id") != self.thread["id"]
@@ -402,18 +492,22 @@ class ResumeSettings:
             or result.get("approvalsReviewer") != expected["approvals_reviewer"]
             or result.get("sandbox") != self.canonical_settings()["sandboxPolicy"]
             or any(
-                result[key] != expected[source]
+                result[key] != observed[source]
                 for key, source in (
                     ("model", "model"),
                     ("modelProvider", "model_provider_id"),
                     ("reasoningEffort", "reasoning_effort"),
                     ("cwd", "cwd"),
                     ("serviceTier", "service_tier"),
+                    ("personality", "personality"),
                 )
                 if key in result
             )
         ):
             raise ResumeSettingsError("codex_resume_effective_settings_mismatch")
+        # Only fresh validated native evidence may fill the initial unknown tier.
+        self.settings = {**self.settings, "service_tier": observed["service_tier"]}
+        self.known_fields = SETTINGS_FIELDS
 
     def canonical_settings(self):
         s = self.settings
@@ -434,7 +528,7 @@ class ResumeSettings:
                     "excludeSlashTmp": flags["exclude_slash_tmp"],
                 }
             )
-        return {
+        result = {
             "model": s["model"],
             "modelProvider": s["model_provider_id"],
             "effort": s["reasoning_effort"],
@@ -446,5 +540,7 @@ class ResumeSettings:
             "sandboxPolicy": sandbox,
             "runtimeWorkspaceRoots": s["runtime_workspace_roots"],
             "cwd": s["cwd"],
-            "serviceTier": s["service_tier"],
         }
+        if "service_tier" in self.known_fields:
+            result["serviceTier"] = s["service_tier"]
+        return result

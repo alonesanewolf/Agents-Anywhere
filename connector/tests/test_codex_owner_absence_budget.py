@@ -96,10 +96,8 @@ class FakeNative:
             self.persisted.settings["permission_profile"]["file_system"]["entries"][:1]
         )
         self.persisted.records[1] = self.persisted.applied()
-        self.persisted.records[-1]["payload"]["permission_profile"] = deepcopy(
-            self.persisted.settings["permission_profile"]
-        )
-        self.persisted.records[-1]["payload"]["sandbox_policy"] = {"type": "read-only"}
+        self.persisted.sandbox = {"type": "read-only"}
+        self.persisted.records[-1] = self.persisted.context()
         self.persisted.save()
 
     async def native_thread_resume(self, thread_id, *, settings=None):

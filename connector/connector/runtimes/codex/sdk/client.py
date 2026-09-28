@@ -192,7 +192,14 @@ class CodexSdkClient:
         )
         if params.thread_id != thread_id:
             raise RuntimeInvalidRequestError("resume thread mismatch")
-        return await self.native_request("thread/resume", params.model_dump(by_alias=True, exclude_none=True, mode="json"))
+        # Coordinated authority distinguishes explicit nullable values from
+        # unpersisted fields. Pydantic's supplied-field set preserves that split.
+        payload = (
+            params.model_dump(by_alias=True, exclude_unset=True, mode="json")
+            if settings is not None
+            else params.model_dump(by_alias=True, exclude_none=True, mode="json")
+        )
+        return await self.native_request("thread/resume", payload)
 
     async def native_thread_start(self, request: CodexStartThreadRequest) -> dict[str, Any]:
         params = codex_thread_start_params(request, self._model_gateway)
