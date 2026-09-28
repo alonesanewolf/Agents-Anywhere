@@ -23,6 +23,8 @@ from .projection import (
 from .queue import execute_head
 from .reducer import exact_id, reduce_event
 from .requests import REQUEST_ROUTES, ResponseContexts, validate_response
+from .resume_settings import ResumeSettings, ResumeSettingsError
+from .settings import merge_settings
 from .state import enumerate_turns, history_complete
 from .wire import METHOD_VERSIONS, IpcError
 
@@ -347,6 +349,12 @@ class CoordinatedCodexClient:
         async with self.locks[thread_id]:
             if self.peer.is_owner(thread_id):
                 return
+            epoch = self.view_token(thread_id)[:3]
+
+            def current():
+                if self.closed or epoch != self.view_token(thread_id)[:3]:
+                    raise ResumeSettingsError("codex_resume_connection_changed")
+
             state = await self.peer.follow(thread_id)
             if state is not None:
                 self.attached.add(thread_id)
@@ -354,16 +362,39 @@ class CoordinatedCodexClient:
             # Confirmed absence permits ending an earlier failed follow intent.
             # Cleanup may await I/O, so keep the final fresh guard after it.
             await self.peer.unfollow(thread_id)
+            current()
+            authority = ResumeSettings.resolve(
+                await self.sdk.native_request(
+                    "thread/read", {"threadId": thread_id, "includeTurns": True}
+                ),
+                thread_id,
+            )
+            current()
+            authority.revalidate()
             owner = await self.peer.discover_owner(thread_id)
+            current()
             if owner is not None:
                 await self.peer.follow(thread_id)
                 self.attached.add(thread_id)
                 return
+            authority.revalidate()
             self.acquiring[thread_id] = []
             try:
-                result = await self.sdk.native_thread_resume(thread_id)
+                result = await self.sdk.native_thread_resume(
+                    thread_id, settings=authority.params()
+                )
+                current()
+                authority.validate_result(result)
                 state = native_response_to_state(result, host_id=self.peer.host_id)
+                merge_settings(state, authority.canonical_settings())
                 await self._claim_observed(thread_id, state)
+                try:
+                    current()
+                except IpcError:
+                    self.owned.discard(thread_id)
+                    if self.peer.is_owner(thread_id):
+                        await self.peer.release(thread_id)
+                    raise
             finally:
                 self.acquiring.pop(thread_id, None)
 
@@ -725,8 +756,7 @@ class CoordinatedCodexClient:
                 "turnStart": {
                     "request": native,
                     "context": {
-                        "inheritThreadSettings": request.model is None
-                        and request.effort is None
+                        "inheritThreadSettings": True
                     },
                 }
             },

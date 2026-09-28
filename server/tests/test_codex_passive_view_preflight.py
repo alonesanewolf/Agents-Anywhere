@@ -46,8 +46,11 @@ from test_codex_runtime import FakeCodexClient, FakeHost
 class Native(FakeCodexClient):
     native_generation = 1
 
-    def __init__(self):
+    def __init__(self, home):
         super().__init__()
+        from codex_resume_fixture import RolloutNative
+
+        self.persisted = RolloutNative(home)
         self.calls = []
         self.reading = asyncio.Event()
         self.read_gate = None
@@ -65,14 +68,15 @@ class Native(FakeCodexClient):
     def native_runtime_info(self):
         return {"version": "0.155.1"}
 
-    async def native_thread_resume(self, thread_id):
+    async def native_thread_resume(self, thread_id, *, settings=None):
         self.calls.append(("thread/resume", {"threadId": thread_id}))
-        return self.response(thread_id)
+        return await self.persisted.sdk.native_thread_resume(
+            thread_id, settings=settings
+        )
 
     def response(self, thread_id):
         return {
-            "thread": {"id": thread_id, "turns": [], "status": {"type": "idle"}},
-            **self.settings,
+            "thread": {**self.persisted.thread(), "id": thread_id},
         }
 
     async def native_request(self, method, params):
@@ -103,8 +107,8 @@ def deadlines(monkeypatch):
 
 @asynccontextmanager
 async def runtime_network():
-    async with network() as (router, caller, owner, facade, _):
-        native, host = Native(), FakeHost()
+    async with network() as (router, caller, owner, facade, network_native):
+        native, host = Native(network_native.persisted.path.parent), FakeHost()
         facade.sdk = native
         facade.operations.sdk = native
         runtime = CodexRuntime(
@@ -245,7 +249,13 @@ def test_real_send_preflight_can_finish_before_caller_budget():
                 starts = [p for method, p in c.native.calls if method == "turn/start"]
                 assert len(starts) == 1
                 assert starts[0]["threadId"] == THREAD
-                assert starts[0]["sandboxPolicy"] == {"type": "workspaceWrite"}
+                assert starts[0]["sandboxPolicy"] == {
+                    "type": "workspaceWrite",
+                    "writableRoots": [],
+                    "networkAccess": False,
+                    "excludeTmpdirEnvVar": False,
+                    "excludeSlashTmp": False,
+                }
                 assert starts[0]["model"] == "gpt-6-luna"
                 assert starts[0]["effort"] == "low"
                 assert starts[0]["approvalPolicy"] == "on-request"
@@ -874,5 +884,25 @@ def test_owned_goal_read_children_cancel_and_drain_before_sdk_stop(monkeypatch, 
                 if task:
                     await asyncio.gather(task, return_exceptions=True)
                 c.native.stop = native_stop
+
+    asyncio.run(run())
+
+
+def test_resume_validation_failure_has_structured_public_runtime_error():
+    async def run():
+        from connector.runtime_protocol import RuntimeProtocolError
+
+        async with runtime_network() as c:
+            c.native.persisted.post_mode = "mismatch"
+            with pytest.raises(RuntimeProtocolError) as caught:
+                await dispatch_session_send_message(
+                    c.runtime,
+                    {**PARAMS, "content": "once", "clientMessageId": "rejected-resume"},
+                )
+            assert caught.value.code == "codex_resume_effective_settings_mismatch"
+            assert caught.value.retryable is False
+            assert "may have applied" in str(caught.value)
+            assert not [p for m, p in c.native.calls if m == "turn/start"]
+            assert not c.caller.is_owner(THREAD)
 
     asyncio.run(run())

@@ -178,8 +178,20 @@ class CodexSdkClient:
         result = await request(method, dict(params), response_model=RootModel[dict[str, Any]])
         return result.root
 
-    async def native_thread_resume(self, thread_id: str) -> dict[str, Any]:
-        params = codex_thread_resume_params(CodexResumeThreadRequest(thread_id=thread_id), self._model_gateway)
+    async def native_thread_resume(
+        self, thread_id: str, *, settings: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        # Cold coordination supplies complete native authority. Do not replace
+        # its provider or policy with process/gateway defaults.
+        params = (
+            ThreadResumeParams.model_validate(settings)
+            if settings is not None
+            else codex_thread_resume_params(
+                CodexResumeThreadRequest(thread_id=thread_id), self._model_gateway
+            )
+        )
+        if params.thread_id != thread_id:
+            raise RuntimeInvalidRequestError("resume thread mismatch")
         return await self.native_request("thread/resume", params.model_dump(by_alias=True, exclude_none=True, mode="json"))
 
     async def native_thread_start(self, request: CodexStartThreadRequest) -> dict[str, Any]:

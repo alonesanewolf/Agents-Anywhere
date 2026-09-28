@@ -7,7 +7,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-
 from connector.core.json_kv import JsonKeyValueStore
 from connector.runtimes.codex.coordination import peer as peer_module
 from connector.runtimes.codex.coordination import router as router_module
@@ -87,19 +86,32 @@ class SilentCandidate(CoordinationClient):
 class FakeNative:
     native_generation = 1
 
-    def __init__(self, *, cost=0, start_gate=None):
+    def __init__(self, home, *, cost=0, start_gate=None):
         self.calls, self.cost, self.start_gate = [], cost, start_gate
         self.started = asyncio.Event()
+        from codex_resume_fixture import RolloutNative
 
-    async def native_thread_resume(self, thread_id):
+        self.persisted = RolloutNative(home)
+        self.persisted.settings["permission_profile"]["file_system"]["entries"] = (
+            self.persisted.settings["permission_profile"]["file_system"]["entries"][:1]
+        )
+        self.persisted.records[1] = self.persisted.applied()
+        self.persisted.records[-1]["payload"]["permission_profile"] = deepcopy(
+            self.persisted.settings["permission_profile"]
+        )
+        self.persisted.records[-1]["payload"]["sandbox_policy"] = {"type": "read-only"}
+        self.persisted.save()
+
+    async def native_thread_resume(self, thread_id, *, settings=None):
         self.calls.append(("thread/resume", {"threadId": thread_id}))
         await asyncio.sleep(self.cost)
-        return {
-            "thread": {"id": thread_id, "turns": [], "status": {"type": "idle"}},
-            **deepcopy(SETTINGS),
-        }
+        return await self.persisted.sdk.native_thread_resume(
+            thread_id, settings=settings
+        )
 
     async def native_request(self, method, params):
+        if method == "thread/read":
+            return {"thread": self.persisted.thread()}
         assert method == "turn/start", method
         self.calls.append((method, deepcopy(params)))
         self.started.set()
@@ -135,7 +147,7 @@ async def network(*, silent=True, native_cost=0, start_gate=None):
                 await transport.start()
                 await transport.wait_initialized()
             caller, _, owner = peers
-            sdk = FakeNative(cost=native_cost, start_gate=start_gate)
+            sdk = FakeNative(home, cost=native_cost, start_gate=start_gate)
             facade = CoordinatedCodexClient(
                 sdk,
                 caller,

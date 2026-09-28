@@ -30,6 +30,7 @@ const nextConfig: NextConfig = {
   experimental: {
     // Full timeline sync uses HTTP ingest through this same-origin proxy.
     proxyClientMaxBodySize,
+    ...(!staticExport ? { proxyTimeout: apiProxyTimeout() } : {}),
   },
   ...(staticExport
     ? {}
@@ -52,6 +53,21 @@ function normalizeApiNamespace(value: string): string {
   const trimmed = value.trim();
   if (!trimmed || trimmed === "/") return "";
   return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
+}
+
+function apiProxyTimeout(): number {
+  const overrideName = "AGENTS_ANYWHERE_API_PROXY_TIMEOUT_MS";
+  const readName = "AGENT_SERVER_SESSION_RPC_TIMEOUT_SECONDS";
+  const override = process.env[overrideName];
+  const rawRead = process.env[readName];
+  const read = rawRead === undefined ? 20 : Number(rawRead);
+  const value = override === undefined ? Math.ceil(1000 * (2 * read + 60)) : Number(override);
+  const name = override === undefined ? readName : overrideName;
+  if ((override === undefined && (!Number.isFinite(read) || read <= 0)) ||
+      !Number.isSafeInteger(value) || value < 1 || value > 2147483647) {
+    throw new Error(`${name} must specify a positive finite budget within the Node timer range`);
+  }
+  return value;
 }
 
 export default nextConfig;

@@ -115,6 +115,11 @@ def prepare_start(thread_id, turn_start, state, sdk):
                 continue
             if target in REQUEST_FIELDS and target not in request:
                 request[target] = deepcopy(value)
+        mode = request.get("collaborationMode")
+        if isinstance(mode, dict) and isinstance(mode.get("settings"), dict):
+            for source, target in (("model", "model"), ("effort", "reasoning_effort")):
+                if source in request:
+                    mode["settings"][target] = deepcopy(request[source])
     for field in ("toolOutput", "turnTrigger", "serviceTierForTurn"):
         if request.get(field) is not None:
             require_feature(sdk, field)

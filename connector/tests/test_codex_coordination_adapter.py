@@ -2,15 +2,34 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from test_codex_coordination_operations import Native, async_test
-
 from connector.core.json_kv import JsonKeyValueStore
 from connector.runtimes.codex.coordination.peer import CoordinationPeer
 from connector.runtimes.codex.coordination.transport import CoordinationClient
 from connector.runtimes.codex.sdk.runtime_client import CodexStartTurnRequest
+from test_codex_coordination_operations import Native, async_test
 
 
 class RuntimeNative(Native):
+    def __init__(self):
+        super().__init__()
+        self.rollout_home = tempfile.TemporaryDirectory(prefix="aa-native-fixture-")
+        self.rollouts = {}
+
+    def persisted(self, thread_id):
+        from codex_resume_fixture import RolloutNative
+
+        if thread_id not in self.rollouts:
+            directory = Path(self.rollout_home.name) / str(len(self.rollouts))
+            directory.mkdir()
+            self.rollouts[thread_id] = RolloutNative(directory, thread_id)
+        return self.rollouts[thread_id]
+
+    async def native_request(self, method, params):
+        result = await super().native_request(method, params)
+        if method == "thread/read" and "thread/resume" in self.responses:
+            return {"thread": self.persisted(params["threadId"]).thread()}
+        return result
+
     def set_native_event_handler(self, handler):
         self.handler = handler
 
@@ -18,10 +37,16 @@ class RuntimeNative(Native):
         self.normalized = handler
 
     async def stop(self):
-        pass
+        self.rollout_home.cleanup()
 
-    async def native_thread_resume(self, thread_id):
-        return await self.native_request("thread/resume", {"threadId": thread_id})
+    async def native_thread_resume(self, thread_id, *, settings=None):
+        result = await self.native_request(
+            "thread/resume", settings or {"threadId": thread_id}
+        )
+        effective = await self.persisted(thread_id).sdk.native_thread_resume(
+            thread_id, settings=settings
+        )
+        return {**effective, **result}
 
 
 @async_test
@@ -359,7 +384,11 @@ async def test_normal_aa_approval_setting_is_translated_and_follower_goal_never_
                     "thread/goal/set",
                     {"threadId": "someone-elses-thread", "objective": "no"},
                 )
-            assert len(native.calls) == 2
+            assert [method for method, _ in native.calls] == [
+                "thread/read",
+                "thread/resume",
+                "turn/start",
+            ]
         finally:
             await adapter.stop()
 
@@ -453,9 +482,8 @@ async def test_confirmed_queue_recovery_advances_next_head_without_external_wake
 ):
     import asyncio
 
-    from test_codex_coordination_operations import Owner
-
     from connector.runtimes.codex.coordination.client import CoordinatedCodexClient
+    from test_codex_coordination_operations import Owner
 
     peer = Owner(
         [
