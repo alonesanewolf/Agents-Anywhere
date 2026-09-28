@@ -325,6 +325,15 @@
       "settings": "Settings",
       "team": "Team"
     },
+    "agentPresets": {
+      "label": "Agent preset",
+      "unavailable": "Agent presets unavailable",
+      "loading": "Loading presets...",
+      "standard": "Standard mode",
+      "minimal": "Minimal mode",
+      "ptc": "PTC mode",
+      "cordis": "Creator mode"
+    },
     "new": {
       "askApproval": "Ask approval",
       "attach": "Attach files",
@@ -345,9 +354,12 @@
       "permissionMode": "Permission mode",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "read-only" },
-          "workspaceWrite": { "label": "workspace-write" },
-          "fullAccess": { "label": "danger-full-access" }
+          "readOnly": { "label": "Read Only" },
+          "workspaceWrite": { "label": "Workspace Write" },
+          "fullAccess": { "label": "Full access" },
+          "auto": {
+            "label": "Auto review"
+          }
         },
         "requestApproval": {
           "label": "Request approval",

@@ -65,8 +65,9 @@ class ClaudeCatalogReader:
         try:
             return self.model_selection(selection_id)
         except RuntimeInvalidRequestError:
-            if self.discovery.attempted:
-                raise
+            # models() owns both the successful-cache and failed-read TTLs.
+            # A previous attempt must not permanently reject a saved CLI id.
+            pass
         await self.discovery.models()
         return self.model_selection(selection_id)
 

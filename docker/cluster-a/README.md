@@ -1,19 +1,27 @@
 # Cluster A
 
-See MIGRATION.md and migration-state.json for the current production migration and
-application readiness state. deployed.json is the earlier alpha snapshot.
+See runtime-maintenance-2026-09-26.json for the latest rollout state, exact image,
+backup location and validation results. MIGRATION.md, migration-state.json and
+deployed.json retain earlier migration and deployment snapshots.
 
-Two identical Docker workers bind HTTP to 127.0.0.1:8000, including the static Web UI,
-API and WebSockets. Each runs three FastAPI processes, with the additional event process pool disabled. PostgreSQL and Redis run
-on 192.168.1.35 and accept LAN traffic only. Both workers must share their database,
+Six Docker workers bind HTTP to 127.0.0.1:8000, including the static Web UI,
+API and WebSockets. All six workers each run eight FastAPI processes using their
+compose.worker-N.yml overlays. Each application process has one extra
+event-preparation worker (48 across the cluster). All containers have a 14 GiB
+memory limit. PostgreSQL and Redis run on 192.168.1.35 and accept LAN traffic only.
+All workers must share their database,
 Redis, token secret and S3 configuration; instance IDs differ by node.
 
-The six application processes allow at most 60 pooled PostgreSQL connections in
-total (5 persistent + 5 overflow per process), leaving room under the configured
-300-connection server limit. Redis requires AOF with appendfsync everysec and
-maxmemory-policy noeviction because it buffers accepted Timeline writes.
+The 48 application processes allow at most 432 pooled PostgreSQL connections:
+workers 1 and 2 each allow 5 persistent + 2 overflow connections per process;
+workers 3 through 6 each allow 5 persistent + 5 overflow. This requires
+PostgreSQL `max_connections` of at least 500, leaving 68 connections for
+administration and other consumers under the configured 500-connection limit.
+Do not start workers 5 and 6 while db-1 still uses 300. Redis requires AOF with
+appendfsync everysec and maxmemory-policy noeviction because it buffers accepted
+Timeline writes.
 
-Build one image from a committed release and distribute that exact image to both
+Build one image from a committed release and distribute that exact image to all
 workers. Release archives live under /root/code/github/Agents-Anywhere-releases/<release> on each node.
 Copy .env.example to .env, fill credentials, and chmod 600 .env. Never commit it.
 Run commands in this directory:

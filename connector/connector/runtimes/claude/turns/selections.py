@@ -10,7 +10,9 @@ from connector.runtime_protocol import (
 )
 from connector.runtimes.claude.catalogs.reader import ClaudeCatalogReader
 from connector.runtimes.claude.domain.selections import effective_claude_selections
-from connector.runtimes.claude.notifications.projector import ClaudeNotificationProjector
+from connector.runtimes.claude.notifications.projector import (
+    ClaudeNotificationProjector,
+)
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 
 

@@ -4,7 +4,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from connector.runtimes.claude.domain.models import model_selection_from_selection_id
-from connector.runtimes.claude.domain.permissions import permission_mode_from_selection_id
+from connector.runtimes.claude.domain.permissions import (
+    permission_mode_from_selection_id,
+)
 
 
 def effective_claude_selections(

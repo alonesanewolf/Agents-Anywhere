@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,7 +40,9 @@ lines.on('close', () => process.exit(0));
 `
 const binding = { installationId: 'test-installation', name: 'Test device', connectorId: 'conn_test', connectorToken: 'PRIVATE-DEVICE-TOKEN' }
 
-async function fixture(mode = 'normal', settings: ConnectorSettings = DEFAULT_CONNECTOR_SETTINGS) {
+async function fixture(mode = 'normal', settings: ConnectorSettings = DEFAULT_CONNECTOR_SETTINGS, firstRequestTimeoutMs?: number,
+  prune: (command: string) => Promise<unknown> = async () => undefined) {
+  const pruned: string[] = []
   const root = await mkdtemp(join(tmpdir(), 'aa-process-中文 '))
   const source = join(root, 'source')
   await mkdir(join(source, 'connector'), { recursive: true })
@@ -53,8 +56,17 @@ async function fixture(mode = 'normal', settings: ConnectorSettings = DEFAULT_CO
     apiBaseUrl: 'https://api.example.test', dshHome: join(root, 'dsh-home'),
   }, (command, args, options) => {
     assert.equal(args[0], 'run')
-    assert.deepEqual(args.slice(1, 5), ['--directory', source, 'anywhere-cli', 'rpc'])
+    assert.equal(args[1], '--directory')
+    assert.equal(args[3], 'anywhere-cli')
+    assert.equal(args[4], 'rpc')
     assert.equal(args[5], '--config')
+    // 打包内的负载只是只读输入：uv 在插件数据目录里的副本上工作。
+    const projectDir = args[2]!
+    assert.equal(projectDir.startsWith(source), false)
+    assert.equal(projectDir.startsWith(join(root, 'data')), true)
+    assert.equal(existsSync(join(projectDir, 'pyproject.toml')), true)
+    assert.equal(existsSync(join(projectDir, 'connector', 'cli.py')), true)
+    assert.equal(options.cwd, projectDir)
     assert.doesNotMatch(JSON.stringify(args), /PRIVATE-DEVICE-TOKEN/)
     assert.equal(options.env?.UV_PROJECT_ENVIRONMENT, join(root, 'data', 'connector-venv'))
     assert.equal(options.env?.DSH_HOME, join(root, 'dsh-home'))
@@ -63,11 +75,12 @@ async function fixture(mode = 'normal', settings: ConnectorSettings = DEFAULT_CO
     assert.equal(options.env?.UV_DEFAULT_INDEX, expectedIndex)
     assert.equal(options.env?.UV_INDEX_URL, expectedIndex)
     assert.equal(options.env?.PIP_INDEX_URL, expectedIndex)
+    assert.equal(options.env?.UV_HTTP_TIMEOUT, process.env['UV_HTTP_TIMEOUT'] || '60')
     child = spawn(command, [script, mode], options)
     return child
-  }, () => settings)
+  }, () => settings, firstRequestTimeoutMs, async command => { pruned.push(command); return prune(command) })
   return {
-    connector, root, get child() { return child },
+    connector, root, pruned, get child() { return child },
     async close() { await connector.stop(); await rm(root, { recursive: true, force: true }) },
   }
 }
@@ -84,6 +97,8 @@ test('source Connector uses stdio RPC and a private config, then exits on plugin
     await Promise.all([h.connector.stop(), h.connector.stop()])
     assert.equal(h.connector.running, false)
     assert.equal(h.child?.exitCode, 0)
+    // A start that reached the Connector downloaded nothing partially, so it owes no reclamation.
+    assert.deepEqual(h.pruned, [])
     await assert.rejects(h.connector.assertHealthy())
   } finally { await h.close() }
 })
@@ -160,6 +175,37 @@ test('cancelling a Connector that has not finished startup closes its owned proc
   } finally { clearTimeout(timer); await h.close() }
 })
 
+
+test('the first request spends its own installation budget, not the ordinary request timeout', { timeout: 8000 }, async () => {
+  // A child that never answers proves which budget the first request uses: the ordinary 15 s
+  // default would outlast this test, so rejecting here means the installation budget applied.
+  const h = await fixture('stall', DEFAULT_CONNECTOR_SETTINGS, 300)
+  try {
+    await assert.rejects(h.connector.start(binding, 'https://api.example.test', new AbortController().signal), /响应超时/)
+    assert.equal(h.connector.running, false)
+  } finally { await h.close() }
+})
+
+
+test('an interrupted installation reclaims the cache it half-filled, through the same uv', { timeout: 8000 }, async () => {
+  // Cancelling mid-install is what leaves a truncated unpack directory behind in uv's cache.
+  const h = await fixture('stall')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 100)
+  try {
+    await assert.rejects(h.connector.start(binding, 'https://api.example.test', controller.signal))
+    assert.deepEqual(h.pruned, [process.execPath])
+  } finally { clearTimeout(timer); await h.close() }
+})
+
+test('a prune that fails leaves the startup failure it was reclaiming after', { timeout: 8000 }, async () => {
+  // uv may be gone or busy by now; that must not rewrite the error the operator needs to read.
+  const h = await fixture('exit-error', DEFAULT_CONNECTOR_SETTINGS, undefined, () => Promise.reject(new Error('uv cache prune failed')))
+  try {
+    await assert.rejects(h.connector.start(binding, 'https://api.example.test', new AbortController().signal), /已退出（2）/)
+    assert.deepEqual(h.pruned, [process.execPath])
+  } finally { await h.close() }
+})
 
 test('source Connector preserves RPC conflict identity and stops only its rejected child', async () => {
   const h = await fixture('conflict')
