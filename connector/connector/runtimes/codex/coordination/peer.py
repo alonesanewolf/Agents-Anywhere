@@ -119,6 +119,10 @@ class CoordinationPeer:
     def is_owner(self, thread_id):
         return thread_id in self._owned
 
+    def ownership_token(self, thread_id):
+        """Opaque identity of this local claim, not an owner discovery result."""
+        return self._owned.get(thread_id)
+
     def is_follower(self, thread_id):
         """True also while a subscribed thread awaits reconnect/resume."""
         return thread_id in self._followed
@@ -256,22 +260,38 @@ class CoordinationPeer:
         if self.is_follower(thread_id):
             raise IpcError("already-following")
         old = self._owned.get(thread_id)
-        self._owned[thread_id] = _Owned(
+        record = _Owned(
             deepcopy(state),
             (old.revision + 1) if old else 1,
             supports_untrusted_app_input,
             old.followers if old else set(),
         )
+        self._owned[thread_id] = record
         revision = self._owned[thread_id].revision
         self._state_changed(thread_id)
-        await self._snapshot(thread_id)
-        await self.client.broadcast(
-            "thread-stream-following-status-requested",
-            {"conversationId": thread_id, "hostId": self.host_id},
-        )
+        try:
+            await self._snapshot(thread_id)
+            await self.client.broadcast(
+                "thread-stream-following-status-requested",
+                {"conversationId": thread_id, "hostId": self.host_id},
+            )
+        except BaseException:
+            # Publication can suspend after insertion. Revoke only this exact
+            # claim; a replacement claim or external follower is independent.
+            if self._owned.get(thread_id) is record:
+                if old is not None:
+                    self._owned[thread_id] = old
+                else:
+                    await self.release(thread_id, expected_token=record)
+            raise
         return revision
 
-    async def release(self, thread_id):
+    async def release(self, thread_id, *, expected_token=None):
+        if (
+            expected_token is not None
+            and self._owned.get(thread_id) is not expected_token
+        ):
+            return
         self._activity.pop(thread_id, None)
         self._owned.pop(thread_id, None)
         self._queues.pop(thread_id, None)

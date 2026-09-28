@@ -316,3 +316,248 @@ def test_settings_only_override_acquires_latest_disabled_policy_without_turn(tmp
             )
 
     asyncio.run(run())
+
+
+def restricted_roots(native):
+    """Native authority with nondefault tmp exclusions and an additional root."""
+    from copy import deepcopy
+
+    extra = native.cwd + "/additional"
+    native.settings["runtime_workspace_roots"] = [native.cwd, extra]
+    entries = native.settings["permission_profile"]["file_system"]["entries"]
+    entries[:] = [
+        e
+        for e in entries
+        if e["path"].get("value", {}).get("kind") not in ("tmpdir", "slash_tmp")
+    ]
+    entries.append({"path": {"type": "path", "path": extra}, "access": "write"})
+    entries.extend(
+        {
+            "path": {"type": "path", "path": extra + "/" + name},
+            "access": "read",
+            "missing_path_behavior": "skip",
+        }
+        for name in (".git", ".agents", ".codex")
+    )
+    native.records[1] = native.applied()
+    context = native.records[-1]["payload"]
+    context["permission_profile"] = deepcopy(native.settings["permission_profile"])
+    context["sandbox_policy"].update(
+        writable_roots=[extra], exclude_tmpdir_env_var=True, exclude_slash_tmp=True
+    )
+    native.save()
+    return extra
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        {"sandbox": "workspace-write"},
+        {"sandbox": "workspace-write", "approval_policy": "on-request"},
+        {"sandbox": "workspace-write", "approvals_reviewer": "user"},
+        {"approval_policy": "on-request"},
+        {"approvals_reviewer": "user"},
+        {"approval_policy": "on-request", "approvals_reviewer": "user"},
+    ],
+)
+def test_partial_permission_choice_is_rejected_before_acquisition(tmp_path, choice):
+    async def run():
+        from connector.runtime_protocol import RuntimeInvalidRequestError
+
+        async with network(silent=False) as (router, caller, _, facade, _):
+            n = RolloutNative(tmp_path)
+            restricted_roots(n)
+            facade.sdk = facade.operations.sdk = n.sdk
+            with pytest.raises(
+                RuntimeInvalidRequestError, match="incomplete permission choice"
+            ):
+                await facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="once", **choice)
+                )
+            assert n.calls == [] and router.discovery_count == 0
+            assert not caller.is_owner(THREAD)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase", ["claim", "pending"])
+@pytest.mark.parametrize("ending", ["cancel", "error"])
+def test_failed_claim_publication_releases_partial_owner_and_reacquires(
+    tmp_path, ending, phase
+):
+    async def run():
+        async with network(silent=False) as (router, caller, _, facade, _):
+            n = RolloutNative(tmp_path)
+            facade.sdk = facade.operations.sdk = n.sdk
+            entered = asyncio.Event()
+            snapshot = caller._snapshot
+            publications = 0
+            error = RuntimeError("publication failed")
+
+            async def publish(thread_id):
+                nonlocal publications
+                publications += 1
+                if phase == "pending" and publications == 1:
+                    await snapshot(thread_id)
+                    await facade._native_event(
+                        {
+                            "method": "thread/status/changed",
+                            "params": {
+                                "threadId": thread_id,
+                                "status": {"type": "idle"},
+                            },
+                        },
+                        1,
+                    )
+                    return
+                assert caller.is_owner(thread_id)
+                entered.set()
+                if ending == "error":
+                    raise error
+                await asyncio.Event().wait()
+
+            caller._snapshot = publish
+            task = asyncio.create_task(
+                facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="once")
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+            if ending == "cancel":
+                task.cancel()
+            with pytest.raises(
+                asyncio.CancelledError if ending == "cancel" else RuntimeError
+            ) as caught:
+                await task
+            if ending == "error":
+                assert caught.value is error
+            assert (
+                not caller.is_owner(THREAD)
+                and THREAD not in facade.owned
+                and not facade.acquiring
+            )
+            assert not [p for m, p in n.calls if m == "turn/start"]
+            caller._snapshot = snapshot
+            await facade._native_event(
+                {"method": "native/disconnected", "params": {}}, 1
+            )
+            assert not caller.is_owner(THREAD)
+            before = router.discovery_count
+            await facade._acquire(THREAD)
+            assert router.discovery_count == before + 2
+            assert len([p for m, p in n.calls if m == "thread/resume"]) == 2
+            assert caller.is_owner(THREAD) and THREAD in facade.owned
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        {},
+        {"model": "gpt-6-sol"},
+        {
+            "approval_policy": "on-request",
+            "approvals_reviewer": "user",
+            "sandbox": "workspace-write",
+        },
+        {"approval_policy": "never", "sandbox": "danger-full-access"},
+    ],
+)
+def test_nondefault_resume_policy_and_complete_choice_wire(tmp_path, choice):
+    async def run():
+        async with network(silent=False) as (_, _, _, facade, _):
+            n = RolloutNative(tmp_path)
+            extra = restricted_roots(n)
+            facade.sdk = facade.operations.sdk = n.sdk
+            await facade.start_turn(
+                CodexStartTurnRequest(thread_id=THREAD, content="once", **choice)
+            )
+            resume = next(p for m, p in n.calls if m == "thread/resume")
+            start = next(p for m, p in n.calls if m == "turn/start")
+            assert len([p for m, p in n.calls if m == "thread/resume"]) == 1
+            assert len([p for m, p in n.calls if m == "turn/start"]) == 1
+            assert resume["config"]["sandbox_workspace_write"] == {
+                "writable_roots": [extra],
+                "network_access": False,
+                "exclude_tmpdir_env_var": True,
+                "exclude_slash_tmp": True,
+            }
+            if choice.get("sandbox") == "danger-full-access":
+                assert start["sandboxPolicy"] == {"type": "dangerFullAccess"}
+            elif choice.get("sandbox") == "workspace-write":
+                assert start["sandboxPolicy"] == {
+                    "type": "workspaceWrite",
+                    "writableRoots": [],
+                    "networkAccess": False,
+                    "excludeTmpdirEnvVar": False,
+                    "excludeSlashTmp": False,
+                }
+            else:
+                assert start["sandboxPolicy"] == {
+                    "type": "workspaceWrite",
+                    "writableRoots": [extra],
+                    "networkAccess": False,
+                    "excludeTmpdirEnvVar": True,
+                    "excludeSlashTmp": True,
+                }
+
+    asyncio.run(run())
+
+
+def test_cancelled_claim_does_not_release_replacement_owner(tmp_path):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            n = RolloutNative(tmp_path)
+            facade.sdk = facade.operations.sdk = n.sdk
+            entered = asyncio.Event()
+            snapshot = caller._snapshot
+
+            async def suspended(thread_id):
+                entered.set()
+                await asyncio.Event().wait()
+
+            caller._snapshot = suspended
+            task = asyncio.create_task(facade._acquire(THREAD))
+            await asyncio.wait_for(entered.wait(), 1)
+            old = caller.ownership_token(THREAD)
+            state = caller.get_state(THREAD)
+            caller._snapshot = snapshot
+            await caller.claim(THREAD, state)
+            replacement = caller.ownership_token(THREAD)
+            assert replacement is not old
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert caller.ownership_token(THREAD) is replacement
+            assert not facade.acquiring
+            assert not [p for m, p in n.calls if m == "turn/start"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("field", ["approval_policy", "approvals_reviewer", "sandbox"])
+def test_invalid_complete_permission_choice_is_rejected_before_acquisition(
+    tmp_path, field
+):
+    async def run():
+        from connector.runtime_protocol import RuntimeInvalidRequestError
+
+        async with network(silent=False) as (router, _, _, facade, _):
+            n = RolloutNative(tmp_path)
+            facade.sdk = facade.operations.sdk = n.sdk
+            choice = {
+                "approval_policy": "on-request",
+                "approvals_reviewer": "user",
+                "sandbox": "workspace-write",
+            }
+            choice[field] = ""
+            with pytest.raises(
+                RuntimeInvalidRequestError, match="unsupported permission choice"
+            ):
+                await facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="once", **choice)
+                )
+            assert n.calls == [] and router.discovery_count == 0
+
+    asyncio.run(run())

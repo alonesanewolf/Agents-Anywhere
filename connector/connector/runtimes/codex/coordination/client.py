@@ -4,7 +4,13 @@ import asyncio
 from collections import defaultdict
 from copy import deepcopy
 
-from connector.runtimes.codex.sdk.client import codex_turn_user_input_wire
+from connector.runtime_protocol import RuntimeInvalidRequestError
+from connector.runtimes.codex.sdk.client import (
+    codex_approval_settings,
+    codex_approvals_reviewer,
+    codex_thread_sandbox_mode,
+    codex_turn_user_input_wire,
+)
 from connector.runtimes.codex.sdk.runtime_client import (
     CodexCompactResult,
     CodexThreadReadResult,
@@ -387,13 +393,13 @@ class CoordinatedCodexClient:
                 authority.validate_result(result)
                 state = native_response_to_state(result, host_id=self.peer.host_id)
                 merge_settings(state, authority.canonical_settings())
-                await self._claim_observed(thread_id, state)
+                claim = await self._claim_observed(thread_id, state)
                 try:
                     current()
                 except IpcError:
-                    self.owned.discard(thread_id)
-                    if self.peer.is_owner(thread_id):
-                        await self.peer.release(thread_id)
+                    if self.peer.ownership_token(thread_id) is claim:
+                        self.owned.discard(thread_id)
+                        await self.peer.release(thread_id, expected_token=claim)
                     raise
             finally:
                 self.acquiring.pop(thread_id, None)
@@ -670,27 +676,35 @@ class CoordinatedCodexClient:
         for message in pending:
             state = reduce_event(state, message)
         pending.clear()
-        await self.peer.claim(thread_id, state, supports_untrusted_app_input=False)
-        self.owned.add(thread_id)
-        # claim publishes asynchronously; drain events received at that boundary
-        # from current canonical state, never from the pre-claim snapshot.
-        self.acquiring.pop(thread_id)
-        if pending:
-            state = self.peer.get_state(thread_id)
-            for message in pending:
-                if message["method"] in {
-                    "thread/settings/updated",
-                    "thread/settings/changed",
-                }:
-                    params = message.get("params") or {}
-                    self.operations.settings_observed(
-                        thread_id,
-                        params.get("settings", params.get("threadSettings", {})),
-                    )
-                state = reduce_event(state, message)
-            # Further events now use the normal owner path and supersede this
-            # snapshot at its publication await, without an unbounded drain loop.
-            await self.peer.publish_state(thread_id, state)
+        claim = None
+        try:
+            # The peer rolls back insertion if its own publication fails.
+            await self.peer.claim(thread_id, state, supports_untrusted_app_input=False)
+            claim = self.peer.ownership_token(thread_id)
+            self.owned.add(thread_id)
+            # Drain the observations received during publication from the current
+            # state. Any failure in this second phase also revokes our claim.
+            self.acquiring.pop(thread_id)
+            if pending:
+                state = self.peer.get_state(thread_id)
+                for message in pending:
+                    if message["method"] in {
+                        "thread/settings/updated",
+                        "thread/settings/changed",
+                    }:
+                        params = message.get("params") or {}
+                        self.operations.settings_observed(
+                            thread_id,
+                            params.get("settings", params.get("threadSettings", {})),
+                        )
+                    state = reduce_event(state, message)
+                await self.peer.publish_state(thread_id, state)
+            return claim
+        except BaseException:
+            if claim is not None and self.peer.ownership_token(thread_id) is claim:
+                self.owned.discard(thread_id)
+                await self.peer.release(thread_id, expected_token=claim)
+            raise
 
     async def start_thread(self, request):
         token, pending = object(), []
@@ -719,6 +733,31 @@ class CoordinatedCodexClient:
                 self.acquiring.pop(thread_id, None)
 
     async def start_turn(self, request):
+        choices = (request.approval_policy, request.approvals_reviewer, request.sandbox)
+        # Completeness comes from caller fields, before SDK defaults expand a
+        # sandbox label. The existing Full access preset has no reviewer because
+        # approvalPolicy=never; every restricted preset supplies all three.
+        full_access = request.approval_policy in {
+            "never",
+            "full_access",
+            "deny_all",
+            "deny-all",
+        } and request.sandbox in {"danger-full-access", "full-access", "full_access"}
+        if any(value is not None for value in choices) and not (
+            all(value is not None for value in choices) or full_access
+        ):
+            raise RuntimeInvalidRequestError(
+                "incomplete permission choice: provide a complete permission preset or inherit native settings"
+            )
+        if any(value is not None for value in choices) and (
+            codex_approval_settings(request.approval_policy)[0] is None
+            or codex_thread_sandbox_mode(request.sandbox) is None
+            or (
+                request.approvals_reviewer is not None
+                and codex_approvals_reviewer(request.approvals_reviewer) is None
+            )
+        ):
+            raise RuntimeInvalidRequestError("unsupported permission choice")
         native = {
             "threadId": request.thread_id,
             "input": codex_turn_user_input_wire(request),
@@ -732,8 +771,6 @@ class CoordinatedCodexClient:
         ):
             if getattr(request, source) is not None:
                 native[target] = getattr(request, source)
-        from connector.runtimes.codex.sdk.client import codex_approval_settings
-
         policy, reviewer = codex_approval_settings(
             request.approval_policy, request.approvals_reviewer
         )
@@ -755,9 +792,7 @@ class CoordinatedCodexClient:
             {
                 "turnStart": {
                     "request": native,
-                    "context": {
-                        "inheritThreadSettings": True
-                    },
+                    "context": {"inheritThreadSettings": True},
                 }
             },
         )

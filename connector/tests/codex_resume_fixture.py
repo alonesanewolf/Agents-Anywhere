@@ -112,11 +112,53 @@ class RolloutNative:
             return SimpleNamespace(root={"thread": self.thread()})
         if method == "thread/resume":
             effective = deepcopy(self.settings)
-            if (
-                params.get("sandbox")
-                not in ("workspace-write", "read-only", "danger-full-access")
-                or self.post_mode == "mismatch"
-            ):
+            # Permission effects are reconstructed from the actual wire request
+            # and independent defaults, not copied from historical authority.
+            effective["approval_policy"] = params.get("approvalPolicy", "never")
+            effective["approvals_reviewer"] = params.get("approvalsReviewer", "user")
+            cwd = params.get("cwd", self.cwd)
+            cfg = params.get("config", {}).get("sandbox_workspace_write", {})
+            mode = params.get("sandbox", "danger-full-access")
+            effective["cwd"] = cwd
+            effective["runtime_workspace_roots"] = [cwd]
+            if mode == "workspace-write":
+                roots = [cwd, *cfg.get("writable_roots", [])]
+                effective["runtime_workspace_roots"] = roots
+                entries = [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    }
+                ]
+                for root in roots:
+                    entries += profile(root)["file_system"]["entries"][1:2]
+                    entries += profile(root)["file_system"]["entries"][4:]
+                for kind, key in (
+                    ("tmpdir", "exclude_tmpdir_env_var"),
+                    ("slash_tmp", "exclude_slash_tmp"),
+                ):
+                    if not cfg.get(key, False):
+                        entries.append(
+                            {
+                                "path": {"type": "special", "value": {"kind": kind}},
+                                "access": "write",
+                            }
+                        )
+                effective["permission_profile"] = {
+                    "type": "managed",
+                    "file_system": {"type": "restricted", "entries": entries},
+                    "network": "enabled"
+                    if cfg.get("network_access", False)
+                    else "restricted",
+                }
+            elif mode == "read-only":
+                effective["permission_profile"] = profile(cwd)
+                effective["permission_profile"]["file_system"]["entries"] = profile(
+                    cwd
+                )["file_system"]["entries"][:1]
+            else:
+                effective["permission_profile"] = {"type": "disabled"}
+            if self.post_mode == "mismatch":
                 effective["permission_profile"] = {"type": "disabled"}
             if self.post_mode != "missing":
                 self.records.append(

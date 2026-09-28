@@ -375,7 +375,11 @@ async def test_normal_aa_approval_setting_is_translated_and_follower_goal_never_
         try:
             await adapter.start_turn(
                 CodexStartTurnRequest(
-                    thread_id="t", content="hi", approval_policy="request_approval"
+                    thread_id="t",
+                    content="hi",
+                    approval_policy="request_approval",
+                    approvals_reviewer="user",
+                    sandbox="workspace-write",
                 )
             )
             assert native.calls[-1][1]["approvalPolicy"] == "on-request"
