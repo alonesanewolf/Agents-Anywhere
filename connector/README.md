@@ -136,9 +136,10 @@ atomic file transactions and legacy migration.
 ## Runtime Discovery
 
 The default providers are Codex, Claude and DSH. The connector reports attached runtime
-capabilities to the server. Codex is discovered through the official
-`openai-codex` SDK package; the connector does not use a Codex CLI/app-server
-path or IPC switch as an active runtime surface. If Claude Code is not on
+capabilities to the server. Codex uses the official `openai-codex` SDK by default;
+an opt-in `appIntegration` setting adds local Codex App/IDE conversation coordination.
+See [Codex App and IDE coordination](docs/codex-app-integration.md) for activation,
+supported controls, the read-only probe and limitations. If Claude Code is not on
 `PATH`, set:
 
 ```bash
