@@ -1118,7 +1118,6 @@ def codex_turn_user_input_wire(
     return [
         item.model_dump(
             by_alias=True,
-            exclude_defaults=True,
             exclude_none=True,
             mode="json",
         )

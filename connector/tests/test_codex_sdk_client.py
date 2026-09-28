@@ -566,6 +566,7 @@ async def _test_codex_sdk_client_sends_attachments_as_user_input() -> None:
     assert turn_input[0] == {
         "text": "hello\n\n[Attached file: note.txt (text/plain, 12 bytes) at /tmp/note.txt]",
         "type": "text",
+        "text_elements": [],
     }
     assert turn_input[1] == {
         "path": "/tmp/image.png",

@@ -167,9 +167,12 @@ def test_review_markers_hidden_from_raw_and_typed_visible_timeline(kind):
 
 
 @pytest.mark.parametrize("later", ["idle", "newer"])
+@pytest.mark.parametrize(
+    "attachment_kinds", [(), ("image",), ("file",), ("image", "file")]
+)
 @async_test
 async def test_real_app_consumer_restore_attachments_ack_target_and_order(
-    tmp_path, later
+    tmp_path, later, attachment_kinds
 ):
     async with real_runtime(tmp_path) as (runtime, host, adapter, owner, native):
         await owner.claim("remote", active_state())
@@ -181,6 +184,15 @@ async def test_real_app_consumer_restore_attachments_ack_target_and_order(
         calls = []
 
         async def consume(method, params):
+            # Installed App QBt reads text_elements.length before optimistic
+            # insertion or native dispatch. SDK schema defaults are not applied.
+            for item in params["input"]:
+                if item["type"] == "text":
+                    if not isinstance(item.get("text_elements"), list):
+                        raise ValueError(
+                            "native text parser requires text_elements array"
+                        )
+                    assert len(item["text_elements"]) == 0
             calls.append(deepcopy(params))
             restore = params["restoreMessage"]
             assert restore["cwd"] == "/actual/native"
@@ -193,13 +205,19 @@ async def test_real_app_consumer_restore_attachments_ack_target_and_order(
             )
             assert pending.text == restore["text"]
             assert isinstance(restore["createdAt"], int)
-            assert len(params["attachments"]) == 2
-            assert params["input"][1]["type"] == "localImage"
-            assert params["input"][0]["text"].count("[Attached file:") == 1
-            assert (
-                restore["context"]["imageAttachments"][0]["localPath"]
-                == params["input"][1]["path"]
+            assert len(params["attachments"]) == len(attachment_kinds)
+            assert len(params["input"]) == 1 + ("image" in attachment_kinds)
+            assert params["input"][0]["text"].count("[Attached file:") == (
+                "file" in attachment_kinds
             )
+            if "image" in attachment_kinds:
+                assert params["input"][1]["type"] == "localImage"
+                assert (
+                    restore["context"]["imageAttachments"][0]["localPath"]
+                    == params["input"][1]["path"]
+                )
+            else:
+                assert restore["context"]["imageAttachments"] == []
             current = reduce_event(owner.get_state("remote"), idle())
             if later == "newer":
                 current = reduce_event(current, started("newer"))
@@ -215,6 +233,7 @@ async def test_real_app_consumer_restore_attachments_ack_target_and_order(
             attachments=tuple(
                 RuntimeAttachment(file_id=fid, name=fid, media_type=mime)
                 for fid, mime in (("image", "image/png"), ("file", "text/plain"))
+                if fid in attachment_kinds
             ),
         )
         assert result.ok
