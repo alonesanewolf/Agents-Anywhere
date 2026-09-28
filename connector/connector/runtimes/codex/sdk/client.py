@@ -929,9 +929,22 @@ class CodexSdkClient:
             old_task.cancel()
         stream_state = TurnStreamState(thread_id=thread_id, turn_id=turn_id)
         self._stream_states[turn_id] = stream_state
-        self._stream_tasks[turn_id] = asyncio.create_task(
+        task = asyncio.create_task(
             self._stream_turn(thread_id, turn_id, turn, stream_state=stream_state)
         )
+        self._stream_tasks[turn_id] = task
+        task.add_done_callback(self.handle_stream_task_done)
+
+    def handle_stream_task_done(self, task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.debug("codex sdk turn stream task cancelled")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "codex sdk turn stream task failed error_type={}",
+                type(exc).__name__,
+            )
 
     async def _stream_turn(
         self,
