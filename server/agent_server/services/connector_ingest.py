@@ -543,4 +543,55 @@ def runtime_state_fingerprint(value: SessionRuntimeState) -> dict[str, Any]:
         "selections": value.selections,
         "statusReason": value.statusReason,
         "error": value.error,
+        "presentation": runtime_presentation_fingerprint(value.metadata)
+        if value.runtime == "codex"
+        else {},
     }
+
+
+def runtime_presentation_fingerprint(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Compare only runtime facts that change the goal display or controls."""
+    result: dict[str, Any] = {}
+    presentation = metadata.get("codexPresentation")
+    if isinstance(presentation, dict):
+        goals: dict[str, Any] = {}
+        for field in ("threadGoal", "completedThreadGoal"):
+            if field not in presentation:
+                continue
+            goal = presentation[field]
+            goals[field] = (
+                {
+                    key: goal[key]
+                    for key in (
+                        "objective",
+                        "status",
+                        "tokensUsed",
+                        "timeUsedSeconds",
+                        "tokenBudget",
+                    )
+                    if key in goal
+                }
+                if isinstance(goal, dict)
+                else goal
+            )
+        if goals:
+            result["codexPresentation"] = goals
+
+    for field, keys in (
+        ("codexCoordination", ("role", "available", "generation")),
+        ("codexCapabilities", ("goalControl", "userSessionStop")),
+    ):
+        source = metadata.get(field)
+        if isinstance(source, dict):
+            selected = {key: source[key] for key in keys if key in source}
+            if selected:
+                result[field] = selected
+
+    settings = metadata.get("codexSettings")
+    if isinstance(settings, dict):
+        thread_settings = settings.get("latestThreadSettings")
+        if isinstance(thread_settings, dict):
+            collaboration = thread_settings.get("collaborationMode")
+            if isinstance(collaboration, dict) and "mode" in collaboration:
+                result["collaborationMode"] = collaboration["mode"]
+    return result
