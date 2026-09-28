@@ -31,6 +31,7 @@ from openai_codex.models import (
 )
 
 from connector.runtime_protocol import RuntimeConfig, RuntimeConflictError
+from connector.runtimes.codex.domain.input_requests import codex_input_request
 from connector.runtimes.codex.sdk import client as codex_sdk_client
 from connector.runtimes.codex.sdk.binary import LoginShellPathResult
 from connector.runtimes.codex.sdk.client import (
@@ -60,6 +61,55 @@ def test_codex_sdk_list_threads_recovers_after_transport_dies() -> None:
 
 def test_codex_sdk_approval_does_not_block_response_reader() -> None:
     asyncio.run(_test_codex_sdk_approval_does_not_block_response_reader())
+
+
+def test_codex_sdk_secret_question_returns_error_without_hanging_reader() -> None:
+    async def run() -> None:
+        native = _DeferredServerRequestSdkClient()
+        client = CodexSdkClient(native)
+
+        async def handler(message: dict[str, Any]) -> None:
+            codex_input_request(message["params"])
+
+        await client.start(handler)
+        try:
+            native.sync.incoming.put(
+                {
+                    "id": "secret_request",
+                    "method": "item/tool/requestUserInput",
+                    "params": {
+                        "threadId": "thread_1",
+                        "questions": [
+                            {
+                                "id": "private_input",
+                                "question": "Enter a private value",
+                                "isSecret": True,
+                            }
+                        ],
+                    },
+                }
+            )
+            native.sync.incoming.put({"id": "read_request", "result": {"data": []}})
+            async with asyncio.timeout(1):
+                while not native.sync.written or not native.sync.router.responses:
+                    await asyncio.sleep(0)
+
+            assert native.sync.written == [
+                {
+                    "id": "secret_request",
+                    "error": {
+                        "code": -32603,
+                        "message": "runtime does not support request_user_input secret questions",
+                    },
+                }
+            ]
+            assert native.sync.router.responses == [
+                {"id": "read_request", "result": {"data": []}}
+            ]
+        finally:
+            await client.stop()
+
+    asyncio.run(run())
 
 
 def test_codex_sdk_lists_paginated_thread_turns_in_chronological_order() -> None:

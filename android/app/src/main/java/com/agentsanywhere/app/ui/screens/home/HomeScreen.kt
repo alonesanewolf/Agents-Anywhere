@@ -217,7 +217,17 @@ fun HomeScreen(
                 onTabSelected = onTabSelected,
                 onProfile = { onProfileOpenChange(true) },
                 onSearch = { showToast(context.getString(R.string.home_search_coming_soon)) },
-                onSessionLongPress = { session, bounds -> actionMenu = HomeSessionActionMenu(session, bounds, projectView = sidebarViewMode == HomeSidebarViewMode.Project) },
+                onSessionLongPress = { session, bounds ->
+                    actionMenu = HomeSessionActionMenu(
+                        session = session,
+                        rowBounds = bounds,
+                        projectView = sidebarViewMode == HomeSidebarViewMode.Project,
+                        contextLabel = session.sidebarContextLabel(
+                            projectName = state.projects.firstOrNull { it.id == session.projectId }?.name,
+                            deviceName = state.devices.firstOrNull { it.id == session.connectorId }?.name,
+                        ),
+                    )
+                },
                 onProjectMenu = { projectActionMenu = it },
                 onProjectExpandedChange = { project, expanded ->
                     projectPreferences.setProjectExpanded(project.id, expanded)
