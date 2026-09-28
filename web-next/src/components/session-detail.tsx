@@ -891,8 +891,11 @@ export function SessionDetail({
     let processedEventIds = new Set<string>()
     const renderBuffer = createSessionEventBuffer((events) => {
       if (cancelled) return
+      // Runtime projections carry their own revision, which can trail the
+      // timeline cursor. mergeSessionEvent validates that revision separately.
       setState((current) => events.reduce((next, event) =>
-        next && event.sequence < next.nextSeq ? next : mergeSessionEvent(next, event), current))
+        next && event.type !== "runtime.state.updated" && event.sequence < next.nextSeq
+          ? next : mergeSessionEvent(next, event), current))
       const items = events.flatMap((event) => {
         const item = readPayloadValue<TimelineItem>(event.payload.item)
         if (item) return [item]
@@ -930,7 +933,7 @@ export function SessionDetail({
       if (cancelled || event.sessionId !== sessionId) return
       if (event.type === "keepalive") return
       const usesDurableEventIdDedup = sessionEventUsesDurableEventIdDedup(event)
-      if (!eventSequenceCursor.accepts(sessionId, event.sequence)) return
+      if (event.type !== "runtime.state.updated" && !eventSequenceCursor.accepts(sessionId, event.sequence)) return
       if (!acceptSessionEventId(event, processedEventIds)) return
       if (usesDurableEventIdDedup) {
         if (processedEventIds.size > 1000) {
@@ -2626,7 +2629,10 @@ function mergeSessionEvent(
   const nextRuntimeState =
     acceptsRuntimeState &&
     runtimeState &&
-    !runtimeStatesSemanticallyEqual(current.state ?? null, runtimeState)
+    // Preserve the runtime watermark even when display semantics are equal;
+    // otherwise an older contradictory projection could replace this fact.
+    (runtimeState.updatedSeq > (current.state?.updatedSeq ?? 0) ||
+      !runtimeStatesSemanticallyEqual(current.state ?? null, runtimeState))
       ? runtimeState
       : current.state
   const nextEffectiveCapabilities = mergeEffectiveCapabilities(

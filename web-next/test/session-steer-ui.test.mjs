@@ -3,6 +3,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import { registerSource } from './helpers/onboarding-source.mjs'
+import { createDetailStateHarness, runtimeEvent } from './helpers/session-detail-state.mjs'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://app.example.test/', pretendToBeVisual: true })
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLFormElement', 'Element', 'Node', 'Event', 'CustomEvent', 'MutationObserver', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame']) {
@@ -583,3 +584,60 @@ test('failed ordinary send restores its unchanged text and uploaded attachment',
 })
 
 test.after(() => dom.window.close())
+
+for (const runningBeforeAck of [true, false]) {
+  test(`ordinary send becomes same-view steer through production event handling (${runningBeforeAck ? 'running before ACK' : 'ACK before running'})`, async t => {
+    let acknowledge
+    let repaint = () => {}
+    const sends = []
+    const steers = []
+    const detail = createDetailStateHarness({
+      onChange: () => repaint(version => version + 1),
+      send: async (...args) => { sends.push(args); return new Promise(resolve => { acknowledge = resolve }) },
+      steer: async (...args) => { steers.push(args); return { ok: true, result: { steered: true } } },
+    })
+    t.after(() => detail.dispose())
+    function Host() {
+      const [, setVersion] = useState(0)
+      repaint = setVersion
+      const [value, setValue] = useState('start native task')
+      return h(SessionComposer, props({
+        session: detail.state.session, runtimeState: detail.state.state, sending: detail.sending,
+        effectiveCapabilities: detail.state.effectiveCapabilities,
+        value, onValueChange: setValue, onSend: detail.handleSend, onSteer: detail.handleSteer,
+      }))
+    }
+    const host = await mount(t, h(Host))
+    const input = host.querySelector('textarea')
+    await act(async () => host.querySelector('button[aria-label="Send"]').click())
+    await type(input, 'steer draft typed during dispatch')
+    const observe = () => {
+      detail.applyEvent({ protocolVersion: '1.0', eventId: 'timeline:123', sessionId: 's1', type: 'timeline.snapshot', sequence: 123, cursor: 'seq:123', payload: { items: [] } })
+      detail.applyEvent(runtimeEvent('running', 122))
+      detail.renderBuffer.flush()
+    }
+    if (runningBeforeAck) {
+      await act(async () => observe())
+      const pendingSteer = host.querySelector('button[aria-label="Send while running"]')
+      assert.ok(pendingSteer)
+      assert.equal(pendingSteer.disabled, true)
+      await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+      assert.equal(steers.length, 0)
+    }
+    await act(async () => acknowledge({ ok: true }))
+    if (!runningBeforeAck) {
+      assert.equal(host.querySelector('button[aria-label="Send while running"]'), null)
+      assert.equal(detail.state.state.status, 'waiting')
+      await act(async () => observe())
+    }
+    assert.equal(input.value, 'steer draft typed during dispatch')
+    const readySteer = host.querySelector('button[aria-label="Send while running"]')
+    assert.ok(readySteer)
+    assert.equal(readySteer.disabled, false)
+    await act(async () => readySteer.click())
+    assert.equal(sends.length, 1)
+    assert.equal(steers.length, 1)
+    assert.deepEqual(steers[0].slice(0, 3), ['test', 's1', 'steer draft typed during dispatch'])
+    assert.equal(input.value, '')
+  })
+}
