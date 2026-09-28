@@ -11,7 +11,11 @@ from openai_codex.errors import (
     MethodNotFoundError,
 )
 
-from connector.runtimes.codex.domain.activity import activity, observe_activity
+from connector.runtimes.codex.domain.activity import (
+    activity,
+    is_running,
+    observe_activity,
+)
 
 from .context import prepare_start, require_feature
 from .history import hydrate
@@ -244,13 +248,16 @@ class OwnerOperations:
             raise ValueError(
                 "recovery requires the same input, context and native generation"
             )
-        if active_turn(state) is not None and request.get("toolOutput") is None:
+        if (
+            is_running(state, enumerate_turns(state))
+            and request.get("toolOutput") is None
+        ):
             raise ValueError("conversation has an active turn")
         passive = context.get("passiveContext") or {}
         items = deepcopy(context.get("responseItems") or [])
         if passive.get("key") != self.journal.passive_key(thread_id):
             items.extend(deepcopy(passive.get("items") or []))
-        if items and active_turn(state) is not None:
+        if items and is_running(state, enumerate_turns(state)):
             raise ValueError("response item injection requires an idle thread")
         prepared = {
             **request,
@@ -264,7 +271,9 @@ class OwnerOperations:
         else:
             await self.journal.begin(thread_id, prepared)
         if items and not (recovering and record.get("injectionConfirmed")):
-            if active_turn(self.state(thread_id)) is not None:
+            if is_running(
+                self.state(thread_id), enumerate_turns(self.state(thread_id))
+            ):
                 raise ValueError("response item injection requires an idle thread")
             await self.mutation(
                 thread_id,

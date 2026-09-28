@@ -159,6 +159,15 @@ class CodexTurnActions:
                     metadata={"source": "codex.turn/start.source-unavailable"},
                 )
                 return _source_failure_result(source_observation)
+            current = self.session_states.get(session_id)
+            if (
+                callable(getattr(self.client, "owner_operation", None))
+                and current is not None
+                and current.status in {"running", "waiting_approval"}
+            ):
+                # Report the operation failure without erasing freshly observed
+                # native activity, including an active thread with no target ID.
+                raise
             await self._set_session_state(
                 session_id=session_id,
                 external_session_id=external_session_id,
@@ -282,6 +291,18 @@ class CodexTurnActions:
             raise RuntimeUnsupportedError("steer_turn")
         turn_id = self.active_turn_ids.get(session_id)
         if turn_id is None:
+            current = self.session_states.get(session_id)
+            if (
+                callable(getattr(self.client, "owner_operation", None))
+                and current is not None
+                and current.status in {"running", "waiting_approval"}
+            ):
+                return RuntimeOperationResult(
+                    ok=False,
+                    code="codex_active_turn_unknown",
+                    message="Native activity is running but its turn ID is not yet known",
+                    result={"externalSessionId": external_session_id},
+                )
             await self._set_session_state(
                 session_id=session_id,
                 external_session_id=external_session_id,

@@ -33,7 +33,15 @@ def activity(state, turns=None):
     }
 
 
-def observe_activity(state, *, turns, status=None, started=None, completed=None):
+def observe_activity(
+    state,
+    *,
+    turns,
+    status=None,
+    started=None,
+    completed=None,
+    terminal_transition=False,
+):
     previous = activity(state, turns)
     ids = list(previous["turnIds"])
     running = previous["running"]
@@ -45,8 +53,13 @@ def observe_activity(state, *, turns, status=None, started=None, completed=None)
         ids = [value for value in ids if value != started] + [started]
         running = True
     if completed is not None:
-        ids = [value for value in ids if value != completed]
-        running = bool(ids)
+        if completed in ids:
+            ids = [value for value in ids if value != completed]
+            running = bool(ids)
+        elif not terminal_transition:
+            # A historical correction cannot erase unrelated status-only active
+            # evidence or invalidate an unrelated acknowledged turn.
+            return
     state[KEY] = {
         "sequence": previous["sequence"] + 1,
         "turnIds": ids,
@@ -68,11 +81,14 @@ def activity_signature(state, turns):
 
 
 def activity_patch(patches):
+    # Active-set transitions are compared by activity_signature. Only explicit
+    # runtime status must count even when its value is repeated unchanged.
     return any(
         isinstance(patch.get("path"), list)
-        and (
-            patch["path"][:1] in (["threadRuntimeStatus"], ["status"], [KEY])
-            or (patch["path"][:1] == ["turns"] and patch["path"][-1:] == ["status"])
-        )
+        and patch["path"][:1] in (["threadRuntimeStatus"], ["status"], [KEY])
         for patch in patches
     )
+
+
+def is_running(state, turns=None):
+    return activity(state, turns)["running"]

@@ -3,6 +3,8 @@
 import asyncio
 from copy import deepcopy
 
+from connector.runtimes.codex.domain.activity import is_running
+
 from .context import prepare_start, require_feature
 from .history import hydrate
 from .projection import active_turn, native_to_state
@@ -111,6 +113,8 @@ async def interrupt(operations, thread_id, params):
     mode = params.get("mode", "system")
     if mode not in ("system", "user-stop", "descendant-cleanup"):
         raise ValueError("unsupported interrupt mode")
+    if turn_id is None and is_running(state, enumerate_turns(state)):
+        raise ValueError("native activity has no known interrupt target")
     goal = state.get("threadGoal") or {}
     pause_error = None
     if (

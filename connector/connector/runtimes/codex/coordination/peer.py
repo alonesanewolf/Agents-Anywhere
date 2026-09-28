@@ -332,7 +332,14 @@ class CoordinationPeer:
         )
 
     async def request_owner(
-        self, thread_id, method, params, *, timeout=5, expected_owner_client_id=None
+        self,
+        thread_id,
+        method,
+        params,
+        *,
+        timeout=5,
+        expected_owner_client_id=None,
+        before_dispatch=None,
     ):
         self._require_open()
         if method not in FOLLOWER_METHODS:
@@ -349,6 +356,10 @@ class CoordinationPeer:
                 if owner is None:
                     raise IpcError("no-owner")
                 self._check_context(method, params, owner.supports_untrusted_app_input)
+                # Synchronous callback after all awaited preparation. request()
+                # writes the complete frame before its first await (drain).
+                if before_dispatch is not None:
+                    before_dispatch(owner)
                 if owner.client_id == self.client.client_id:
                     return await self._handle_request(
                         {

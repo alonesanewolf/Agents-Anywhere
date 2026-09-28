@@ -58,6 +58,7 @@ def reduce_event(previous, message):
         turns = enumerate_turns(state)
         turn_id = params.get("turnId", (params.get("turn") or {}).get("id"))
         turn = next((t for t in turns if t.get("turnId") == turn_id), None)
+        new_turn = turn is None
         if turn is None:
             turn = canonical_turn(
                 {"id": turn_id, "items": [], "status": "inProgress"}, state["id"]
@@ -67,6 +68,8 @@ def reduce_event(previous, message):
             observe_activity(
                 state,
                 turns=turns,
+                terminal_transition=method == "turn/completed"
+                and (new_turn or turn.get("status") == "inProgress"),
                 **{"started" if method == "turn/started" else "completed": turn_id},
             )
             raw = params["turn"]

@@ -2,10 +2,9 @@
 
 from copy import deepcopy
 
-from connector.runtimes.codex.domain.activity import activity, native_status
+from connector.runtimes.codex.domain.activity import activity, is_running, native_status
 
 from .context import queue_start
-from .projection import active_turn
 from .state import enumerate_turns
 
 
@@ -69,7 +68,11 @@ async def execute_head(operations, thread_id):
     ):
         state = operations.state(thread_id)
         messages = operations.journal.queue(thread_id)
-        if not messages or messages[0].get("pausedReason") or active_turn(state):
+        if (
+            not messages
+            or messages[0].get("pausedReason")
+            or is_running(state, enumerate_turns(state))
+        ):
             return False
         turns = enumerate_turns(state)
         explicit_idle = (

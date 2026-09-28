@@ -348,13 +348,35 @@ class CoordinatedCodexClient:
         params = {**deepcopy(params), "conversationId": thread_id}
         if self.peer.is_owner(thread_id):
             return await self._owner_operation(method, params)
-        before = (self._snapshot(thread_id)[4], self.peer.activity_revision(thread_id))
-        result = await self.peer.request_owner(thread_id, method, params)
+        before = []
+        result = await self.peer.request_owner(
+            thread_id,
+            method,
+            params,
+            before_dispatch=self._activity_dispatch(thread_id, before)
+            if suffix == "start-turn"
+            else None,
+        )
         if suffix == "start-turn" and isinstance(result, dict):
             turn = (result.get("result") or {}).get("turn")
             if isinstance(turn, dict) and turn.get("status") == "inProgress":
-                self._acknowledge_activity(thread_id, turn.get("id"), before)
+                self._acknowledge_activity(
+                    thread_id, turn.get("id"), before[0] if before else None
+                )
         return result
+
+    def _activity_dispatch(self, thread_id, before):
+        def capture(owner):
+            state, current_owner, _, _, source = self._snapshot(thread_id)
+            if (
+                state is None
+                or current_owner is None
+                or current_owner.client_id != owner.client_id
+            ):
+                raise ValueError("activity dispatch owner changed")
+            before.append((source, self.peer.activity_revision(thread_id)))
+
+        return capture
 
     def _acknowledge_activity(self, thread_id, turn_id, before):
         state, owner, _, role, source = self._snapshot(thread_id)
@@ -489,7 +511,9 @@ class CoordinatedCodexClient:
             thread_id, method.removeprefix("thread-follower-"), params
         )
 
-    async def command_owner_operation(self, thread_id, method, params):
+    async def command_owner_operation(
+        self, thread_id, method, params, *, before_dispatch=None
+    ):
         from .peer import FOLLOWER_METHODS
 
         if (
@@ -506,7 +530,11 @@ class CoordinatedCodexClient:
         if owner is None:
             raise ValueError("command control requires an existing owner")
         return await self.peer.request_owner(
-            thread_id, method, params, expected_owner_client_id=owner.client_id
+            thread_id,
+            method,
+            params,
+            expected_owner_client_id=owner.client_id,
+            before_dispatch=before_dispatch,
         )
 
     async def _claim_observed(self, thread_id, state):
@@ -618,13 +646,13 @@ class CoordinatedCodexClient:
         if state is None or owner is None or role not in {"owner", "follower"}:
             raise ValueError("steering requires an existing observed owner")
         params = prepare_steer(request, state)
-        before = (
-            self._snapshot(request.thread_id)[4],
-            self.peer.activity_revision(request.thread_id),
-        )
+        before = []
         try:
             result = await self.command_owner_operation(
-                request.thread_id, "thread-follower-steer-turn", params
+                request.thread_id,
+                "thread-follower-steer-turn",
+                params,
+                before_dispatch=self._activity_dispatch(request.thread_id, before),
             )
             payload = confirmed_steer(
                 result.get("result") if isinstance(result, dict) else None
@@ -632,7 +660,9 @@ class CoordinatedCodexClient:
         except Exception:
             await self.refresh_state(request.thread_id, force=True)
             raise
-        self._acknowledge_activity(request.thread_id, payload["turnId"], before)
+        self._acknowledge_activity(
+            request.thread_id, payload["turnId"], before[0] if before else None
+        )
         await self.refresh_state(request.thread_id, force=True)
         return CodexTurnResult(turn_id=payload["turnId"], payload=payload)
 
