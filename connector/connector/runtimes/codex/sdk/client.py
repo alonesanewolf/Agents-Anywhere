@@ -109,6 +109,18 @@ class PendingServerRequest:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class PendingServerRequest:
+    kind: Literal["approval", "input"]
+    response: asyncio.Future[Mapping[str, Any]]
+
+    def cancel(self) -> None:
+        if not self.response.done():
+            self.response.set_result(
+                {"answers": {}} if self.kind == "input" else {"decision": "decline"}
+            )
+
+
 class CodexThreadTurnsListResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
