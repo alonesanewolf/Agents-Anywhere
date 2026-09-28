@@ -11,6 +11,7 @@
     <string name="home_project_filter_agents">Agents</string>
     <string name="home_project_filter_all_agents">All Agents</string>
     <string name="home_project_filter_clear">Clear device and Agent filters</string>
+    <string name="home_project_filter_clear_short">Clear</string>
     <string name="home_project_filter_empty">No projects match the selected device or Agent.</string>
     <string name="home_project_filter_loading">Checking projects for this device or Agent...</string>
     <string name="home_project_load_retry">Could not load sessions. Tap to retry.</string>

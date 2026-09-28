@@ -1,9 +1,20 @@
 package com.agentsanywhere.app.ui.screens.home
 
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.agentsanywhere.app.R
 import com.agentsanywhere.app.feature.sessions.ProjectDeviceAgentFilter
 import com.agentsanywhere.app.feature.sessions.ProjectSessionStatusFilter
@@ -13,6 +24,7 @@ import com.agentsanywhere.app.ui.designsystem.AAAnchoredDropdownMenu
 import com.agentsanywhere.app.ui.designsystem.AAAnchoredPopup
 import com.agentsanywhere.app.ui.designsystem.AADropdownMenuItem
 import com.agentsanywhere.app.ui.designsystem.AADropdownMenuLabel
+import com.agentsanywhere.app.ui.designsystem.LocalAAColors
 
 @Composable
 internal fun HomeProjectAnchoredPopup(
@@ -37,7 +49,28 @@ internal fun HomeProjectFilterMenu(
     onClearDeviceAgentFilter: () -> Unit,
 ) {
     AAAnchoredDropdownMenu(anchorBounds = anchorBounds, onDismissRequest = onDismiss) {
-        item("status-label") { AADropdownMenuLabel(stringResource(R.string.home_project_session_status)) }
+        item("filter-header") {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.home_project_session_status),
+                    modifier = Modifier.weight(1f),
+                    color = LocalAAColors.current.inkSoft.copy(alpha = 0.72f),
+                    fontSize = 12.sp,
+                )
+                if (deviceAgentFilter.active) {
+                    val clearLabel = stringResource(R.string.home_project_filter_clear)
+                    TextButton(
+                        onClick = { onClearDeviceAgentFilter(); onDismiss() },
+                        modifier = Modifier.semantics { contentDescription = clearLabel },
+                    ) {
+                        Text(stringResource(R.string.home_project_filter_clear_short))
+                    }
+                }
+            }
+        }
         items(ProjectSessionStatusFilter.entries, key = { "status-${it.name}" }) { status ->
             val label = when (status) {
                 ProjectSessionStatusFilter.Active -> R.string.home_project_filter_active
@@ -78,13 +111,6 @@ internal fun HomeProjectFilterMenu(
                 text = runtime.runtimeTypeLabel(),
                 selected = deviceAgentFilter.runtime == runtime,
                 onClick = { onSelectAgent(runtime); onDismiss() },
-            )
-        }
-        if (deviceAgentFilter.active) item("clear-device-agent") {
-            AADropdownMenuItem(
-                text = stringResource(R.string.home_project_filter_clear),
-                selected = false,
-                onClick = { onClearDeviceAgentFilter(); onDismiss() },
             )
         }
     }

@@ -11,6 +11,7 @@
     <string name="home_project_filter_agents">Agent</string>
     <string name="home_project_filter_all_agents">所有 Agent</string>
     <string name="home_project_filter_clear">清除设备与 Agent 筛选</string>
+    <string name="home_project_filter_clear_short">清除</string>
     <string name="home_project_filter_empty">没有符合所选设备或 Agent 的项目。</string>
     <string name="home_project_filter_loading">正在查找此设备或 Agent 的项目...</string>
     <string name="home_project_load_retry">会话加载失败，点击重试。</string>
