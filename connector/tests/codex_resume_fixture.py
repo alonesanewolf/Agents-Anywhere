@@ -185,10 +185,16 @@ class RolloutNative:
                 for field, wire in (
                     ("model", "model"),
                     ("model_provider_id", "modelProvider"),
-                    ("service_tier", "serviceTier"),
                     ("personality", "personality"),
                 )
             }
+            # Native treats an explicit null as standard routing; omission
+            # inherits independently configured tier (which may be None).
+            effective["service_tier"] = deepcopy(
+                "default"
+                if "serviceTier" in params and params["serviceTier"] is None
+                else params.get("serviceTier", self.native_defaults["service_tier"])
+            )
             for field, wire in (
                 ("reasoning_effort", "model_reasoning_effort"),
                 ("reasoning_summary", "model_reasoning_summary"),
@@ -257,13 +263,16 @@ class RolloutNative:
             if self.post_mode == "mismatch":
                 effective["permission_profile"] = {"type": "disabled"}
             if self.post_mode != "missing":
+                snapshot = deepcopy(effective)
+                if snapshot["service_tier"] is None:
+                    snapshot.pop("service_tier")
                 self.records.append(
                     {
                         "type": "event_msg",
                         "payload": {
                             "type": "thread_settings_applied",
                             "thread_id": self.thread_id,
-                            "thread_settings": effective,
+                            "thread_settings": snapshot,
                         },
                     }
                 )

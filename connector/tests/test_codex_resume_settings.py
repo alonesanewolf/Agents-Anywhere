@@ -5,9 +5,10 @@ from copy import deepcopy
 
 import pytest
 from codex_resume_fixture import RolloutNative
+from test_codex_owner_absence_budget import THREAD, network
+
 from connector.runtimes.codex.coordination.wire import IpcError
 from connector.runtimes.codex.sdk.runtime_client import CodexStartTurnRequest
-from test_codex_owner_absence_budget import THREAD, network
 
 
 def test_cold_resume_uses_real_serializer_and_preserves_policy(tmp_path):
@@ -70,6 +71,7 @@ def test_nonpermission_settings_are_applied_from_serialized_resume(tmp_path, nul
                     # Resume has no mode field: an independently matching native
                     # default is a condition of this modeled success, not proof
                     # that installed native resume preserves Plan or nulls.
+                    "service_tier": None if nullable else "flex",
                     "collaboration_mode": {
                         "mode": "plan",
                         "developer_instructions": "configured plan instructions",
@@ -87,7 +89,10 @@ def test_nonpermission_settings_are_applied_from_serialized_resume(tmp_path, nul
             assert wire["config"]["model_reasoning_summary"] == (
                 None if nullable else "concise"
             )
-            assert wire["serviceTier"] == (None if nullable else "priority")
+            if nullable:
+                assert "serviceTier" not in wire
+            else:
+                assert wire["serviceTier"] == "priority"
             assert wire["personality"] == (None if nullable else "pragmatic")
             assert "collaborationMode" not in wire
             settings = caller.get_state(THREAD)["latestThreadSettings"]
@@ -105,7 +110,12 @@ def test_nonpermission_settings_are_applied_from_serialized_resume(tmp_path, nul
                     "developer_instructions": "configured plan instructions",
                 },
             }
-            assert len([p for m, p in native.calls if m == "turn/start"]) == 1
+            starts = [p for m, p in native.calls if m == "turn/start"]
+            assert len(starts) == 1
+            if nullable:
+                assert "serviceTier" not in starts[0]
+            else:
+                assert starts[0]["serviceTier"] == "priority"
 
     asyncio.run(run())
 
@@ -162,17 +172,16 @@ def test_incompatible_native_defaults_cannot_echo_historical_authority(tmp_path,
             native = RolloutNative(tmp_path)
             if field in {"service_tier", "personality"}:
                 native.settings[field] = None
-                original = native.request
+                if field == "personality":
+                    original = native.request
 
-                async def request(method, params, **kwargs):
-                    if method == "thread/resume":
-                        params = deepcopy(params)
-                        params.pop(
-                            "serviceTier" if field == "service_tier" else "personality"
-                        )
-                    return await original(method, params, **kwargs)
+                    async def request(method, params, **kwargs):
+                        if method == "thread/resume":
+                            params = deepcopy(params)
+                            params.pop("personality")
+                        return await original(method, params, **kwargs)
 
-                native.request = request
+                    native.request = request
             elif field == "mode":
                 native.settings["collaboration_mode"]["mode"] = "plan"
             else:

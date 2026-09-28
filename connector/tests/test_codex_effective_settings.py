@@ -42,7 +42,8 @@ def configure_resume(native, *, effort="max", instructions=None, response_omit=(
     """Known cold authority; output settings are applied from the serialized wire.
 
     Null service tier and mode instructions are explicit independent native
-    defaults, since the SDK omits a null serviceTier and resume has no mode field.
+    defaults, since cold authority omits a known-null serviceTier and resume
+    has no mode field.
     This models a compatible native process, not installed Plan/null support.
     """
     fixture = native.configure_resume(
@@ -566,7 +567,7 @@ async def test_resume_authority_restores_mode_over_null_or_missing_envelope(
         assert state["latestThreadSettings"]["serviceTier"] is None
         wire = next(p for m, p in fixture.calls if m == "thread/resume")
         assert wire["config"]["model_reasoning_effort"] == effort
-        assert wire["serviceTier"] is None
+        assert "serviceTier" not in wire
         assert "collaborationMode" not in wire
         assert not [p for m, p in native.calls if m == "turn/start"]
 

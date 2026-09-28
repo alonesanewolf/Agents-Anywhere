@@ -105,6 +105,10 @@ def prepare_start(thread_id, turn_start, state, sdk):
         settings = state.get("latestThreadSettings", {})
         for key, value in settings.items():
             target = "sandboxPolicy" if key == "sandbox" else key
+            # A native no-override tier is known in state, but inherited null
+            # on turn/start would actively select standard routing.
+            if target == "serviceTier" and value is None:
+                continue
             if context.get("useAppServerPermissionDefault") and target in {
                 "approvalPolicy",
                 "approvalsReviewer",

@@ -444,7 +444,9 @@ class ResumeSettings:
             "personality": s["personality"],
             "config": config,
         }
-        if "service_tier" in self.known_fields:
+        # Native null selects explicit standard routing; an authoritative None
+        # means no selected tier and can only be preserved by omitting override.
+        if "service_tier" in self.known_fields and s["service_tier"] is not None:
             params["serviceTier"] = s["service_tier"]
         return params
 
