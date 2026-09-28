@@ -4,6 +4,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -83,6 +84,7 @@ internal fun HomeProjectFilterMenu(
                 onClick = { onSelectStatus(status); onDismiss() },
             )
         }
+        item("status-device-divider") { HomeProjectFilterDivider() }
         item("devices-label") { AADropdownMenuLabel(stringResource(R.string.home_project_filter_devices)) }
         item("all-devices") {
             AADropdownMenuItem(
@@ -98,6 +100,7 @@ internal fun HomeProjectFilterMenu(
                 onClick = { onSelectDevice(device.id); onDismiss() },
             )
         }
+        item("device-agent-divider") { HomeProjectFilterDivider() }
         item("agents-label") { AADropdownMenuLabel(stringResource(R.string.home_project_filter_agents)) }
         item("all-agents") {
             AADropdownMenuItem(
@@ -114,4 +117,13 @@ internal fun HomeProjectFilterMenu(
             )
         }
     }
+}
+
+@Composable
+private fun HomeProjectFilterDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = 8.dp),
+        thickness = 1.dp,
+        color = LocalAAColors.current.ink.copy(alpha = 0.10f),
+    )
 }
