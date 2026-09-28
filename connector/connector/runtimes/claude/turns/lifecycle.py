@@ -186,9 +186,20 @@ class ClaudeTurnRunner:
                     or connection.background.active_ids
                     or not connection.reconcile_needed
                     or not connection.retained
+                    or connection.reconciling
                 ):
                     return
-                await connection.reconcile_tasks()
+            # The SDK reader can discover a scheduled reply while this prompt is
+            # queued. Its on_activity callback needs execution_lock to own that
+            # reply, so never hold the lock across the SDK round trip.
+            await connection.reconcile_tasks()
+            async with session.execution_lock:
+                if (
+                    self.stopping
+                    or self.connections.get(session.session_id) is not connection
+                    or connection.closing
+                ):
+                    return
                 await self.scheduled_sessions.save(session, connection.task_ids)
                 connection.arm_idle()
         except asyncio.CancelledError:
@@ -324,6 +335,18 @@ class ClaudeTurnRunner:
         try:
             if client is None:
                 connection = await self.connection_for(session, stderr)
+                maintenance = connection.background_done_task
+                if maintenance is not None and not maintenance.done():
+                    # Keep the queued maintenance response's native user id in
+                    # pending until it completes (or its 30-second timeout).
+                    # Cancelling this user turn must not cancel shared upkeep.
+                    await asyncio.shield(maintenance)
+                    if self.stopping:
+                        raise asyncio.CancelledError
+                    if connection.closing:
+                        task_ids = set(connection.task_ids)
+                        connection = await self.connection_for(session, stderr)
+                        connection.task_ids.update(task_ids)
                 client = connection.response_for(execution)
             execution.client = client
             await connect_client(client)

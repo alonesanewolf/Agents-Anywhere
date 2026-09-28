@@ -24,6 +24,7 @@ from connector.runtimes.claude.timeline.messages import message_id, message_role
 from connector.runtimes.claude.timeline.stream import is_stream_event
 
 RECONCILE_DONE_MARKER = "AA_MAINTENANCE_DONE"
+CONNECTION_CLOSE_TIMEOUT_SECONDS = 30
 LEGACY_RECONCILE_PROMPT = (
     "AA connection maintenance: call CronList exactly once to report the current "
     "scheduled task list, then stop. If needed, use ToolSearch to find CronList. "
@@ -254,7 +255,10 @@ class ClaudeConnection:
         finally:
             try:
                 if not check.terminal_received and not self.closing:
-                    await check.interrupt()
+                    # A queued native prompt cannot be individually retracted.
+                    # Retire this transport on failure instead of interrupting
+                    # whichever scheduled reply happens to own it now.
+                    await self.close()
             finally:
                 check.release(interrupted=not check.terminal_received)
                 self.reconciling = False
@@ -353,13 +357,37 @@ class ClaudeConnection:
                 await disconnect_client(self.client)
             finally:
                 self.cleanup()
-                for response in (self.current, self.pending):
-                    if response is not None:
-                        await response.messages.put(None)
+                await self._release_responses()
+
+    async def _release_responses(self) -> None:
+        responses = (self.current, self.pending)
+        self.current = self.pending = None
+        for response in responses:
+            if response is not None:
+                await response.messages.put(None)
 
     async def close(self) -> None:
+        was_closing = self.closing
         self.closing = True
-        if self.task is not None:
-            if not self.task.done():
-                self.task.cancel()
-            await asyncio.gather(self.task, return_exceptions=True)
+        if self.background_done_task is asyncio.current_task():
+            # The reader's finally must not cancel the maintenance task that
+            # is waiting here for the reader's own shutdown.
+            self.background_done_task = None
+        try:
+            if self.task is not None:
+                if not self.task.done() and not was_closing:
+                    self.task.cancel()
+                done, _ = await asyncio.wait(
+                    (self.task,), timeout=CONNECTION_CLOSE_TIMEOUT_SECONDS,
+                )
+                if done:
+                    await asyncio.gather(self.task, return_exceptions=True)
+                else:
+                    if self.failure is None:
+                        self.failure = TimeoutError("Claude transport shutdown timed out")
+                    logger.warning("Claude transport shutdown timed out")
+        finally:
+            # A slow SDK disconnect can continue in its owning reader task,
+            # but must not keep an expired response or block its replacement.
+            self.cleanup()
+            await self._release_responses()

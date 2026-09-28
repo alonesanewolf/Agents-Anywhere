@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 from connector.runtime_protocol import (
     RuntimeAttachment,
     RuntimeAttachmentContent,
@@ -4366,6 +4367,342 @@ def test_claude_stop_during_deferred_reconciliation() -> None:
             assert client.disconnected
             assert not runtime._turns.runner.connections
         finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+async def _begin_deferred_reconciliation(runtime, client) -> None:
+    await runtime.start_turn("timer", None, "schedule")
+    await runtime._sessions["timer"].active_task
+    connection = runtime._turns.runner.connections["timer"]
+    await client.incoming.put(SystemMessage(
+        subtype="task_started", task_id="background_1",
+        data={"task_id": "background_1"},
+    ))
+    await _wait_until(lambda: bool(connection.background.active_ids))
+    await client.reply("first scheduled reply")
+    await _wait_until(lambda: runtime._sessions["timer"].execution is None)
+    await client.incoming.put(SystemMessage(
+        subtype="task_updated", task_id="background_1",
+        patch={"status": "completed"}, data={"task_id": "background_1"},
+    ))
+
+
+def test_claude_deferred_reconciliation_drains_scheduled_reply_before_echo() -> None:
+    class CollisionClient(_ReconcileClaudeClient):
+        async def query(self, prompt):
+            if isinstance(prompt, str):
+                return await super().query(prompt)
+            messages = [message async for message in prompt]
+            if messages[0]["message"]["content"] == RECONCILE_PROMPT:
+                await self.reply("second scheduled reply")
+
+            async def replay():
+                for message in messages:
+                    yield message
+
+            await super().query(replay())
+
+    async def run():
+        client = CollisionClient()
+        client.jobs = [{"id": "timer_1"}]
+        host = _RecordingHost()
+        sdk = _default_sdk()
+        sdk.HookMatcher = _FakeHookMatcher
+        runtime = _runtime(client=client, sdk=sdk, host=host)
+        try:
+            await _begin_deferred_reconciliation(runtime, client)
+            await _wait_until(lambda: RECONCILE_PROMPT in client.queries)
+            connection = runtime._turns.runner.connections["timer"]
+            await asyncio.wait_for(asyncio.shield(connection.background_done_task), 1)
+            await _wait_until(lambda: len(host.session_turn_ends) == 3)
+            replies = {
+                item.content.get("text"): item.turn_id
+                for item in host.timeline_item_upserts if item.role == "assistant"
+            }
+            assert replies["first scheduled reply"] != replies["second scheduled reply"]
+            assert all(end["outcome"] == "completed" for end in host.session_turn_ends)
+            assert client.queries.count(RECONCILE_PROMPT) == 1
+            assert not client.interrupted
+            assert not any(RECONCILE_PROMPT in str(i.content) for i in host.timeline_item_upserts)
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+class _GatedReconcileClaudeClient(_ReconcileClaudeClient):
+    def __init__(self, outcome="success") -> None:
+        super().__init__()
+        self.outcome = outcome
+        self.check_started = asyncio.Event()
+        self.release_check = asyncio.Event()
+        self.jobs = [{"id": "timer_1"}]
+
+    async def query(self, prompt):
+        if isinstance(prompt, str):
+            return await super().query(prompt)
+        messages = [message async for message in prompt]
+        if messages[0]["message"]["content"] == RECONCILE_PROMPT:
+            self.check_started.set()
+            await self.release_check.wait()
+            if self.outcome == "exception":
+                raise RuntimeError("maintenance query failed")
+
+        async def replay():
+            for message in messages:
+                yield message
+
+        await super().query(replay())
+
+
+@pytest.mark.parametrize("outcome", ["success", "exception", "timeout"])
+def test_claude_user_turn_during_deferred_reconciliation_keeps_response_owner(
+    outcome, monkeypatch,
+) -> None:
+    if outcome == "timeout":
+        # Preserve the real timeout behavior while avoiding a 30-second test.
+        timeout = asyncio.timeout
+        monkeypatch.setattr(
+            asyncio, "timeout", lambda delay: timeout(0.2 if delay == 30 else delay),
+        )
+
+    async def run():
+        client = _GatedReconcileClaudeClient(outcome)
+        host = _RecordingHost()
+        sdk = _default_sdk()
+        sdk.HookMatcher = _FakeHookMatcher
+        runtime = _runtime(client=client, sdk=sdk, host=host)
+        try:
+            await _begin_deferred_reconciliation(runtime, client)
+            await asyncio.wait_for(client.check_started.wait(), 1)
+            human = await asyncio.wait_for(
+                runtime.start_turn("timer", "native_timer", "hello"), 0.1,
+            )
+            assert human.ok
+            task = runtime._sessions["timer"].active_task
+            if outcome != "timeout":
+                client.release_check.set()
+            await asyncio.wait_for(task, 1)
+            replies = {
+                item.content.get("text"): item.turn_id
+                for item in host.timeline_item_upserts if item.role == "assistant"
+            }
+            assert replies["reply:hello"] == human.result["turnId"]
+            assert host.session_turn_ends[-1]["turn_id"] == human.result["turnId"]
+            assert host.session_turn_ends[-1]["outcome"] == "completed"
+            assert runtime._sessions["timer"].queued_execution is None
+            connection = runtime._turns.runner.connections["timer"]
+            assert not connection.reconciling
+            await _wait_until(lambda: connection.current is None)
+            assert connection.pending is None
+            assert not any(RECONCILE_PROMPT in str(i.content) for i in host.timeline_item_upserts)
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stop", [False, True])
+def test_claude_user_waiting_for_deferred_reconciliation_can_be_interrupted(stop) -> None:
+    async def run():
+        client = _GatedReconcileClaudeClient()
+        host = _RecordingHost()
+        sdk = _default_sdk()
+        sdk.HookMatcher = _FakeHookMatcher
+        runtime = _runtime(client=client, sdk=sdk, host=host)
+        try:
+            await _begin_deferred_reconciliation(runtime, client)
+            await asyncio.wait_for(client.check_started.wait(), 1)
+            human = await asyncio.wait_for(
+                runtime.start_turn("timer", "native_timer", "hello"), 0.1,
+            )
+            await asyncio.sleep(0)
+            connection = runtime._turns.runner.connections["timer"]
+            if stop:
+                await asyncio.wait_for(runtime.stop(), 1)
+                assert not runtime._turns.runner.connections
+                assert client.disconnected
+            else:
+                await asyncio.wait_for(runtime.interrupt_session("timer"), 1)
+                assert not connection.background_done_task.done()
+                assert not client.interrupted
+                client.release_check.set()
+                await asyncio.wait_for(asyncio.shield(connection.background_done_task), 1)
+                await _wait_until(lambda: connection.current is None)
+                assert connection.pending is None
+                assert not client.disconnected
+            assert "hello" not in client.queries
+            assert runtime._sessions["timer"].execution is None
+            assert runtime._sessions["timer"].queued_execution is None
+            assert host.session_turn_ends[-1]["turn_id"] == human.result["turnId"]
+            assert host.session_turn_ends[-1]["outcome"] == "interrupted"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_claude_deferred_timeout_closes_transport_without_interrupting_other_reply(
+    monkeypatch,
+) -> None:
+    timeout = asyncio.timeout
+    monkeypatch.setattr(
+        asyncio, "timeout", lambda delay: timeout(0.1 if delay == 30 else delay),
+    )
+
+    class CollisionClient(_GatedReconcileClaudeClient):
+        async def query(self, prompt):
+            if isinstance(prompt, str):
+                return await super().query(prompt)
+            messages = [message async for message in prompt]
+            if messages[0]["message"]["content"] == RECONCILE_PROMPT:
+                await self.incoming.put(AssistantMessage(
+                    uuid="second_scheduled_reply", session_id=self.native_id,
+                    content=[{"type": "text", "text": "scheduled work still running"}],
+                ))
+
+            async def replay():
+                for message in messages:
+                    yield message
+
+            await super().query(replay())
+
+    async def run():
+        client = CollisionClient()
+        host = _RecordingHost()
+        sdk = _default_sdk()
+        sdk.HookMatcher = _FakeHookMatcher
+        runtime = _runtime(client=client, sdk=sdk, host=host)
+        try:
+            await _begin_deferred_reconciliation(runtime, client)
+            await asyncio.wait_for(client.check_started.wait(), 1)
+            connection = runtime._turns.runner.connections["timer"]
+            maintenance = connection.background_done_task
+            await _wait_until(lambda: runtime._sessions["timer"].execution is not None)
+            await asyncio.wait_for(asyncio.shield(maintenance), 1)
+            await _wait_until(lambda: len(host.session_turn_ends) == 3)
+            assert client.disconnected
+            assert not client.interrupted
+            assert host.session_turn_ends[-1]["outcome"] == "failed"
+            assert not runtime._turns.runner.connections
+            assert runtime._sessions["timer"].execution is None
+            assert connection.current is None
+            assert connection.pending is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_claude_user_reconnects_when_maintenance_shutdown_does_not_finish(monkeypatch) -> None:
+    from connector.runtimes.claude.sdk import connection as connection_module
+
+    timeout = asyncio.timeout
+    monkeypatch.setattr(
+        asyncio, "timeout", lambda delay: timeout(0.1 if delay == 30 else delay),
+    )
+    monkeypatch.setattr(connection_module, "CONNECTION_CLOSE_TIMEOUT_SECONDS", 0.05, raising=False)
+
+    class SlowDisconnectClient(_GatedReconcileClaudeClient):
+        def __init__(self):
+            super().__init__()
+            self.disconnect_started = asyncio.Event()
+            self.release_disconnect = asyncio.Event()
+
+        async def disconnect(self):
+            self.disconnect_started.set()
+            await self.release_disconnect.wait()
+            await super().disconnect()
+
+    async def run():
+        first = SlowDisconnectClient()
+        second = _ScheduledClaudeClient()
+        clients = iter([first, second])
+        sdk = _default_sdk()
+        sdk.HookMatcher = _FakeHookMatcher
+        host = _RecordingHost()
+
+        def factory(_sdk, options):
+            client = next(clients)
+            client.options = options
+            return client
+
+        runtime = ClaudeRuntime(
+            config=_config(), host=host, sdk_loader=lambda: sdk, client_factory=factory,
+        )
+        connection = None
+        try:
+            await _begin_deferred_reconciliation(runtime, first)
+            await asyncio.wait_for(first.check_started.wait(), 1)
+            connection = runtime._turns.runner.connections["timer"]
+            human = await runtime.start_turn("timer", "native_timer", "hello")
+            await asyncio.wait_for(runtime._sessions["timer"].active_task, 1)
+            assert human.ok
+            assert first.disconnect_started.is_set()
+            assert not first.disconnected
+            assert second.connected
+            assert second.queries == ["hello"]
+            assert host.session_turn_ends[-1]["turn_id"] == human.result["turnId"]
+            assert host.session_turn_ends[-1]["outcome"] == "completed"
+            assert connection.current is None
+            assert connection.pending is None
+            assert runtime._turns.runner.connections["timer"].task_ids == {"timer_1"}
+            await connection.close()
+            assert not connection.task.done()
+            assert not first.disconnected
+            first.release_disconnect.set()
+            await asyncio.wait_for(asyncio.gather(connection.task, return_exceptions=True), 1)
+            saved = host.sync_states["claude/scheduled/sessions"]["sessions"]["timer"]
+            assert saved["taskIds"] == ["timer_1"]
+            assert runtime._turns.runner.connections["timer"].client is second
+        finally:
+            first.release_disconnect.set()
+            if connection is not None:
+                await asyncio.wait_for(asyncio.gather(connection.task, return_exceptions=True), 1)
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("ownership_lost", ["stopping", "replacement"])
+def test_claude_deferred_reconciliation_does_not_save_after_ownership_changes(
+    ownership_lost,
+) -> None:
+    async def run():
+        client = _GatedReconcileClaudeClient()
+        client.jobs = []
+        host = _RecordingHost()
+        sdk = _default_sdk()
+        sdk.HookMatcher = _FakeHookMatcher
+        runtime = _runtime(client=client, sdk=sdk, host=host)
+        connection = None
+        try:
+            await _begin_deferred_reconciliation(runtime, client)
+            await asyncio.wait_for(client.check_started.wait(), 1)
+            session = runtime._sessions["timer"]
+            runner = runtime._turns.runner
+            connection = runner.connections["timer"]
+            maintenance = connection.background_done_task
+            await asyncio.wait_for(session.execution_lock.acquire(), 0.1)
+            try:
+                client.release_check.set()
+                await _wait_until(lambda: not connection.reconciling)
+                if ownership_lost == "stopping":
+                    runner.stopping = True
+                else:
+                    # Model a connection replacement while the old maintenance
+                    # waits to reacquire the session's ownership lock.
+                    runner.connections["timer"] = object()
+            finally:
+                session.execution_lock.release()
+            await asyncio.wait_for(asyncio.shield(maintenance), 1)
+            saved = host.sync_states["claude/scheduled/sessions"]["sessions"]["timer"]
+            assert saved["taskIds"] == ["timer_1"]
+        finally:
+            if connection is not None:
+                runtime._turns.runner.connections["timer"] = connection
             await runtime.stop()
 
     asyncio.run(run())
