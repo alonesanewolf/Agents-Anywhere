@@ -32,9 +32,30 @@ def profile(cwd):
 
 
 class RolloutNative:
-    def __init__(self, tmp_path, thread_id="owner-absence-test"):
-        self.thread_id, self.cwd = thread_id, str(tmp_path)
+    """Persisted authority and an independently configured native process.
+
+    Applied values come from serialized request fields or native_defaults, never
+    from self.settings. The latter is only the historical authority under test.
+    Mode/developer instructions model a configured native default because resume
+    has no mode field; this fixture does not establish installed mode retention.
+    """
+
+    def __init__(
+        self,
+        tmp_path,
+        thread_id="owner-absence-test",
+        *,
+        cwd=None,
+        settings=None,
+        native_defaults=None,
+        thread_fields=None,
+        response_omit=(),
+    ):
+        self.thread_id, self.cwd = thread_id, cwd or str(tmp_path)
         self.path = tmp_path / "rollout.jsonl"
+        self.response_omit = response_omit
+        self.thread_fields = deepcopy(thread_fields or {})
+        assert not {"id", "cwd", "path", "turns"} & self.thread_fields.keys()
         self.settings = {
             "model": "gpt-6-luna",
             "model_provider_id": "test",
@@ -57,6 +78,22 @@ class RolloutNative:
             },
             "disabled_plugin_ids": [],
         }
+        self.settings.update(deepcopy(settings or {}))
+        # Deliberately unlike history: lost serialized fields must be observable.
+        self.native_defaults = {
+            "model": "native-default-model",
+            "model_provider_id": "native-default-provider",
+            "service_tier": "flex",
+            "reasoning_effort": "high",
+            "reasoning_summary": "detailed",
+            "personality": "friendly",
+            "collaboration_mode": {
+                "mode": "default",
+                "developer_instructions": None,
+            },
+            "disabled_plugin_ids": [],
+        }
+        self.native_defaults.update(deepcopy(native_defaults or {}))
         self.sandbox = {
             "type": "workspace-write",
             "network_access": False,
@@ -104,6 +141,7 @@ class RolloutNative:
             "path": str(self.path),
             "turns": [{"id": "old", "status": "completed", "items": []}],
             "status": {"type": "idle"},
+            **deepcopy(self.thread_fields),
         }
 
     async def request(self, method, params, **kwargs):
@@ -111,7 +149,35 @@ class RolloutNative:
         if method == "thread/read":
             return SimpleNamespace(root={"thread": self.thread()})
         if method == "thread/resume":
-            effective = deepcopy(self.settings)
+            config = params.get("config", {})
+            effective = {
+                field: deepcopy(params.get(wire, self.native_defaults[field]))
+                for field, wire in (
+                    ("model", "model"),
+                    ("model_provider_id", "modelProvider"),
+                    ("service_tier", "serviceTier"),
+                    ("personality", "personality"),
+                )
+            }
+            for field, wire in (
+                ("reasoning_effort", "model_reasoning_effort"),
+                ("reasoning_summary", "model_reasoning_summary"),
+            ):
+                effective[field] = deepcopy(
+                    config.get(wire, self.native_defaults[field])
+                )
+            mode_default = self.native_defaults["collaboration_mode"]
+            effective["collaboration_mode"] = {
+                "mode": mode_default["mode"],
+                "settings": {
+                    "model": effective["model"],
+                    "reasoning_effort": effective["reasoning_effort"],
+                    "developer_instructions": mode_default["developer_instructions"],
+                },
+            }
+            effective["disabled_plugin_ids"] = deepcopy(
+                self.native_defaults["disabled_plugin_ids"]
+            )
             # Permission effects are reconstructed from the actual wire request
             # and independent defaults, not copied from historical authority.
             effective["approval_policy"] = params.get("approvalPolicy", "never")
@@ -185,18 +251,22 @@ class RolloutNative:
                         "excludeTmpdirEnvVar": cfg.get("exclude_tmpdir_env_var", False),
                         "excludeSlashTmp": cfg.get("exclude_slash_tmp", False),
                     }
-            return SimpleNamespace(
-                root={
-                    "thread": self.thread(),
-                    "model": effective["model"],
-                    "modelProvider": effective["model_provider_id"],
-                    "reasoningEffort": effective["reasoning_effort"],
-                    "approvalPolicy": effective["approval_policy"],
-                    "approvalsReviewer": effective["approvals_reviewer"],
-                    "sandbox": sandbox,
-                    "cwd": self.cwd,
-                }
-            )
+            result = {
+                "thread": self.thread(),
+                "model": effective["model"],
+                "modelProvider": effective["model_provider_id"],
+                "reasoningEffort": effective["reasoning_effort"],
+                "serviceTier": effective["service_tier"],
+                "personality": effective["personality"],
+                "collaborationMode": deepcopy(effective["collaboration_mode"]),
+                "approvalPolicy": effective["approval_policy"],
+                "approvalsReviewer": effective["approvals_reviewer"],
+                "sandbox": sandbox,
+                "cwd": effective["cwd"],
+            }
+            for field in self.response_omit:
+                result.pop(field)
+            return SimpleNamespace(root=result)
         if method == "turn/start":
             return SimpleNamespace(
                 root={"turn": {"id": "new", "status": "inProgress", "items": []}}

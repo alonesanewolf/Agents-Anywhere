@@ -15,19 +15,28 @@ class RuntimeNative(Native):
         self.rollout_home = tempfile.TemporaryDirectory(prefix="aa-native-fixture-")
         self.rollouts = {}
 
-    def persisted(self, thread_id):
+    def configure_resume(self, thread_id, **kwargs):
+        """Explicitly install a coherent read/rollout/serialized resume fixture.
+
+        responses remain explicit overrides, including deliberately bad results.
+        An explicit thread/read response always wins over this default read.
+        """
         from codex_resume_fixture import RolloutNative
 
-        if thread_id not in self.rollouts:
-            directory = Path(self.rollout_home.name) / str(len(self.rollouts))
-            directory.mkdir()
-            self.rollouts[thread_id] = RolloutNative(directory, thread_id)
-        return self.rollouts[thread_id]
+        assert thread_id not in self.rollouts
+        directory = Path(self.rollout_home.name) / str(len(self.rollouts))
+        directory.mkdir()
+        fixture = self.rollouts[thread_id] = RolloutNative(
+            directory, thread_id, **kwargs
+        )
+        return fixture
 
     async def native_request(self, method, params):
         result = await super().native_request(method, params)
-        if method == "thread/read" and "thread/resume" in self.responses:
-            return {"thread": self.persisted(params["threadId"]).thread()}
+        if method == "thread/read" and method not in self.responses:
+            fixture = self.rollouts.get(params["threadId"])
+            if fixture is not None:
+                return {"thread": fixture.thread()}
         return result
 
     def set_native_event_handler(self, handler):
@@ -40,12 +49,10 @@ class RuntimeNative(Native):
         self.rollout_home.cleanup()
 
     async def native_thread_resume(self, thread_id, *, settings=None):
-        result = await self.native_request(
-            "thread/resume", settings or {"threadId": thread_id}
-        )
-        effective = await self.persisted(thread_id).sdk.native_thread_resume(
-            thread_id, settings=settings
-        )
+        fixture = self.rollouts[thread_id]
+        effective = await fixture.sdk.native_thread_resume(thread_id, settings=settings)
+        # Hooks/negative overrides observe the real serializer's wire payload.
+        result = await self.native_request("thread/resume", fixture.calls[-1][1])
         return {**effective, **result}
 
 
@@ -127,7 +134,7 @@ async def test_aa_owner_raw_state_and_response_context_reject_reused_id(tmp_path
         endpoint = Path(directory) / "ipc.sock"
         peer = CoordinationPeer(CoordinationClient(directory, endpoint=endpoint))
         native = RuntimeNative()
-        native.responses["thread/resume"] = {"thread": {"id": "t", "turns": []}}
+        native.configure_resume("t")
         native.responses["turn/start"] = {
             "turn": {"id": "physical", "status": "inProgress", "items": []}
         }
@@ -357,7 +364,7 @@ async def test_normal_aa_approval_setting_is_translated_and_follower_goal_never_
         endpoint = Path(directory) / "ipc.sock"
         peer = CoordinationPeer(CoordinationClient(directory, endpoint=endpoint))
         native = RuntimeNative()
-        native.responses["thread/resume"] = {"thread": {"id": "t", "turns": []}}
+        native.configure_resume("t")
         native.responses["turn/start"] = {
             "turn": {"id": "physical", "status": "inProgress", "items": []}
         }

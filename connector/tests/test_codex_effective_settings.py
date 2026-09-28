@@ -6,6 +6,7 @@ from test_codex_coordination_operations import async_test
 from test_codex_runtime import FakeCodexClient
 from test_codex_runtime_coordination_review import real_runtime
 
+from connector.runtimes.codex.coordination.wire import IpcError
 from connector.runtimes.codex.sdk.runtime_client import CodexStartThreadRequest
 
 
@@ -26,13 +27,53 @@ def envelope():
         "cwd": "/repo",
         "sandbox": {
             "type": "workspaceWrite",
-            "writableRoots": ["/repo"],
+            "writableRoots": [],
             "networkAccess": False,
+            "excludeTmpdirEnvVar": False,
+            "excludeSlashTmp": False,
         },
         "serviceTier": None,
         "activePermissionProfile": None,
         "runtimeWorkspaceRoots": [],
     }
+
+
+def configure_resume(native, *, effort="max", instructions=None, response_omit=()):
+    """Known cold authority; output settings are applied from the serialized wire.
+
+    Null service tier and mode instructions are explicit independent native
+    defaults, since the SDK omits a null serviceTier and resume has no mode field.
+    This models a compatible native process, not installed Plan/null support.
+    """
+    fixture = native.configure_resume(
+        "t",
+        cwd="/repo",
+        settings={
+            "model": "gpt-example",
+            "model_provider_id": "openai",
+            "reasoning_effort": effort,
+            "service_tier": None,
+            "collaboration_mode": {
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-example",
+                    "reasoning_effort": effort,
+                    "developer_instructions": instructions,
+                },
+            },
+        },
+        native_defaults={
+            "service_tier": None,
+            "collaboration_mode": {
+                "mode": "default",
+                "developer_instructions": instructions,
+            },
+        },
+        thread_fields={"model": "raw-model", "reasoningEffort": "high"},
+        response_omit=response_omit,
+    )
+    native.responses["thread/resume"] = {"activePermissionProfile": None}
+    return fixture
 
 
 async def settings_event(adapter, values):
@@ -121,17 +162,25 @@ async def test_effective_envelope_settings_are_canonical(tmp_path, seam):
             return raw
 
         native.native_thread_start = start_thread
-        native.responses["thread/resume"] = raw
-        native.responses["thread/read"] = {"thread": raw["thread"]}
+        configure_resume(native)
         if seam == "start":
             await adapter.start_thread(CodexStartThreadRequest())
         elif seam == "resume":
             await adapter._acquire("t")
         else:
+            raw["thread"]["turns"] = [
+                {"id": "explicit-history", "status": "completed", "items": []}
+            ]
+            native.responses["thread/read"] = {"thread": raw["thread"]}
             thread = (await adapter.read_thread("t")).thread
             assert thread["latestModel"] == "raw-model"
             assert thread["latestReasoningEffort"] == "high"
+            assert len(thread["turns"]) == 1
+            assert thread["turns"][0]["id"] == "explicit-history"
+            assert thread["turns"][0]["status"] == "completed"
+            assert thread["turns"][0]["items"] == []
             assert "currentPermissions" not in thread
+            assert [m for m, _ in native.calls] == ["thread/read"]
             return
         state = adapter.peer.get_state("t")
         assert state["latestModel"] == "gpt-example"
@@ -178,7 +227,14 @@ async def test_settings_events_win_during_owner_initialization(
             return envelope()
 
         native.native_thread_start = reply
-        native.responses["thread/resume"] = reply
+        configure_resume(native)
+
+        async def resume_reply(_):
+            if boundary == "native":
+                await settings_event(adapter, {"model": "new", "effort": "low"})
+            return {}
+
+        native.responses["thread/resume"] = resume_reply
         original = adapter.peer.client.broadcast
         fired = False
 
@@ -209,7 +265,7 @@ async def test_settings_events_win_during_owner_initialization(
 async def test_later_settings_event_wins_over_owner_ack(tmp_path, operation, boundary):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
         selections = await configure(runtime, native)
-        native.responses["thread/resume"] = envelope()
+        configure_resume(native)
         await adapter._acquire("t")
         await runtime._session_states.update("s", "t", status="idle")
 
@@ -268,7 +324,7 @@ async def test_failed_or_unknown_ack_does_not_apply_requested_settings(
     tmp_path, operation, error
 ):
     async with real_runtime(tmp_path) as (_runtime, _host, adapter, _owner, native):
-        native.responses["thread/resume"] = envelope()
+        configure_resume(native)
         await adapter._acquire("t")
         before = adapter.peer.get_state("t")
         native.responses[
@@ -334,7 +390,7 @@ async def test_plan_switch_resets_old_instructions_and_keeps_observed_model_effo
 async def test_native_negative_settings_ack_does_not_change_canonical(tmp_path):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
         selections = await configure(runtime, native)
-        native.responses["thread/resume"] = envelope()
+        configure_resume(native)
         await adapter._acquire("t")
         await runtime._session_states.update("s", "t", status="idle")
         await adapter.refresh_state("t", force=True)
@@ -391,17 +447,7 @@ async def test_confirmed_turn_updates_embedded_mode_effort_without_inventing_fie
 ):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
         selections = await configure(runtime, native)
-        native.responses["thread/resume"] = {
-            **envelope(),
-            "collaborationMode": {
-                "mode": "default",
-                "settings": {
-                    "model": "gpt-example",
-                    "reasoning_effort": "max",
-                    "developer_instructions": "default mode",
-                },
-            },
-        }
+        configure_resume(native, instructions="default mode")
         await adapter._acquire("t")
         await runtime._session_states.update("s", "t", status="idle")
         native.responses["turn/start"] = {"turn": {"id": "one", "status": "inProgress"}}
@@ -425,7 +471,7 @@ async def test_confirmed_turn_updates_embedded_mode_effort_without_inventing_fie
 async def test_runtime_failed_start_restores_known_canonical_selection(tmp_path, error):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
         selections = await configure(runtime, native)
-        native.responses["thread/resume"] = {**envelope(), "reasoningEffort": "high"}
+        configure_resume(native, effort="high")
         await adapter._acquire("t")
         await runtime._session_states.update("s", "t", status="idle")
         await adapter.refresh_state("t", force=True)
@@ -444,17 +490,22 @@ async def test_runtime_failed_start_restores_known_canonical_selection(tmp_path,
 )
 @pytest.mark.parametrize("effort", ["low", None], ids=["low", "null-effort"])
 @async_test
-async def test_resumed_null_or_missing_mode_can_switch_plan(
+async def test_observed_null_or_missing_mode_can_switch_plan(
     tmp_path, switch, mode, mode_present, effort
 ):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
         await configure(runtime, native)
-        native.responses["thread/resume"] = {
+        observed = {
             **envelope(),
             "reasoningEffort": effort,
             **({"collaborationMode": None} if mode_present else {}),
         }
-        await adapter._acquire("t")
+
+        async def start_thread(_):
+            return observed
+
+        native.native_thread_start = start_thread
+        await adapter.start_thread(CodexStartThreadRequest())
         await runtime._session_states.update("s", "t", status="idle")
         await adapter.refresh_state("t", force=True)
         before = adapter.peer.get_state("t")
@@ -483,3 +534,60 @@ async def test_resumed_null_or_missing_mode_can_switch_plan(
         assert current["latestReasoningEffort"] == effort
         assert current["currentPermissions"] == before["currentPermissions"]
         assert current["latestThreadSettings"]["serviceTier"] is None
+
+
+@pytest.mark.parametrize(
+    "mode_present", [False, True], ids=["absent-mode", "null-mode"]
+)
+@pytest.mark.parametrize("effort", ["low", None], ids=["low", "null-effort"])
+@async_test
+async def test_resume_authority_restores_mode_over_null_or_missing_envelope(
+    tmp_path, mode_present, effort
+):
+    async with real_runtime(tmp_path) as (_runtime, _host, adapter, _owner, native):
+        fixture = configure_resume(
+            native,
+            effort=effort,
+            response_omit=() if mode_present else ("collaborationMode",),
+        )
+        if mode_present:
+            native.responses["thread/resume"]["collaborationMode"] = None
+        await adapter._acquire("t")
+        state = adapter.peer.get_state("t")
+        assert state["latestReasoningEffort"] == effort
+        assert state["latestThreadSettings"]["collaborationMode"] == {
+            "mode": "default",
+            "settings": {
+                "model": "gpt-example",
+                "reasoning_effort": effort,
+                "developer_instructions": None,
+            },
+        }
+        assert state["latestThreadSettings"]["serviceTier"] is None
+        wire = next(p for m, p in fixture.calls if m == "thread/resume")
+        assert wire["config"]["model_reasoning_effort"] == effort
+        assert "serviceTier" not in wire
+        assert "collaborationMode" not in wire
+        assert not [p for m, p in native.calls if m == "turn/start"]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"model": "wrong-model"},
+        {"cwd": "/other"},
+        {"sandbox": {"type": "dangerFullAccess"}},
+    ],
+)
+@async_test
+async def test_explicit_mismatching_resume_response_still_fails_closed(
+    tmp_path, override
+):
+    async with real_runtime(tmp_path) as (_runtime, _host, adapter, _owner, native):
+        configure_resume(native)
+        native.responses["thread/resume"] = override
+        with pytest.raises(IpcError, match="codex_resume_effective_settings_mismatch"):
+            await adapter._acquire("t")
+        assert [m for m, _ in native.calls] == ["thread/read", "thread/resume"]
+        assert not adapter.peer.is_owner("t")
+        assert not adapter.acquiring

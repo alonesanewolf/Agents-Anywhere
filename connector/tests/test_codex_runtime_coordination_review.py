@@ -135,7 +135,13 @@ def test_real_explicit_follower_disconnect_closes_notice_and_reconnects(tmp_path
 def test_real_native_owner_loss_with_role_none_remains_unavailable(tmp_path):
     async def run():
         async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
-            native.responses["thread/resume"] = {"thread": owner_state(request=True)}
+            state = owner_state(request=True)
+            native.configure_resume(
+                "remote",
+                thread_fields={
+                    k: v for k, v in state.items() if k not in {"id", "turns"}
+                },
+            )
             native.responses["turn/start"] = {
                 "turn": {"id": "active", "status": "inProgress", "items": []}
             }

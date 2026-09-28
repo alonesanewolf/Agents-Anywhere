@@ -43,6 +43,151 @@ def test_cold_resume_uses_real_serializer_and_preserves_policy(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("nullable", [False, True], ids=["values", "explicit-nulls"])
+def test_nonpermission_settings_are_applied_from_serialized_resume(tmp_path, nullable):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            effort = None if nullable else "max"
+            native = RolloutNative(
+                tmp_path,
+                settings={
+                    "model": "gpt-example",
+                    "model_provider_id": "openai",
+                    "reasoning_effort": effort,
+                    "reasoning_summary": None if nullable else "concise",
+                    "service_tier": None if nullable else "priority",
+                    "personality": None if nullable else "pragmatic",
+                    "collaboration_mode": {
+                        "mode": "plan",
+                        "settings": {
+                            "model": "gpt-example",
+                            "reasoning_effort": effort,
+                            "developer_instructions": "configured plan instructions",
+                        },
+                    },
+                },
+                native_defaults={
+                    # Resume has no mode field: an independently matching native
+                    # default is a condition of this modeled success, not proof
+                    # that installed native resume preserves Plan or nulls.
+                    "collaboration_mode": {
+                        "mode": "plan",
+                        "developer_instructions": "configured plan instructions",
+                    },
+                    **({"service_tier": None, "personality": None} if nullable else {}),
+                },
+            )
+            facade.sdk = facade.operations.sdk = native.sdk
+            await facade.start_turn(
+                CodexStartTurnRequest(thread_id=THREAD, content="once")
+            )
+            wire = next(p for m, p in native.calls if m == "thread/resume")
+            assert wire["model"] == "gpt-example"
+            assert wire["modelProvider"] == "openai"
+            assert wire["config"]["model_reasoning_effort"] == effort
+            assert wire["config"]["model_reasoning_summary"] == (
+                None if nullable else "concise"
+            )
+            assert ("serviceTier" in wire) is not nullable
+            assert ("personality" in wire) is not nullable
+            if not nullable:
+                assert wire["serviceTier"] == "priority"
+                assert wire["personality"] == "pragmatic"
+            assert "collaborationMode" not in wire
+            settings = caller.get_state(THREAD)["latestThreadSettings"]
+            assert settings["model"] == "gpt-example"
+            assert settings["modelProvider"] == "openai"
+            assert settings["effort"] == effort
+            assert settings["summary"] == (None if nullable else "concise")
+            assert settings["serviceTier"] == (None if nullable else "priority")
+            assert settings["personality"] == (None if nullable else "pragmatic")
+            assert settings["collaborationMode"] == {
+                "mode": "plan",
+                "settings": {
+                    "model": "gpt-example",
+                    "reasoning_effort": effort,
+                    "developer_instructions": "configured plan instructions",
+                },
+            }
+            assert len([p for m, p in native.calls if m == "turn/start"]) == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("fault", ["omitted", "changed"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("model",),
+        ("modelProvider",),
+        ("serviceTier",),
+        ("personality",),
+        ("config", "model_reasoning_effort"),
+        ("config", "model_reasoning_summary"),
+    ],
+)
+def test_nonpermission_wire_mismatch_fails_closed(tmp_path, path, fault):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = RolloutNative(tmp_path)
+            original = native.request
+
+            async def request(method, params, **kwargs):
+                params = deepcopy(params)
+                if method == "thread/resume":
+                    target = params["config"] if len(path) == 2 else params
+                    if fault == "omitted":
+                        target.pop(path[-1])
+                    else:
+                        target[path[-1]] = "different-native-value"
+                return await original(method, params, **kwargs)
+
+            native.request = request
+            facade.sdk = facade.operations.sdk = native.sdk
+            with pytest.raises(
+                IpcError, match="codex_resume_effective_settings_mismatch"
+            ):
+                await facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="never")
+                )
+            assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
+            assert not [p for m, p in native.calls if m == "turn/start"]
+            assert not caller.is_owner(THREAD) and not facade.acquiring
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "field", ["service_tier", "personality", "mode", "instructions"]
+)
+def test_incompatible_native_defaults_cannot_echo_historical_authority(tmp_path, field):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = RolloutNative(tmp_path)
+            if field in {"service_tier", "personality"}:
+                native.settings[field] = None
+            elif field == "mode":
+                native.settings["collaboration_mode"]["mode"] = "plan"
+            else:
+                native.settings["collaboration_mode"]["settings"][
+                    "developer_instructions"
+                ] = "old instructions"
+            native.records[1] = native.applied()
+            native.save()
+            facade.sdk = facade.operations.sdk = native.sdk
+            with pytest.raises(
+                IpcError, match="codex_resume_effective_settings_mismatch"
+            ):
+                await facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="never")
+                )
+            assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
+            assert not [p for m, p in native.calls if m == "turn/start"]
+            assert not caller.is_owner(THREAD) and not facade.acquiring
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -541,7 +686,9 @@ def test_cancelled_claim_does_not_release_replacement_owner(tmp_path):
 
 
 @pytest.mark.parametrize("ending", ["cancel", "error"])
-def test_superseded_initial_claim_never_adopts_or_observes_replacement(tmp_path, ending):
+def test_superseded_initial_claim_never_adopts_or_observes_replacement(
+    tmp_path, ending
+):
     async def run():
         async with network(silent=False) as (_, caller, _, facade, _):
             native = RolloutNative(tmp_path)
@@ -564,7 +711,9 @@ def test_superseded_initial_claim_never_adopts_or_observes_replacement(tmp_path,
 
             caller._snapshot = initial
             task = asyncio.create_task(
-                facade.start_turn(CodexStartTurnRequest(thread_id=THREAD, content="once"))
+                facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="once")
+                )
             )
             waiter = asyncio.create_task(pending.wait())
             try:
@@ -606,7 +755,9 @@ def test_superseded_initial_claim_never_adopts_or_observes_replacement(tmp_path,
                 assert not pending.is_set()
                 assert facade.operations.settings_epochs == epochs
                 assert THREAD not in facade.owned and not facade.acquiring
-                assert isinstance(outcome, IpcError) and outcome.code == "claim-superseded"
+                assert (
+                    isinstance(outcome, IpcError) and outcome.code == "claim-superseded"
+                )
                 assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
                 assert not [p for m, p in native.calls if m == "turn/start"]
             finally:
@@ -640,7 +791,10 @@ def test_superseded_pending_claim_preserves_replacement_and_its_bookkeeping(
                     await facade._native_event(
                         {
                             "method": "thread/status/changed",
-                            "params": {"threadId": thread_id, "status": {"type": "idle"}},
+                            "params": {
+                                "threadId": thread_id,
+                                "status": {"type": "idle"},
+                            },
                         },
                         1,
                     )
@@ -652,7 +806,9 @@ def test_superseded_pending_claim_preserves_replacement_and_its_bookkeeping(
 
             caller._snapshot = publish
             task = asyncio.create_task(
-                facade.start_turn(CodexStartTurnRequest(thread_id=THREAD, content="once"))
+                facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="once")
+                )
             )
             try:
                 await asyncio.wait_for(entered.wait(), 1)
@@ -683,7 +839,10 @@ def test_superseded_pending_claim_preserves_replacement_and_its_bookkeeping(
                 elif ending == "error":
                     assert outcome is error
                 else:
-                    assert isinstance(outcome, IpcError) and outcome.code == "claim-superseded"
+                    assert (
+                        isinstance(outcome, IpcError)
+                        and outcome.code == "claim-superseded"
+                    )
                 assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
                 assert not [p for m, p in native.calls if m == "turn/start"]
             finally:

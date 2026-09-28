@@ -244,9 +244,7 @@ async def test_public_no_target_steer_does_not_repaint_native_running(tmp_path):
 @async_test
 async def test_current_completion_after_item_before_start_ack_stays_terminal(tmp_path):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
-        native.responses["thread/resume"] = {
-            "thread": {"id": "remote", "status": {"type": "idle"}, "turns": []}
-        }
+        native.configure_resume("remote")
 
         async def start(_):
             await native.handler(
@@ -276,7 +274,7 @@ async def test_public_rejected_start_preserves_known_targetless_native_activity(
     tmp_path,
 ):
     async with real_runtime(tmp_path) as (runtime, _host, _adapter, _owner, native):
-        native.responses["thread/resume"] = {"thread": {"id": "remote", "turns": []}}
+        native.configure_resume("remote")
         native.responses["turn/start"] = {
             "turn": {"id": "residual", "status": "inProgress", "items": []}
         }

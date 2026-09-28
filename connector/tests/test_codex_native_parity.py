@@ -72,9 +72,7 @@ def test_ordered_idle_disables_residual_turn_without_rewriting_native_history():
 @async_test
 async def test_real_projection_idle_and_start_ack_ordering(tmp_path):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
-        native.responses["thread/resume"] = {
-            "thread": {"id": "remote", "status": {"type": "idle"}, "turns": []}
-        }
+        native.configure_resume("remote")
 
         async def respond(_):
             await native.handler(started("ack"), 1)
@@ -99,9 +97,7 @@ async def test_real_start_after_idle_does_not_repaint_newer_native_observation(
     tmp_path, newer
 ):
     async with real_runtime(tmp_path) as (runtime, _host, _adapter, _owner, native):
-        native.responses["thread/resume"] = {
-            "thread": {"id": "remote", "status": {"type": "idle"}, "turns": []}
-        }
+        native.configure_resume("remote")
 
         async def respond(_):
             if newer == "idle":
@@ -314,9 +310,7 @@ async def test_real_aa_owner_steer_retains_typed_attachments_and_journal(tmp_pat
     )
 
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
-        native.responses["thread/resume"] = {
-            "thread": {"id": "remote", "cwd": "/native", "turns": []}
-        }
+        native.configure_resume("remote", cwd="/native")
         native.responses["turn/start"] = {
             "turn": {"id": "active", "status": "inProgress", "items": []}
         }
@@ -616,9 +610,7 @@ def test_typed_sdk_snapshot_suppresses_review_markers(kind):
 @async_test
 async def test_native_idle_during_ack_publication_is_not_repainted(tmp_path, operation):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
-        native.responses["thread/resume"] = {
-            "thread": {"id": "remote", "status": {"type": "idle"}, "turns": []}
-        }
+        native.configure_resume("remote")
         native.responses["turn/start"] = {
             "turn": {"id": "ack", "status": "inProgress", "items": []}
         }
@@ -649,15 +641,18 @@ async def test_native_idle_during_ack_publication_is_not_repainted(tmp_path, ope
         assert (await task).ok
         assert runtime._active_turn_ids.get("view") is None
         assert runtime._session_states.get("view").status == "idle"
-        assert adapter.peer.get_state("remote")["turns"][0]["status"] == "inProgress"
+        acknowledged = next(
+            turn
+            for turn in adapter.peer.get_state("remote")["turns"]
+            if turn["id"] == "ack"
+        )
+        assert acknowledged["status"] == "inProgress"
 
 
 @async_test
 async def test_confirmed_start_after_idle_during_journal_preparation_is_newer(tmp_path):
     async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
-        native.responses["thread/resume"] = {
-            "thread": {"id": "remote", "status": {"type": "idle"}, "turns": []}
-        }
+        native.configure_resume("remote")
         native.responses["turn/start"] = {
             "turn": {"id": "ack", "status": "inProgress", "items": []}
         }
