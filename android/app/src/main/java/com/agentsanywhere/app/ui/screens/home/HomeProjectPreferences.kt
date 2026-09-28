@@ -44,10 +44,12 @@ internal class HomeProjectPreferences(private val storage: SharedPreferences, pr
         }.apply()
     }
 
-    fun clearDeviceAgentFilter() {
+    fun clearFilters() {
+        sessionStatus = ProjectSessionStatusFilter.Active
         selectedDeviceId = null
         selectedAgentRuntime = null
-        storage.edit().remove("$key:device").remove("$key:agent").apply()
+        storage.edit().putString("$key:status", ProjectSessionStatusFilter.Active.name)
+            .remove("$key:device").remove("$key:agent").apply()
     }
 
     fun setProjectExpanded(id: String, expanded: Boolean) {

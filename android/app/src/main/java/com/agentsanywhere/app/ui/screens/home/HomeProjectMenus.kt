@@ -3,6 +3,7 @@ package com.agentsanywhere.app.ui.screens.home
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
@@ -12,8 +13,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agentsanywhere.app.R
@@ -47,12 +46,12 @@ internal fun HomeProjectFilterMenu(
     onSelectStatus: (ProjectSessionStatusFilter) -> Unit,
     onSelectDevice: (String?) -> Unit,
     onSelectAgent: (String?) -> Unit,
-    onClearDeviceAgentFilter: () -> Unit,
+    onClearFilters: () -> Unit,
 ) {
     AAAnchoredDropdownMenu(anchorBounds = anchorBounds, onDismissRequest = onDismiss) {
         item("filter-header") {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 16.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -61,13 +60,11 @@ internal fun HomeProjectFilterMenu(
                     color = LocalAAColors.current.inkSoft.copy(alpha = 0.72f),
                     fontSize = 12.sp,
                 )
-                if (deviceAgentFilter.active) {
-                    val clearLabel = stringResource(R.string.home_project_filter_clear)
+                if (deviceAgentFilter.active || selected != ProjectSessionStatusFilter.Active) {
                     TextButton(
-                        onClick = { onClearDeviceAgentFilter(); onDismiss() },
-                        modifier = Modifier.semantics { contentDescription = clearLabel },
+                        onClick = onClearFilters,
                     ) {
-                        Text(stringResource(R.string.home_project_filter_clear_short))
+                        Text(stringResource(R.string.home_project_filter_clear))
                     }
                 }
             }
@@ -81,7 +78,7 @@ internal fun HomeProjectFilterMenu(
             AADropdownMenuItem(
                 text = stringResource(label),
                 selected = selected == status,
-                onClick = { onSelectStatus(status); onDismiss() },
+                onClick = { onSelectStatus(status) },
             )
         }
         item("status-device-divider") { HomeProjectFilterDivider() }
@@ -90,14 +87,14 @@ internal fun HomeProjectFilterMenu(
             AADropdownMenuItem(
                 text = stringResource(R.string.home_project_filter_all_devices),
                 selected = deviceAgentFilter.connectorId == null,
-                onClick = { onSelectDevice(null); onDismiss() },
+                onClick = { onSelectDevice(null) },
             )
         }
         items(devices, key = { "device-${it.id}" }) { device ->
             AADropdownMenuItem(
                 text = device.name.trim().ifBlank { device.id },
                 selected = deviceAgentFilter.connectorId == device.id,
-                onClick = { onSelectDevice(device.id); onDismiss() },
+                onClick = { onSelectDevice(device.id) },
             )
         }
         item("device-agent-divider") { HomeProjectFilterDivider() }
@@ -106,14 +103,14 @@ internal fun HomeProjectFilterMenu(
             AADropdownMenuItem(
                 text = stringResource(R.string.home_project_filter_all_agents),
                 selected = deviceAgentFilter.runtime == null,
-                onClick = { onSelectAgent(null); onDismiss() },
+                onClick = { onSelectAgent(null) },
             )
         }
         items(agentRuntimes, key = { "agent-$it" }) { runtime ->
             AADropdownMenuItem(
                 text = runtime.runtimeTypeLabel(),
                 selected = deviceAgentFilter.runtime == runtime,
-                onClick = { onSelectAgent(runtime); onDismiss() },
+                onClick = { onSelectAgent(runtime) },
             )
         }
     }

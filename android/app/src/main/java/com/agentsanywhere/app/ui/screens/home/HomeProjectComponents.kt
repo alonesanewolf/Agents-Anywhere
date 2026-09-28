@@ -126,6 +126,7 @@ internal fun HomeProjectList(
     val pinnedProjects = ordered.filter(AgentProject::pinned)
     val regularProjects = ordered.filterNot(AgentProject::pinned)
     val agentLabel = deviceAgentFilter.runtime?.runtimeTypeLabel()
+    val filtersActive = deviceAgentFilter.active || projectSessionStatus != ProjectSessionStatusFilter.Active
 
     if (projects.isEmpty() && pinnedSessions.isEmpty()) {
         Box(Modifier.fillMaxSize()) {
@@ -138,17 +139,17 @@ internal fun HomeProjectList(
                         ProjectSessionStatusFilter.All -> R.string.home_no_projects_create
                     },
                 ),
-                buttonLabel = stringResource(if (deviceAgentFilter.active) R.string.home_project_filter_clear else R.string.new_session_create_project),
-                buttonIcon = if (deviceAgentFilter.active) Lucide.X else Lucide.Plus,
-                onButtonClick = if (deviceAgentFilter.active) projectPreferences::clearDeviceAgentFilter else onCreateProject,
+                buttonLabel = stringResource(if (filtersActive) R.string.home_project_filter_clear else R.string.new_session_create_project),
+                buttonIcon = if (filtersActive) Lucide.X else Lucide.Plus,
+                onButtonClick = if (filtersActive) projectPreferences::clearFilters else onCreateProject,
             )
             // Keep a way out of an empty filter without restoring the section title.
-            if (hasProjectsInOtherStatuses || deviceAgentFilter.active) Box(Modifier.align(Alignment.TopEnd)) {
+            if (hasProjectsInOtherStatuses || filtersActive) Box(Modifier.align(Alignment.TopEnd)) {
                 HomeProjectIconButton(
                     Lucide.Ellipsis,
                     stringResource(R.string.home_project_filter_sessions),
                     onClick = { filterAnchor = it },
-                    active = deviceAgentFilter.active || projectSessionStatus != ProjectSessionStatusFilter.Active,
+                    active = filtersActive,
                 )
             }
         }
@@ -199,7 +200,7 @@ internal fun HomeProjectList(
                 expanded = projectsExpanded,
                 onClick = projectPreferences::toggleSection,
                 onFilter = { filterAnchor = it },
-                filterActive = deviceAgentFilter.active || projectSessionStatus != ProjectSessionStatusFilter.Active,
+                filterActive = filtersActive,
                 onCreate = onCreateProject,
             )
         }
@@ -244,7 +245,7 @@ internal fun HomeProjectList(
             onSelectStatus = onProjectSessionStatusChange,
             onSelectDevice = projectPreferences::selectDevice,
             onSelectAgent = projectPreferences::selectAgent,
-            onClearDeviceAgentFilter = projectPreferences::clearDeviceAgentFilter,
+            onClearFilters = projectPreferences::clearFilters,
         )
     }
 }
