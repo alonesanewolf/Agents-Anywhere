@@ -271,6 +271,33 @@ def test_runtime_instance_explicitly_forwards_complete_inventory() -> None:
     asyncio.run(run())
 
 
+def test_codex_instance_forwards_fast_passive_discovery_to_native_runtime() -> None:
+    class NativeCodex(AgentRuntime):
+        def __init__(self) -> None:
+            self.calls = []
+
+        @property
+        def identity(self) -> RuntimeIdentity:
+            return RuntimeIdentity(runtime="codex", runtime_version="test")
+
+        async def prepare_session_view(
+            self, session_id, external_session_id=None, *, fast_discovery=False
+        ):
+            self.calls.append((session_id, external_session_id, fast_discovery))
+
+    async def run() -> None:
+        native = NativeCodex()
+        runtime = RuntimeInstance(
+            RuntimeInstanceSpec("codex", "codex", "Codex"), native
+        )
+        await runtime.prepare_session_view(
+            "session", "thread", fast_discovery=True
+        )
+        assert native.calls == [("session", "thread", True)]
+
+    asyncio.run(run())
+
+
 def test_runtime_instance_preserves_type_and_adds_instance_scope() -> None:
     async def run() -> None:
         instance = RuntimeInstanceSpec("rti_dsh_one", "dsh", "DSH One")

@@ -583,9 +583,20 @@ class RuntimeInstance(AgentRuntime):
         )
 
     async def prepare_session_view(
-        self, session_id: str, external_session_id: str | None = None
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+        *,
+        fast_discovery: bool = False,
     ) -> None:
-        await self.native_runtime.prepare_session_view(session_id, external_session_id)
+        if fast_discovery and self.instance.runtime_type == "codex":
+            await self.native_runtime.prepare_session_view(
+                session_id, external_session_id, fast_discovery=True
+            )
+        else:
+            await self.native_runtime.prepare_session_view(
+                session_id, external_session_id
+            )
 
     async def get_session_state(
         self,
