@@ -14,6 +14,10 @@ from loguru import logger
 from .state import apply_patches, history_complete, read_context_matches
 from .wire import METHOD_VERSIONS, IpcError
 
+# Installed routers allow 10 seconds per discovery candidate, independently of
+# request timeoutMs. Leave room for their explicit no-client-found response.
+OWNER_DISCOVERY_TIMEOUT = 12
+
 FOLLOWER_METHODS = tuple(
     name for name in METHOD_VERSIONS if name.startswith("thread-follower-")
 )
@@ -135,7 +139,11 @@ class CoordinationPeer:
             raise IpcError("disposed")
 
     async def discover_owner(
-        self, thread_id, *, timeout=5, expected_owner_client_id=None
+        self,
+        thread_id,
+        *,
+        timeout=OWNER_DISCOVERY_TIMEOUT,
+        expected_owner_client_id=None,
     ):
         self._require_open()
         if self.is_owner(thread_id) and expected_owner_client_id in (
@@ -162,7 +170,7 @@ class CoordinationPeer:
             result.get("supportsUntrustedAppInput") is True,
         )
 
-    async def follow(self, thread_id, *, timeout=5):
+    async def follow(self, thread_id, *, timeout=OWNER_DISCOVERY_TIMEOUT):
         self._require_open()
         if self.is_owner(thread_id):
             return self.get_state(thread_id)

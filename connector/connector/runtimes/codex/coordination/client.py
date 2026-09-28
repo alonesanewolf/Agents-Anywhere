@@ -305,7 +305,9 @@ class CoordinatedCodexClient:
             if state is not None:
                 self.attached.add(thread_id)
                 return
-            # Follow confirmed absence; repeat discovery just before native resume.
+            # Confirmed absence permits ending an earlier failed follow intent.
+            # Cleanup may await I/O, so keep the final fresh guard after it.
+            await self.peer.unfollow(thread_id)
             owner = await self.peer.discover_owner(thread_id)
             if owner is not None:
                 await self.peer.follow(thread_id)
