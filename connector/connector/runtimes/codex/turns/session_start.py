@@ -124,6 +124,7 @@ class CodexSessionStartController:
             session_id=session_id,
             external_session_id=thread_id,
             content=content,
+            selections=effective_selections,
             attachments=attachments,
             client_message_id=client_message_id,
         )

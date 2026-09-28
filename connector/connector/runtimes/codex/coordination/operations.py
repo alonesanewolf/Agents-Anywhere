@@ -16,6 +16,7 @@ from .history import hydrate
 from .projection import active_turn, canonical_turn
 from .reducer import reduce_event
 from .requests import REQUEST_ROUTES, reply
+from .settings import merge_settings, observed_settings
 from .state import enumerate_turns
 
 
@@ -30,6 +31,7 @@ class OwnerOperations:
         self.queue_head = ContextVar("codex_queue_head", default=None)
         self.goal_epochs = defaultdict(int)
         self.goal_support = {}
+        self.settings_epochs = defaultdict(lambda: defaultdict(int))
 
     def state(self, thread_id):
         if not self.peer.is_owner(thread_id):
@@ -53,6 +55,24 @@ class OwnerOperations:
         result = await asyncio.shield(task)
         self.state(thread_id)
         return result
+
+    def settings_observed(self, thread_id, values):
+        for key in observed_settings(values):
+            self.settings_epochs[thread_id][key] += 1
+
+    def merge_confirmed_settings(self, thread_id, state, values, before):
+        values = observed_settings(values)
+        current = self.settings_epochs[thread_id]
+        # Collaboration mode also embeds model/effort, so keep the newer group
+        # intact if any of its observations changed while awaiting the ACK.
+        if any(
+            current[key] != before.get(key, 0)
+            for key in ("model", "effort", "collaborationMode")
+        ):
+            values.pop("collaborationMode", None)
+        merge_settings(
+            state, {k: v for k, v in values.items() if current[k] == before.get(k, 0)}
+        )
 
     async def observe_goal(self, thread_id, goal):
         """Commit once, then read current authority after transport publication yields."""
@@ -248,12 +268,14 @@ class OwnerOperations:
             await self.journal.stage(thread_id, "injected", injectionConfirmed=True)
             if passive.get("items"):
                 await self.journal.set_passive_key(thread_id, passive.get("key"))
+        settings_before = dict(self.settings_epochs[thread_id])
         result = await self.mutation(thread_id, "starting", "turn/start", request)
         if not isinstance(result.get("turn"), dict) or not result["turn"].get("id"):
             await self.journal.stage(thread_id, "unknown", uncertainMethod="turn/start")
             raise ValueError("native start returned no confirmed turn")
         await self.journal.stage(thread_id, "confirmed", result=result)
         state = self.state(thread_id)
+        self.merge_confirmed_settings(thread_id, state, request, settings_before)
         turn = canonical_turn(result["turn"], thread_id)
         turn["params"] = {
             **request,

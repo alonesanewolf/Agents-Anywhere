@@ -205,8 +205,9 @@ class CodexCommandController:
                 .get("collaborationMode", {})
                 .get("settings", {})
             )
+            mode_settings["developer_instructions"] = None
             mode_settings["model"] = model
-            if settings.get("latestReasoningEffort") is not None:
+            if "latestReasoningEffort" in settings:
                 mode_settings["reasoning_effort"] = settings["latestReasoningEffort"]
             payload = {
                 "threadSettings": {

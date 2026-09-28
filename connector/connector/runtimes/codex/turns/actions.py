@@ -136,6 +136,11 @@ class CodexTurnActions:
                 )
             )
         except Exception as exc:
+            refresh = getattr(self.client, "refresh_state", None)
+            if callable(refresh):
+                # Restore known canonical selections after a rejected/unknown
+                # dispatch; the requested preference is not an observation.
+                await refresh(external_session_id, force=True)
             source_observation = await self._source_observation_from_error(
                 session_id=session_id,
                 external_session_id=external_session_id,
@@ -199,7 +204,9 @@ class CodexTurnActions:
             session_id=session_id,
             external_session_id=external_session_id,
             status="running",
-            selections=effective_selections,
+            selections=None
+            if callable(getattr(self.client, "owner_operation", None))
+            else effective_selections,
             metadata={
                 "source": "codex.turn/start",
                 **({"turn_id": turn_id} if turn_id else {}),

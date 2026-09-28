@@ -15,9 +15,13 @@ from connector.runtimes.codex.sdk.runtime_client import (
 
 from .journal import CoordinationJournal
 from .operations import OwnerOperations
-from .projection import native_to_state, presentation, state_to_native
+from .projection import (
+    native_response_to_state,
+    presentation,
+    state_to_native,
+)
 from .queue import execute_head
-from .reducer import exact_id, merge_settings, reduce_event
+from .reducer import exact_id, reduce_event
 from .requests import REQUEST_ROUTES, ResponseContexts, validate_response
 from .state import history_complete
 
@@ -33,6 +37,7 @@ class CoordinatedCodexClient:
         self.attached = set()
         self.owned = set()
         self.acquiring = {}
+        self.starting = {}
         self.locks = defaultdict(asyncio.Lock)
         self.last_emitted = {}
         self.queue_tasks = {}
@@ -111,6 +116,10 @@ class CoordinatedCodexClient:
         if thread_id in self.acquiring:
             self.acquiring[thread_id].append(deepcopy(message))
             return
+        if thread_id and self.starting and not self.peer.is_owner(thread_id):
+            for pending in self.starting.values():
+                pending.append(deepcopy(message))
+            return
         if not thread_id or not self.peer.is_owner(thread_id):
             if "id" in message:
                 await self.sdk.reject_native_request(
@@ -124,6 +133,10 @@ class CoordinatedCodexClient:
         if message["method"] in {"thread/goal/updated", "thread/goal/cleared"}:
             self.goal_support[thread_id] = True
             self.goal_epochs[thread_id] += 1
+        if message["method"] in {"thread/settings/updated", "thread/settings/changed"}:
+            self.operations.settings_observed(
+                thread_id, params.get("settings", params.get("threadSettings", {}))
+            )
         state = reduce_event(self.peer.get_state(thread_id), message)
         await self.peer.publish_state(thread_id, state)
         if not self.operations.mutation_locks[thread_id].locked():
@@ -301,32 +314,8 @@ class CoordinatedCodexClient:
             self.acquiring[thread_id] = []
             try:
                 result = await self.sdk.native_thread_resume(thread_id)
-                state = native_to_state(
-                    result["thread"], complete=False, host_id=self.peer.host_id
-                )
-                merge_settings(
-                    state,
-                    {
-                        k: deepcopy(v)
-                        for k, v in result.items()
-                        if k
-                        in {
-                            "model",
-                            "approvalPolicy",
-                            "approvalsReviewer",
-                            "serviceTier",
-                            "cwd",
-                        }
-                    },
-                )
-                if "reasoningEffort" in result:
-                    merge_settings(state, {"effort": result["reasoningEffort"]})
-                for message in self.acquiring[thread_id]:
-                    state = reduce_event(state, message)
-                await self.peer.claim(
-                    thread_id, state, supports_untrusted_app_input=False
-                )
-                self.owned.add(thread_id)
+                state = native_response_to_state(result, host_id=self.peer.host_id)
+                await self._claim_observed(thread_id, state)
             finally:
                 self.acquiring.pop(thread_id, None)
 
@@ -404,7 +393,11 @@ class CoordinatedCodexClient:
                     "thread/read",
                     {"threadId": thread_id, "includeTurns": include_turns},
                 )
-                return CodexThreadReadResult(thread=raw["thread"])
+                return CodexThreadReadResult(
+                    thread=state_to_native(
+                        native_response_to_state(raw, host_id=self.peer.host_id)
+                    )
+                )
             finally:
                 if temporary and self.peer.is_follower(thread_id):
                     await self.peer.unfollow(thread_id)
@@ -473,15 +466,58 @@ class CoordinatedCodexClient:
             thread_id, method, params, expected_owner_client_id=owner.client_id
         )
 
-    async def start_thread(self, request):
-        result = await self.sdk.native_thread_start(request)
-        thread_id = result["thread"]["id"]
-        state = native_to_state(
-            result["thread"], complete=True, host_id=self.peer.host_id
-        )
-        await self.peer.claim(thread_id, state)
+    async def _claim_observed(self, thread_id, state):
+        pending = self.acquiring[thread_id]
+        for message in pending:
+            state = reduce_event(state, message)
+        pending.clear()
+        await self.peer.claim(thread_id, state, supports_untrusted_app_input=False)
         self.owned.add(thread_id)
-        return CodexThreadResult(thread_id=thread_id, payload=result)
+        # claim publishes asynchronously; drain events received at that boundary
+        # from current canonical state, never from the pre-claim snapshot.
+        self.acquiring.pop(thread_id)
+        if pending:
+            state = self.peer.get_state(thread_id)
+            for message in pending:
+                if message["method"] in {
+                    "thread/settings/updated",
+                    "thread/settings/changed",
+                }:
+                    params = message.get("params") or {}
+                    self.operations.settings_observed(
+                        thread_id,
+                        params.get("settings", params.get("threadSettings", {})),
+                    )
+                state = reduce_event(state, message)
+            # Further events now use the normal owner path and supersede this
+            # snapshot at its publication await, without an unbounded drain loop.
+            await self.peer.publish_state(thread_id, state)
+
+    async def start_thread(self, request):
+        token, pending = object(), []
+        self.starting[token] = pending
+        thread_id = None
+        try:
+            result = await self.sdk.native_thread_start(request)
+            thread_id = result["thread"]["id"]
+            self.acquiring[thread_id] = [
+                message
+                for message in pending
+                if message.get("params", {}).get(
+                    "threadId",
+                    (message.get("params", {}).get("thread") or {}).get("id"),
+                )
+                == thread_id
+            ]
+            state = native_response_to_state(
+                result, complete=True, host_id=self.peer.host_id
+            )
+            await self._claim_observed(thread_id, state)
+            return CodexThreadResult(thread_id=thread_id, payload=result)
+        finally:
+            self.starting.pop(token, None)
+            if thread_id is not None:
+                self.acquiring.pop(thread_id, None)
 
     async def start_turn(self, request):
         native = {
@@ -527,6 +563,7 @@ class CoordinatedCodexClient:
                 }
             },
         )
+        await self.refresh_state(request.thread_id, force=True)
         return CodexTurnResult(
             turn_id=result["result"]["turn"]["id"], payload=result["result"]
         )

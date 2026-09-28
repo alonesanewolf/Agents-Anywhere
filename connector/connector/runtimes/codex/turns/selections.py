@@ -132,6 +132,11 @@ class CodexSelectionController:
                 return RuntimeOperationResult(
                     ok=False, code="codex_settings_not_applied", result=result
                 )
+        refresh = getattr(self.client, "refresh_state", None)
+        if callable(operation) and callable(refresh):
+            await refresh(external_session_id, force=True)
+            current = self.session_states.get(session_id)
+            selections = dict(current.selections) if current is not None else {}
         cached = self.session_states.get(session_id)
         await self.session_states.update(
             session_id=session_id,

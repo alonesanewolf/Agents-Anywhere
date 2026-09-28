@@ -4,6 +4,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 from .projection import canonical_turn
+from .settings import merge_settings
 from .state import enumerate_turns
 
 
@@ -105,43 +106,6 @@ def reduce_event(previous, message):
     else:
         state.setdefault("nativeNotifications", {})[method] = deepcopy(params)
     return state
-
-
-def merge_settings(state, settings):
-    state["latestThreadSettings"] = {
-        **state.get("latestThreadSettings", {}),
-        **deepcopy(settings),
-    }
-    for key, target in (
-        ("model", "latestModel"),
-        ("effort", "latestReasoningEffort"),
-        ("collaborationMode", "latestCollaborationMode"),
-    ):
-        if key in settings:
-            state[target] = deepcopy(settings[key])
-    mode = state.get("latestCollaborationMode")
-    if isinstance(mode, dict):
-        nested = mode.setdefault("settings", {})
-        for key, target in (("model", "model"), ("effort", "reasoning_effort")):
-            if key in settings:
-                nested[target] = settings[key]
-    permissions = {
-        k: deepcopy(v)
-        for k, v in settings.items()
-        if k
-        in {
-            "sandboxPolicy",
-            "approvalPolicy",
-            "approvalsReviewer",
-            "activePermissionProfile",
-            "runtimeWorkspaceRoots",
-        }
-    }
-    if permissions:
-        state["currentPermissions"] = {
-            **state.get("currentPermissions", {}),
-            **permissions,
-        }
 
 
 def _delta(turn, method, params):

@@ -6,7 +6,6 @@ from copy import deepcopy
 from .context import prepare_start, require_feature
 from .history import hydrate
 from .projection import active_turn, native_to_state
-from .reducer import merge_settings
 from .state import enumerate_turns, history_complete
 
 
@@ -53,12 +52,15 @@ async def settings(operations, thread_id, params):
             raise ValueError("active settings turn mismatch")
         if values.get("approvalsReviewer") is not None:
             require_feature(operations.sdk, "reviewer")
-    await operations.call(
+    before = dict(operations.settings_epochs[thread_id])
+    result = await operations.call(
         thread_id, "thread/settings/update", {"threadId": thread_id, **values}
     )
+    if result.get("applied") is False:
+        return {"applied": False}
     # Record confirmed next-turn settings even if the active reviewer update fails.
     state = operations.state(thread_id)
-    merge_settings(state, values)
+    operations.merge_confirmed_settings(thread_id, state, values, before)
     await operations.peer.publish_state(thread_id, state)
     if active_id is not None and values.get("approvalsReviewer") is not None:
         await operations.call(

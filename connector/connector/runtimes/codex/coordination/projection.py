@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+from .settings import merge_settings, observed_settings
 from .state import enumerate_turns
 
 
@@ -41,6 +42,10 @@ def canonical_turn(raw, thread_id):
 
 def native_to_state(raw, *, complete=False, host_id="local"):
     state = deepcopy(dict(raw))
+    # Raw thread observations are weaker than already canonical settings.
+    observed = {}
+    merge_settings(observed, observed_settings(raw))
+    state = {**observed, **state}
     state.update(
         hostId=host_id,
         requests=deepcopy(raw.get("requests", [])),
@@ -130,3 +135,9 @@ def active_turn(state):
         ),
         None,
     )
+
+
+def native_response_to_state(result, *, complete=False, host_id="local"):
+    state = native_to_state(result["thread"], complete=complete, host_id=host_id)
+    merge_settings(state, observed_settings(result))
+    return state

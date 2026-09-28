@@ -201,7 +201,10 @@ def test_review_and_plan_use_explicit_native_parameters():
                 "threadSettings": {
                     "collaborationMode": {
                         "mode": "default",
-                        "settings": {"model": "gpt-test"},
+                        "settings": {
+                            "model": "gpt-test",
+                            "developer_instructions": None,
+                        },
                     }
                 }
             },
