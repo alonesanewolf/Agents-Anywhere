@@ -17,7 +17,8 @@ from test_claude_runtime import (
     _wait_until,
 )
 
-from connector.runtime_protocol import RuntimeConfig
+from connector.runtime_protocol import RuntimeConfig, RuntimeInvalidRequestError
+from connector.runtimes.claude.domain.models import model_selection_from_selection_id
 from connector.runtimes.claude.runtime import ClaudeRuntime
 from connector.server.protocol import protocol_selection_id
 
@@ -196,6 +197,61 @@ def test_saved_cron_resolves_models_before_connecting_without_catalog_read(
             assert host.session_turn_ends[-1]["outcome"] == "completed"
             saved = host.sync_states["claude/scheduled/sessions"]["sessions"]["timer"]
             assert saved["selections"] == {"model": selection}
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "visible_efforts"),
+    [
+        ({}, ()),
+        ({"supportsEffort": True, "supportedEffortLevels": ["low"]}, ("low",)),
+    ],
+)
+def test_saved_static_effort_survives_overlapping_cli_model(
+    capabilities, visible_efforts,
+) -> None:
+    async def run():
+        selection = _model_selection("claude-opus-4-8", "high")
+        host = _RecordingHost()
+        host.sync_states["claude/scheduled/sessions"] = {
+            "sessions": {"timer": {
+                "externalSessionId": "native_timer", "cwd": "/project",
+                "selections": {"model": selection}, "taskIds": ["timer_1"],
+            }},
+        }
+        cli_models = [
+            {"value": "claude-opus-4-8", "displayName": "CLI Opus", **capabilities},
+            {"value": "new-cli-only"},
+        ]
+        discovery = _DiscoveryClientType(server_info={"models": cli_models})
+        client = _ScheduledClaudeClient()
+        runtime = _runtime_using_clients(host, [client], discovery)
+        try:
+            catalog = await runtime.list_model_catalog()
+            model = next(item for item in catalog.models if item.id == "claude-opus-4-8")
+            assert model.title == "CLI Opus"
+            assert model.metadata["source"] == "claude-code.initialize"
+            assert tuple(item.id for item in model.reasoning_items) == visible_efforts
+
+            resolved = model_selection_from_selection_id(selection, cli_models=cli_models)
+            assert resolved.model_id == "claude-opus-4-8"
+            assert resolved.effort_id == "high"
+            await runtime.start()
+            assert client.connected
+            assert client.queries == []
+            assert client.options.kwargs["resume"] == "native_timer"
+            assert client.options.kwargs["model"] == "claude-opus-4-8"
+            assert client.options.kwargs["effort"] == "high"
+            assert runtime._turns.runner.connections["timer"].task_ids == {"timer_1"}
+
+            with pytest.raises(RuntimeInvalidRequestError, match="unknown Claude model selection"):
+                model_selection_from_selection_id(
+                    _model_selection("new-cli-only", "high"), cli_models=cli_models,
+                )
+            assert discovery.created == 1
         finally:
             await runtime.stop()
 

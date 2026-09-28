@@ -189,10 +189,10 @@ def _selection_candidates(
             cli_models=cli_models,
         ).models
     )
-    seen = {model.id for model in candidates}
-    for model in _CLAUDE_MODELS:
-        if model["id"] not in seen:
-            candidates.append(_model_item(model))
+    # A CLI entry can reuse a static model id while reporting fewer efforts.
+    # Keep its saved static selections resolvable without adding those efforts
+    # to the picker, which continues to show the CLI's reported capabilities.
+    candidates.extend(_model_item(model) for model in _CLAUDE_MODELS)
     return tuple(candidates)
 
 
