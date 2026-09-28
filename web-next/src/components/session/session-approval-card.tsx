@@ -43,7 +43,7 @@ export function InteractionCard({
   const tCommon = useTranslations("common")
   const resolving = resolvingNoticeId === notice.noticeId
   const unknownOutcome = notice.status === "unknown" || notice.metadata.responseOutcome === "unknown"
-  const disabled = readOnly || unknownOutcome || !notice.responseRequired || resolvingNoticeId !== null || notice.status === "response_accepted" || notice.status === "resolving"
+  const disabled = readOnly || unknownOutcome || !notice.responseRequired || resolvingNoticeId !== null || notice.status === "responding" || notice.status === "response_accepted" || notice.status === "resolving"
   const nativeRequest = notice.context.nativeRequest && typeof notice.context.nativeRequest === "object" ? notice.context.nativeRequest as Record<string, unknown> : null
   const nativeParams = nativeRequest?.params && typeof nativeRequest.params === "object" ? nativeRequest.params as Record<string, unknown> : null
   const nativeUrl = nativeParams?.mode === "url" && typeof nativeParams.url === "string" ? nativeParams.url : null
@@ -140,7 +140,7 @@ export function InteractionCard({
             {readOnly || unknownOutcome ? <div className="flex flex-col gap-3">{inputRequest.questions.map(question => (
               <div key={question.id} className="text-sm">
                 {question.header ? <p className="text-xs text-muted-foreground">{question.header}</p> : null}
-                <p className="wrap-break-word">{question.planReview ? question.prompt.slice(0, question.prompt.indexOf("\n\n")) : question.prompt}</p>
+                <p className="wrap-break-word">{planReviewHeading(question)}</p>
                 {question.planReview?.detail ? <MarkdownText text={question.planReview.detail} /> : null}
                 {question.options.length ? <p className="text-xs text-muted-foreground">{question.options.map(option => option.label).join(" · ")}</p> : null}
               </div>
@@ -217,7 +217,7 @@ function InputRequestQuestionFields({
         {question.header ? (
           <span className="block text-xs font-medium text-muted-foreground">{question.header}</span>
         ) : null}
-        <span className="mt-0.5 block wrap-break-word text-sm text-foreground">{question.planReview ? question.prompt.slice(0, question.prompt.indexOf("\n\n")) : question.prompt}</span>
+        <span className="mt-0.5 block wrap-break-word text-sm text-foreground">{planReviewHeading(question)}</span>
       </legend>
       {question.planReview?.detail ? <div className="mb-3 rounded-lg border p-3"><MarkdownText text={question.planReview.detail} /></div> : null}
       {question.multiple ? (
@@ -288,6 +288,12 @@ function InputRequestQuestionFields({
       )}
     </fieldset>
   )
+}
+
+function planReviewHeading(question: InputRequestQuestion): string {
+  if (!question.planReview) return question.prompt
+  const separator = question.prompt.indexOf("\n\n")
+  return separator < 0 ? question.prompt : question.prompt.slice(0, separator)
 }
 
 function OptionLabel({

@@ -10,7 +10,7 @@ const hook=registerSource()
 const {createElement:h,act}=await import('react')
 const {createRoot}=await import('react-dom/client')
 const {dashboardApi}=await import('../src/features/dashboard/api.ts')
-const {useRuntimeCommands}=await import('../src/components/session/use-runtime-commands.ts')
+const {useRuntimeCommands,createRecoveredSubscriptionTracker}=await import('../src/components/session/use-runtime-commands.ts')
 hook.deregister()
 
 test('catalog invalidation, unavailable, reopen, stale response and fetch error are separate states',async t=>{
@@ -41,5 +41,43 @@ test('catalog invalidation, unavailable, reopen, stale response and fetch error 
   await render({sessionId:'b',open:true,available:true,catalogRevision:'2'})
   await act(async()=>delay(140))
   assert.equal(deferred.length,4)
+})
+
+test('successful subscription recovery refetches an open failed catalog despite unchanged revision and ignores stale requests',async t=>{
+  const deferred=[]
+  t.mock.method(dashboardApi,'getSessionCommands',async()=>new Promise((resolve,reject)=>deferred.push({resolve,reject})))
+  const host=document.createElement('div');document.body.append(host)
+  const root=createRoot(host)
+  let generation=0
+  const recovered=createRecoveredSubscriptionTracker(()=>{generation++})
+  const Host=()=>{const state=useRuntimeCommands({token:'token',sessionId:'a',open:true,available:true,catalogRevision:'constant',recoveryGeneration:generation});return h('output',null,`${state.loading?'loading':state.error?'error':'ready'}:${state.commands.map(x=>x.id).join(',')}`)}
+  const render=async()=>act(async()=>root.render(h(Host)))
+  t.after(async()=>{await act(async()=>root.unmount());host.remove()})
+  await render();await act(async()=>delay(140))
+  recovered.observed(1)
+  recovered.recovered(1)
+  assert.equal(generation,0,'initial subscribed recovery is part of initial catalog read')
+  await act(async()=>deferred[0].reject(new Error('disconnected')))
+  assert.match(host.textContent,/error:/)
+  recovered.observed(2);recovered.recovered(2);await render();await act(async()=>delay(140))
+  assert.equal(deferred.length,2)
+  recovered.recovered(2);await render();await act(async()=>delay(140))
+  assert.equal(deferred.length,2,'duplicate subscribed recovery cannot refetch twice')
+  recovered.observed(3);recovered.recovered(3);await render();await act(async()=>delay(140))
+  assert.equal(deferred.length,3)
+  await act(async()=>deferred[1].resolve({commands:[{id:'stale'}]}))
+  assert.doesNotMatch(host.textContent,/stale/)
+  await act(async()=>deferred[2].resolve({commands:[{id:'fresh'}]}))
+  assert.match(host.textContent,/ready:fresh/)
+})
+
+test('first connection can fail before recovery and still invalidate after its reconnect',()=>{
+  let changes=0
+  const tracker=createRecoveredSubscriptionTracker(()=>changes++)
+  tracker.observed(1)
+  tracker.observed(2)
+  tracker.recovered(2)
+  tracker.recovered(2)
+  assert.equal(changes,1)
 })
 test.after(()=>dom.window.close())

@@ -113,8 +113,12 @@ export function SessionComposer({
   const valueRef = React.useRef(value)
   valueRef.current = value
   const pendingCommandRef = React.useRef(false)
-  const sessionIdRef = React.useRef(session.id)
-  sessionIdRef.current = session.id
+  const sessionVisitRef = React.useRef({ id: session.id, sequence: 0 })
+  if (sessionVisitRef.current.id !== session.id) {
+    sessionVisitRef.current = { id: session.id, sequence: sessionVisitRef.current.sequence + 1 }
+  }
+  const requestSequenceRef = React.useRef(0)
+  const activeCommandRequestRef = React.useRef<number | null>(null)
   const [commandPending, setCommandPending] = React.useState(false)
   const [commandFeedback, setCommandFeedback] = React.useState<CommandOutcome | null>(null)
   const [commandInputError, setCommandInputError] = React.useState<string | null>(null)
@@ -125,6 +129,7 @@ export function SessionComposer({
     setCommandInputError(null)
     setCommandPending(false)
     pendingCommandRef.current = false
+    activeCommandRequestRef.current = null
   }, [session.id])
   const composerWidth = useElementWidth(composerRef)
   const runtimeStatus = effectiveRuntimeStatus(runtimeState, session)
@@ -367,7 +372,7 @@ export function SessionComposer({
     setCommandInputError(null)
   }, [onValueChange])
 
-  const runCommand = async (command: RuntimeCommand, raw: string) => {
+  const runCommand = async (command: RuntimeCommand, raw: string, sourceDraft = raw) => {
     if (pendingCommandRef.current) return
     const intent = parseSlashIntent(raw)
     const actionReason = intent ? commandActionReason(intent, command) : null
@@ -396,22 +401,26 @@ export function SessionComposer({
       setSelectorRequest((current) => current + 1)
       return
     }
-    const submittedSession = session.id
+    const submittedVisit = sessionVisitRef.current
+    const requestId = ++requestSequenceRef.current
+    activeCommandRequestRef.current = requestId
+    const isCurrentRequest = () => sessionVisitRef.current === submittedVisit && activeCommandRequestRef.current === requestId
     pendingCommandRef.current = true
     setCommandPending(true)
     setCommandFeedback(null)
     try {
       const outcome = await onCommand(command.id, { args: request.args, raw: request.raw })
-      if (sessionIdRef.current !== submittedSession) return
+      if (!isCurrentRequest()) return
       setCommandFeedback(outcome)
       setResultExpanded(false)
-      if (outcome.ok && valueRef.current === raw) updateValue("")
+      if (outcome.ok && valueRef.current === sourceDraft) updateValue("")
     } catch (error) {
-      if (sessionIdRef.current === submittedSession) {
+      if (isCurrentRequest()) {
         setCommandFeedback({ok:false,state:"unknown",code:"command_outcome_unknown",message:error instanceof Error ? error.message : tSession("commandFailed"),result:null})
       }
     } finally {
-      if (sessionIdRef.current === submittedSession) {
+      if (isCurrentRequest()) {
+        activeCommandRequestRef.current = null
         pendingCommandRef.current = false
         setCommandPending(false)
       }
@@ -503,14 +512,15 @@ export function SessionComposer({
                       disabled={!commandAllowed(command, runtimeStatus, canUseCommands, commandWritable, connectorOnline)}
                       onClick={() => {
                         if (!commandAllowed(command, runtimeStatus, canUseCommands, commandWritable, connectorOnline)) return
-                        const raw = slashIntent && (slashIntent.command === command.id || command.aliases.includes(slashIntent.command))
-                          ? `/${command.id}${slashIntent.suffix}` : `/${command.id}`
+                        const sourceDraft = valueRef.current
+                        const resolved = slashIntent && exactCommand(slashIntent, [command]) === command
+                        const raw = resolved ? sourceDraft : `/${command.id}`
                         if (command.acceptsArgs) {
                           updateValue(raw === `/${command.id}` ? `${raw} ` : raw)
                           textareaRef.current?.focus()
                           return
                         }
-                        void runCommand(command, raw)
+                        void runCommand(command, raw, sourceDraft)
                       }}
                     >
                       <span className="code-mono shrink-0 text-xs text-primary">/{command.id}</span>

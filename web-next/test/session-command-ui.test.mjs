@@ -75,6 +75,57 @@ test('an old command acknowledgement cannot clear or report against the newly se
   assert.doesNotMatch(host.textContent,/old session accepted/)
 })
 
+test('menu execution preserves resolved raw, clears unchanged source draft, and never model-sends',async t=>{
+  const variants=[
+    {draft:'/',raw:'/compact'},
+    {draft:'/com',raw:'/compact'},
+    {draft:' /SHORT  ',raw:' /SHORT  '},
+    {draft:' /COMPACT  ',raw:' /COMPACT  '},
+  ]
+  for(const variant of variants){
+    let sent=0;const calls=[]
+    function Host(){const [value,setValue]=useState(variant.draft);return h(SessionComposer,{token:'test',session,runtimeState:{status:'idle',metadata:{},selections:{}},pendingInteractionCount:0,sending:false,interrupting:false,takeoverBusy:false,value,effectiveCapabilities:capability,modelCatalog:null,permissionCatalog:null,runtimeCommands:[{...descriptor('compact',false),aliases:['short']}],onCommandQueryChange(){},onValueChange:setValue,onSelectionChange:async()=>true,onSend:async()=>{sent++;return true},onInterrupt(){},onToggleTakeover(){},onCommand:async(id,payload)=>{calls.push({id,payload});return {ok:true,state:'completed',message:'done'}}})}
+    const host=await mount(t,h(Host))
+    const menu=[...host.querySelectorAll('button')].find(button=>button.textContent.includes('/compact'))
+    assert.ok(menu,variant.draft)
+    await act(async()=>menu.click())
+    assert.deepEqual(calls.map(({id,payload})=>({id,raw:payload.raw})),[{id:'compact',raw:variant.raw}])
+    assert.equal(host.querySelector('textarea').value,'',variant.draft)
+    assert.equal(sent,0)
+  }
+})
+
+test('menu completion cannot clear newer typing and failure or unknown retain the original draft',async t=>{
+  for(const state of ['completed','unknown','failed']){
+    let resolve;let sent=0
+    function Host(){const [value,setValue]=useState('/com');return h(SessionComposer,{token:'test',session,runtimeState:{status:'idle',metadata:{},selections:{}},pendingInteractionCount:0,sending:false,interrupting:false,takeoverBusy:false,value,effectiveCapabilities:capability,modelCatalog:null,permissionCatalog:null,runtimeCommands:[descriptor('compact',false)],onCommandQueryChange(){},onValueChange:setValue,onSelectionChange:async()=>true,onSend:async()=>{sent++;return true},onInterrupt(){},onToggleTakeover(){},onCommand:async()=>new Promise(done=>resolve=done)})}
+    const host=await mount(t,h(Host));const input=host.querySelector('textarea')
+    await act(async()=>[...host.querySelectorAll('button')].find(button=>button.textContent.includes('/compact')).click())
+    if(state==='completed') await type(input,'new draft')
+    await act(async()=>resolve({ok:state==='completed',state:state==='failed'?'completed':state,message:state}))
+    assert.equal(input.value,state==='completed'?'new draft':'/com')
+    assert.equal(sent,0)
+  }
+})
+
+test('A to B to A invalidates command1 while command2 remains pending',async t=>{
+  const pending=[]
+  function Host(){const [selected,setSelected]=useState(session);const [value,setValue]=useState('/compact');window.visitB=()=>{setSelected({...session,id:'s2'});setValue('B draft')};window.visitA=()=>{setSelected(session);setValue('/compact')};return h(SessionComposer,{token:'test',session:selected,runtimeState:{status:'idle',metadata:{},selections:{}},pendingInteractionCount:0,sending:false,interrupting:false,takeoverBusy:false,value,effectiveCapabilities:capability,modelCatalog:null,permissionCatalog:null,runtimeCommands:[descriptor('compact',false)],onCommandQueryChange(){},onValueChange:setValue,onSelectionChange:async()=>true,onSend:async()=>true,onInterrupt(){},onToggleTakeover(){},onCommand:async()=>new Promise(resolve=>pending.push(resolve))})}
+  const host=await mount(t,h(Host));const input=host.querySelector('textarea')
+  const enter=async()=>act(async()=>input.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Enter',bubbles:true})))
+  await enter();assert.equal(pending.length,1)
+  await act(async()=>window.visitB())
+  await act(async()=>window.visitA())
+  await enter();assert.equal(pending.length,2)
+  await act(async()=>pending[0]({ok:true,state:'completed',message:'old result'}))
+  assert.equal(input.value,'/compact')
+  assert.doesNotMatch(host.textContent,/old result/)
+  await enter();assert.equal(pending.length,2,'old finally must not release command2')
+  await act(async()=>pending[1]({ok:true,state:'completed',message:'new result'}))
+  assert.equal(input.value,'')
+  assert.match(host.textContent,/new result/)
+})
+
 test('unknown slash and unsupported multiline never become a model prompt; native ok:false retains the draft',async t=>{
   let sent=0;let calls=0
   function Host(){const [value,setValue]=useState('/missing what');return h(SessionComposer,{token:'test',session,runtimeState:{status:'idle',metadata:{},selections:{}},pendingInteractionCount:0,sending:false,interrupting:false,takeoverBusy:false,value,effectiveCapabilities:capability,modelCatalog:null,permissionCatalog:null,runtimeCommands:[descriptor('compact',false)],onCommandQueryChange(){},onValueChange:setValue,onSelectionChange:async()=>true,onSend:async()=>{sent++;return true},onInterrupt(){},onToggleTakeover(){},onCommand:async()=>{calls++;return {ok:false,state:'completed',code:'command_error',message:'native rejected',result:{executionState:'completed'}}}})}
@@ -157,6 +208,28 @@ test('native plan review renders Markdown and dispatches exact selected option o
   const submit=[...host.querySelectorAll('button')].find(button=>button.textContent.includes('Submit'))
   await act(async()=>submit.click())
   assert.deepEqual(calls,[['opaque-authority','submit',{answers:{q1:{optionIds:['o_0']}}}]])
+})
+
+test('one-line plan review retains final character and exact option payload',async t=>{
+  const calls=[];const prompt='Review Alpha or Beta?'
+  const notice={noticeId:'opaque-one-line',type:'interaction',interactionType:'input_request',sessionId:'s1',source:{runtime:'codex'},title:'Review',severity:'info',status:'open',responseRequired:true,context:{},metadata:{},actions:[{actionId:'submit',label:'Submit',style:'primary',input:{required:true,uiSchema:{component:'inputRequest',version:1,questions:[{id:'q',prompt,intent:{kind:'plan-review',approveOptionId:'alpha'},options:[{id:'alpha',label:'Alpha'},{id:'beta',label:'Beta'}]}]}}}]}
+  const host=await mount(t,h(InteractionCard,{notice,resolvingNoticeId:null,resolvingActionId:null,onRespondInteraction:(...args)=>calls.push(args)}))
+  assert.match(host.textContent,/Review Alpha or Beta\?/)
+  await act(async()=>host.querySelector('[role=radio]').click())
+  await act(async()=>[...host.querySelectorAll('button')].find(button=>button.textContent.includes('Submit')).click())
+  assert.deepEqual(calls,[['opaque-one-line','submit',{answers:{q:{optionIds:['alpha']}}}]])
+})
+
+test('native responding notice disables buttons and fields with no local resolving ID',async t=>{
+  let responses=0
+  const notice={noticeId:'remote-responding',type:'interaction',interactionType:'input_request',sessionId:'s1',source:{runtime:'codex'},title:'Choose',severity:'info',status:'responding',responseRequired:true,context:{},metadata:{},actions:[{actionId:'submit',label:'Submit',style:'primary',input:{required:true,uiSchema:{component:'inputRequest',version:1,questions:[{id:'q',prompt:'Choose one',options:[{id:'a',label:'Alpha'}]}]}}}]}
+  const host=await mount(t,h(InteractionCard,{notice,resolvingNoticeId:null,resolvingActionId:null,onRespondInteraction:()=>{responses++}}))
+  const radio=host.querySelector('[role=radio]');const submit=[...host.querySelectorAll('button')].find(button=>button.textContent.includes('Submit'))
+  assert.ok(radio);assert.ok(submit)
+  assert.ok(radio.disabled || radio.getAttribute('aria-disabled')==='true',radio.outerHTML)
+  assert.equal(submit.disabled,true)
+  await act(async()=>{radio.click();submit.click()})
+  assert.equal(responses,0)
 })
 
 test('native validation failure keeps the same question draft correctable',async t=>{

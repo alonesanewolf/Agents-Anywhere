@@ -54,7 +54,7 @@ import { SessionGoalPanel } from "@/components/session/session-goal-panel"
 import { commandResult, commandTransportFailure, type CommandOutcome } from "@/components/session/runtime-command-model"
 import { latestPlanItems, runtimeStatesSemanticallyEqual } from "@/components/session/runtime-presentation"
 import { sessionStopOutcome } from "@/components/session/session-stop-result"
-import { useRuntimeCommands } from "@/components/session/use-runtime-commands"
+import { createRecoveredSubscriptionTracker, useRuntimeCommands } from "@/components/session/use-runtime-commands"
 import {
   acceptSessionEventId,
   bufferedEventsAfterLiveCapabilityRead,
@@ -361,6 +361,7 @@ export function SessionDetail({
   } | null>(null)
   const [sourceErrorCode, setSourceErrorCode] = React.useState<SessionSourceErrorCode | null>(null)
   const [commandQuery, setCommandQuery] = React.useState<string | null>(null)
+  const [catalogRecoveryGeneration, setCatalogRecoveryGeneration] = React.useState(0)
   const [stopOutcome, setStopOutcome] = React.useState<{ok:boolean;message:string} | null>(null)
   const [blockingInteractionStackHeight, setBlockingInteractionStackHeight] = React.useState(0)
   const [composerHeight, setComposerHeight] = React.useState(144)
@@ -393,6 +394,14 @@ export function SessionDetail({
   const catalogFetchKeyRef = React.useRef<string | null>(null)
   const selectionUpdateSeqRef = React.useRef(0)
   const selectionWritesRef = React.useRef(new Map<string, Promise<unknown>>())
+  const sessionVisitRef = React.useRef({ sessionId, sequence: 0 })
+  if (sessionVisitRef.current.sessionId !== sessionId) {
+    sessionVisitRef.current = { sessionId, sequence: sessionVisitRef.current.sequence + 1 }
+  }
+  const stopRequestSeqRef = React.useRef(0)
+  const activeStopRequestRef = React.useRef<number | null>(null)
+  const commandRequestSeqRef = React.useRef(0)
+  const activeCommandRequestRef = React.useRef<number | null>(null)
 
   const session = state?.session ?? fallbackSession
   const runtimeState = state?.state ?? null
@@ -432,10 +441,8 @@ export function SessionDetail({
   const commandAvailable = Boolean(commandCapability?.supported && commandCapability.available && commandCapability.allowed && session?.connectorStatus === "online")
   const {commands: runtimeCommands, loading: commandsLoading, error: commandsError} = useRuntimeCommands({
     token, sessionId: commandSessionId, open: commandQuery !== null,
-    available: commandAvailable, catalogRevision,
+    available: commandAvailable, catalogRevision, recoveryGeneration: catalogRecoveryGeneration,
   })
-  const currentSessionIdRef = React.useRef(sessionId)
-  currentSessionIdRef.current = sessionId
 
   React.useEffect(() => {
     if (!session) return
@@ -475,6 +482,8 @@ export function SessionDetail({
   React.useEffect(() => {
     setSourceErrorCode(null)
     setStopOutcome(null)
+    activeStopRequestRef.current = null
+    activeCommandRequestRef.current = null
   }, [sessionId])
 
   React.useEffect(() => {
@@ -865,6 +874,10 @@ export function SessionDetail({
     let recoveryStarting = false
     let snapshotReady = false
     let socketSubscribed = false
+    let connectionSequence = 0
+    const recoveredSubscriptions = createRecoveredSubscriptionTracker(() => {
+      if (!cancelled) setCatalogRecoveryGeneration((current) => current + 1)
+    })
     let bufferedEvents: ProtocolEventEnvelope[] = []
     let processedEventIds = new Set<string>()
     const renderBuffer = createSessionEventBuffer((events) => {
@@ -1059,14 +1072,17 @@ export function SessionDetail({
       }
     }
 
-    const recoverAfterSubscription = async (reason: string) => {
+    const recoverAfterSubscription = async (reason: string, connection: number) => {
       const pendingRecovery = recoveryPromise
       if (pendingRecovery) await pendingRecovery
       if (cancelled || !snapshotReady || !socketSubscribed) return
       await recoverEvents(eventSequenceCursor.current(sessionId), reason)
+      if (!cancelled && socketSubscribed && connection === connectionSequence) recoveredSubscriptions.recovered(connection)
     }
 
     const connect = async () => {
+      const connection = ++connectionSequence
+      recoveredSubscriptions.observed(connection)
       try {
         const ticket = await dashboardApi.createWsTicket(token, createClientId("web"), sessionId)
         if (cancelled) return
@@ -1085,7 +1101,7 @@ export function SessionDetail({
             // projection cannot fall between recovery and socket registration.
             socketSubscribed = true
             if (snapshotReady) {
-              void recoverAfterSubscription("websocket.subscribed")
+              void recoverAfterSubscription("websocket.subscribed", connection)
             }
             return
           }
@@ -1131,7 +1147,7 @@ export function SessionDetail({
         onSessionUpdatedRef.current?.(next.session)
         snapshotReady = true
         if (socketSubscribed) {
-          void recoverAfterSubscription("websocket.initial-subscription")
+          void recoverAfterSubscription("websocket.initial-subscription", connectionSequence)
         } else {
           drainBufferedEvents()
         }
@@ -1142,7 +1158,7 @@ export function SessionDetail({
           setError(err instanceof Error ? err.message : tSessionRef.current("loadFailed"))
           setLoading(false)
           if (socketSubscribed) {
-            void recoverAfterSubscription("websocket.initial-subscription")
+            void recoverAfterSubscription("websocket.initial-subscription", connectionSequence)
           } else {
             drainBufferedEvents()
           }
@@ -1298,17 +1314,23 @@ export function SessionDetail({
 
   const handleInterrupt = async () => {
     if (!session || interrupting) return
-    const originSession = session.id
+    const visit = sessionVisitRef.current
+    const request = ++stopRequestSeqRef.current
+    activeStopRequestRef.current = request
+    const isCurrentRequest = () => sessionVisitRef.current === visit && activeStopRequestRef.current === request
     setInterrupting(true)
     setStopOutcome(null)
     try {
-      const response = await dashboardApi.interruptSession(token, originSession)
-      if (currentSessionIdRef.current !== originSession) return
+      const response = await dashboardApi.interruptSession(token, visit.sessionId)
+      if (!isCurrentRequest()) return
       setStopOutcome(sessionStopOutcome(response, (key, values) => tSession(key, values)))
     } catch (err) {
-      if (currentSessionIdRef.current === originSession) setStopOutcome({ok:false,message:err instanceof Error ? err.message : tSession("interruptFailed")})
+      if (isCurrentRequest()) setStopOutcome({ok:false,message:err instanceof Error ? err.message : tSession("interruptFailed")})
     } finally {
-      if (currentSessionIdRef.current === originSession) setInterrupting(false)
+      if (isCurrentRequest()) {
+        activeStopRequestRef.current = null
+        setInterrupting(false)
+      }
     }
   }
 
@@ -1317,21 +1339,26 @@ export function SessionDetail({
     options: { args: string[]; raw: string },
   ): Promise<CommandOutcome> => {
     if (!session) return {ok:false,state:"unknown",code:"session_unavailable",message:tSession("commandUnavailable"),result:null}
-    const originSession = session.id
+    const visit = sessionVisitRef.current
+    const request = ++commandRequestSeqRef.current
+    activeCommandRequestRef.current = request
+    const isCurrentRequest = () => sessionVisitRef.current === visit && activeCommandRequestRef.current === request
     try {
       const response = await dashboardApi.sendSessionCommand(
         token,
-        session.id,
+        visit.sessionId,
         command,
         options,
       )
-      if (currentSessionIdRef.current === originSession && response.session) {
+      if (isCurrentRequest() && response.session) {
         setState((current) => current ? { ...current, session: response.session! } : current)
         onSessionUpdated?.(response.session)
       }
       return commandResult(response)
     } catch (err) {
       return commandTransportFailure(err, tSession("commandFailed"))
+    } finally {
+      if (isCurrentRequest()) activeCommandRequestRef.current = null
     }
   }
 
