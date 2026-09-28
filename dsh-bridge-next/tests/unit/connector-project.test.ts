@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { materializeConnectorProject } from '../../src/host/connector/project.js'
@@ -38,7 +38,7 @@ test('mirrors the connector project outside the package and keeps the resolved l
   assert.equal(existsSync(join(source, 'uv.lock')), false)
 })
 
-test('republishes a changed payload and collects only aged mirrors', async (t) => {
+test('republishes a changed payload without deleting an aged mirror that may still be running', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'aa-connector-project-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const source = await packagedPayload(root)
@@ -49,18 +49,26 @@ test('republishes a changed payload and collects only aged mirrors', async (t) =
   const second = await materializeConnectorProject(config)
   assert.notEqual(second, first)
   assert.equal(await readFile(join(second, 'connector', 'cli.py'), 'utf8'), 'print("connector v2")\n')
-  // 另一通道可能正在用上一份副本，只有确定过期才回收。
+  // 镜像的年龄无法证明已停止使用；其他通道或长时间运行的 Connector 仍会读取源码。
   assert.equal(existsSync(first), true)
 
   const aged = new Date(Date.now() - 48 * 60 * 60_000)
   await utimes(first, aged, aged)
-  const abandoned = join(config.stateRoot, 'connector-source', 'abandoned.partial-1')
-  await mkdir(join(abandoned, 'connector'), { recursive: true })
-  await utimes(abandoned, aged, aged)
   assert.equal(await materializeConnectorProject(config), second)
-  assert.equal(existsSync(first), false)
-  assert.equal(existsSync(abandoned), false)
+  assert.equal(await readFile(join(first, 'connector', 'cli.py'), 'utf8'), 'print("connector")\n')
   assert.equal(existsSync(second), true)
+})
+
+test('concurrent publishers return the same complete mirror and clean their own staging directories', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'aa-connector-project-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const source = await packagedPayload(root)
+  const config = connectorConfig(root, source)
+
+  const mirrors = await Promise.all(Array.from({ length: 12 }, () => materializeConnectorProject(config)))
+  assert.equal(new Set(mirrors).size, 1)
+  assert.equal(await readFile(join(mirrors[0], 'connector', 'cli.py'), 'utf8'), 'print("connector")\n')
+  assert.equal((await readdir(join(config.stateRoot, 'connector-source'))).length, 1)
 })
 
 test('rejects an incomplete packaged payload', async (t) => {

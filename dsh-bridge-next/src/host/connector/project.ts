@@ -1,16 +1,10 @@
 import { createHash } from 'node:crypto'
-import { access, cp, lstat, mkdir, readFile, readdir, rename, rm } from 'node:fs/promises'
+import { access, cp, mkdir, mkdtemp, readFile, readdir, rename, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import type { ResolvedConfig } from '../config.js'
 
 /** uv 识别项目根所需的两项，也是副本是否完整的判据。 */
 const REQUIRED = [['pyproject.toml'], ['connector', 'cli.py']] as const
-/**
- * 被取代的镜像只是占地方。三个 Desktop 通道共享同一个 stateRoot，另一通道可能正在
- * 用上一份副本跑 uv，所以回收要留出足够长的时间，只清理确定过期的目录。
- */
-const STALE_MIRROR_MS = 24 * 60 * 60_000
-
 async function complete(directory: string): Promise<boolean> {
   try {
     for (const parts of REQUIRED) await access(join(directory, ...parts))
@@ -54,26 +48,21 @@ export async function materializeConnectorProject(config: ResolvedConfig): Promi
   const target = join(root, await payloadDigest(source))
   if (!await complete(target)) {
     await mkdir(root, { recursive: true, mode: 0o700 })
-    const staging = `${target}.partial-${process.pid}`
-    await rm(staging, { recursive: true, force: true })
-    await cp(source, staging, { recursive: true, dereference: true })
-    if (!await complete(staging)) throw new Error('内部 Connector 源码不完整。')
-    await rm(target, { recursive: true, force: true })
-    await rename(staging, target)
+    const staging = await mkdtemp(`${target}.partial-`)
+    try {
+      await cp(source, staging, { recursive: true, dereference: true })
+      if (!await complete(staging)) throw new Error('内部 Connector 源码不完整。')
+      try {
+        await rename(staging, target)
+      } catch (error) {
+        // 另一个发布者可能已先完成；复用它的镜像，不能删除它的源码或 uv.lock。
+        if (!await complete(target)) throw error
+      }
+    } finally {
+      await rm(staging, { recursive: true, force: true })
+    }
   }
-  await prune(root, target)
+  // 目录年龄不能证明镜像已停止使用。建立使用租约之前保留已发布镜像，避免删除
+  // 长时间运行的 Connector 或其他 Desktop 通道仍会读取的源码。
   return target
-}
-
-async function prune(root: string, target: string): Promise<void> {
-  const keep = target.slice(root.length + 1)
-  const now = Date.now()
-  for (const entry of await readdir(root)) {
-    if (entry === keep) continue
-    const path = join(root, entry)
-    const stat = await lstat(path).catch(() => undefined)
-    if (stat === undefined || now - stat.mtimeMs < STALE_MIRROR_MS) continue
-    // 正在被另一通道使用的目录会因 rename/删除竞争而失败，回收不能影响本次启动。
-    await rm(path, { recursive: true, force: true }).catch(() => undefined)
-  }
 }
