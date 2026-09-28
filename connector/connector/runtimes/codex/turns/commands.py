@@ -200,11 +200,10 @@ class CodexCommandController:
                     code="command_unavailable",
                     message="native_model_unknown",
                 )
-            mode_settings = dict(
-                settings.get("latestThreadSettings", {})
-                .get("collaborationMode", {})
-                .get("settings", {})
+            previous_mode = (
+                settings.get("latestThreadSettings", {}).get("collaborationMode") or {}
             )
+            mode_settings = dict(previous_mode.get("settings", {}))
             mode_settings["developer_instructions"] = None
             mode_settings["model"] = model
             if "latestReasoningEffort" in settings:

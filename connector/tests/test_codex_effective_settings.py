@@ -436,3 +436,50 @@ async def test_runtime_failed_start_restores_known_canonical_selection(tmp_path,
         assert runtime._session_states.get("s").selections == before
         assert adapter.peer.get_state("t")["latestReasoningEffort"] == "high"
         assert [m for m, _ in native.calls].count("turn/start") == 1
+
+
+@pytest.mark.parametrize("switch,mode", [("on", "plan"), ("off", "default")])
+@pytest.mark.parametrize(
+    "mode_present", [False, True], ids=["absent-mode", "null-mode"]
+)
+@pytest.mark.parametrize("effort", ["low", None], ids=["low", "null-effort"])
+@async_test
+async def test_resumed_null_or_missing_mode_can_switch_plan(
+    tmp_path, switch, mode, mode_present, effort
+):
+    async with real_runtime(tmp_path) as (runtime, _host, adapter, _owner, native):
+        await configure(runtime, native)
+        native.responses["thread/resume"] = {
+            **envelope(),
+            "reasoningEffort": effort,
+            **({"collaborationMode": None} if mode_present else {}),
+        }
+        await adapter._acquire("t")
+        await runtime._session_states.update("s", "t", status="idle")
+        await adapter.refresh_state("t", force=True)
+        before = adapter.peer.get_state("t")
+        assert ("collaborationMode" in before["latestThreadSettings"]) is mode_present
+        assert before["latestThreadSettings"].get("collaborationMode") is None
+        assert before["latestReasoningEffort"] == effort
+
+        result = await runtime.execute_command("s", "plan", "t", args=(switch,))
+
+        assert result.ok, result
+        assert native.calls[-1] == (
+            "thread/settings/update",
+            {
+                "threadId": "t",
+                "collaborationMode": {
+                    "mode": mode,
+                    "settings": {
+                        "model": "gpt-example",
+                        "reasoning_effort": effort,
+                        "developer_instructions": None,
+                    },
+                },
+            },
+        )
+        current = adapter.peer.get_state("t")
+        assert current["latestReasoningEffort"] == effort
+        assert current["currentPermissions"] == before["currentPermissions"]
+        assert current["latestThreadSettings"]["serviceTier"] is None
