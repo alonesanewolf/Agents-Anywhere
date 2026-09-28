@@ -408,9 +408,10 @@ class CoordinatedCodexClient:
                         and "already has an active writer" in exc.message
                     ):
                         raise RuntimeConflictError(
-                            "原 Codex 客户端仍持有此会话的写入锁，但没有通过 IPC 发布 owner。"
+                            "该 Codex 会话已有写入者，但这次查询没有发现可用的 IPC owner。"
                             "AA 无法安全转发消息，也不会另起一个写入者。"
-                            "请在原客户端重新打开会话，待 AA 显示 IPC follower 后重试。"
+                            "请检查原客户端是否正在运行并持有该会话，"
+                            "待 AA 显示 IPC follower 后重试。"
                             "本次消息尚未发送。"
                         ) from exc
                     raise

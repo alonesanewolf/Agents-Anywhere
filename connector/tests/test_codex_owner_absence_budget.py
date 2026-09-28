@@ -256,7 +256,7 @@ def test_native_writer_without_ipc_owner_refuses_before_message_dispatch():
                 )
 
             sdk.native_thread_resume = locked_resume
-            with pytest.raises(RuntimeConflictError, match="IPC 发布 owner"):
+            with pytest.raises(RuntimeConflictError, match="没有发现可用的 IPC owner"):
                 await facade.start_turn(message())
             assert attempts == [THREAD]
             assert router.last_error == "no-client-found"
