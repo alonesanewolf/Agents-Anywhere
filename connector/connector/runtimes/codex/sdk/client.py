@@ -109,16 +109,11 @@ class PendingServerRequest:
             )
 
 
-@dataclass(frozen=True, slots=True)
-class PendingServerRequest:
-    kind: Literal["approval", "input"]
-    response: asyncio.Future[Mapping[str, Any]]
-
-    def cancel(self) -> None:
-        if not self.response.done():
-            self.response.set_result(
-                {"answers": {}} if self.kind == "input" else {"decision": "decline"}
-            )
+@dataclass(slots=True)
+class TurnStreamState:
+    thread_id: str
+    turn_id: str
+    terminal_emitted: bool = False
 
 
 class CodexThreadTurnsListResponse(BaseModel):
@@ -164,6 +159,7 @@ class CodexSdkClient:
         self._loaded_thread_ids: set[str] = set()
         self._turns: dict[str, Any] = {}
         self._stream_tasks: dict[str, asyncio.Task[None]] = {}
+        self._stream_states: dict[str, TurnStreamState] = {}
         self._global_notification_task: asyncio.Task[None] | None = None
 
     async def start(self, handler: NotificationHandler) -> None:
@@ -188,7 +184,10 @@ class CodexSdkClient:
         await self.cancel_background_tasks()
         await self.stop_native_client(self._client)
 
-    async def cancel_background_tasks(self) -> None:
+    async def cancel_background_tasks(self, *, transport_failed: bool = False) -> None:
+        interrupted_streams = (
+            tuple(self._stream_states.values()) if transport_failed else ()
+        )
         self.cancel_pending_approval_responses()
         if self._global_notification_task is not None:
             self._global_notification_task.cancel()
@@ -202,6 +201,27 @@ class CodexSdkClient:
         if self._stream_tasks:
             await asyncio.gather(*self._stream_tasks.values(), return_exceptions=True)
             self._stream_tasks.clear()
+        for stream in interrupted_streams:
+            if stream.terminal_emitted:
+                continue
+            # A read retry creates a new transport. Its old turns cannot keep
+            # running, and must finish their platform lifecycle before retrying.
+            await self._emit(
+                {
+                    "method": "turn/failed",
+                    "params": {
+                        "threadId": stream.thread_id,
+                        "turnId": stream.turn_id,
+                        "error": {
+                            "code": "codex_transport_closed",
+                            "message": "Codex connection closed while this turn was active.",
+                        },
+                        "metadata": {"source": "codex.sdk.transport.recovery"},
+                    },
+                }
+            )
+            stream.terminal_emitted = True
+        self._stream_states.clear()
         self._threads.clear()
         self._loaded_thread_ids.clear()
         self._turns.clear()
@@ -252,7 +272,7 @@ class CodexSdkClient:
                 operation,
                 type(error).__name__,
             )
-            await self.cancel_background_tasks()
+            await self.cancel_background_tasks(transport_failed=True)
             try:
                 await self.stop_native_client(failed_client)
             except Exception as stop_error:  # noqa: BLE001
@@ -909,11 +929,21 @@ class CodexSdkClient:
         old_task = self._stream_tasks.pop(turn_id, None)
         if old_task is not None:
             old_task.cancel()
+        stream_state = TurnStreamState(thread_id=thread_id, turn_id=turn_id)
+        self._stream_states[turn_id] = stream_state
         self._stream_tasks[turn_id] = asyncio.create_task(
-            self._stream_turn(thread_id, turn_id, turn)
+            self._stream_turn(thread_id, turn_id, turn, stream_state=stream_state)
         )
 
-    async def _stream_turn(self, thread_id: str, turn_id: str, turn: Any) -> None:
+    async def _stream_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        turn: Any,
+        *,
+        stream_state: TurnStreamState | None = None,
+    ) -> None:
+        stream_state = stream_state or TurnStreamState(thread_id, turn_id)
         completed_seen = False
         cancelled = False
         try:
@@ -923,14 +953,17 @@ class CodexSdkClient:
                     thread_id=thread_id,
                     turn_id=turn_id,
                 )
-                if message.event_type in {
+                is_terminal = message.event_type in {
                     "turn/completed",
                     "turn/failed",
                     "turn/interrupted",
                     "turn/cancelled",
-                }:
+                }
+                if is_terminal:
                     completed_seen = True
                 await self._emit(message)
+                if is_terminal:
+                    stream_state.terminal_emitted = True
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -950,8 +983,13 @@ class CodexSdkClient:
                         },
                     }
                 )
-            self._stream_tasks.pop(turn_id, None)
-            self._turns.pop(turn_id, None)
+                stream_state.terminal_emitted = True
+            if self._stream_tasks.get(turn_id) is asyncio.current_task():
+                self._stream_tasks.pop(turn_id, None)
+            if self._stream_states.get(turn_id) is stream_state:
+                self._stream_states.pop(turn_id, None)
+            if self._turns.get(turn_id) is turn:
+                self._turns.pop(turn_id, None)
             if self._turns.get(thread_id) is turn:
                 self._turns.pop(thread_id, None)
 

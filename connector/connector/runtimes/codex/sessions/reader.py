@@ -574,8 +574,17 @@ def reconcile_native_activity(
     if native_activity is None:
         return None
     cached_status = cached.status if cached is not None else None
+    cached_turn_id = cached.metadata.get("turn_id") if cached is not None else None
+    if (
+        cached_status in {"running", "waiting", "waiting_approval", "blocked"}
+        and isinstance(cached_turn_id, str)
+        and cached_turn_id != native_activity.turn_id
+    ):
+        # The native projection may still describe a previous turn while this
+        # connector already owns a newer turn or its unanswered interaction.
+        return cached
     if native_activity.status == "running":
-        if cached_status in {"waiting_approval", "blocked"}:
+        if cached_status in {"waiting", "waiting_approval", "blocked"}:
             return cached
         return SessionState(
             session_id=cached.session_id if cached is not None else session_id,
