@@ -10,7 +10,7 @@ from connector.runtimes.codex.coordination.peer import CoordinationPeer
 from connector.runtimes.codex.coordination.projection import native_to_state
 from connector.runtimes.codex.coordination.router import CoordinationRouter
 from connector.runtimes.codex.coordination.transport import CoordinationClient
-from scripts.probe_codex_coordination import run_probe
+from scripts.probe_codex_coordination import main, run_probe
 
 PRIVATE = "PRIVATE_NEVER_PRINT_731ae"
 
@@ -135,6 +135,20 @@ def test_probe_projects_snapshot_and_patch_without_private_output_or_owner_opera
         for row in lines
     )
     projected = [row for row in lines if row.get("event") == "projection"]
+    snapshot_revisions = {
+        row["revision"]
+        for row in lines
+        if row.get("event") == "wire" and row.get("kind") == "snapshot"
+    }
+    patch_revisions = {
+        row["revision"]
+        for row in lines
+        if row.get("event") == "wire" and row.get("kind") == "patches"
+    }
+    assert patch_revisions and max(patch_revisions) > min(snapshot_revisions)
+    projected_revisions = {row["revision"] for row in projected}
+    assert snapshot_revisions & projected_revisions
+    assert patch_revisions <= projected_revisions
     assert projected and projected[-1]["timelineItems"] == 2
     assert projected[-1]["turns"] == 1 and projected[-1]["pendingRequests"] == 1
     assert projected[-1]["status"] == "waiting_approval"
@@ -178,6 +192,41 @@ def test_missing_socket_exits_bounded_without_election_or_socket_creation(
         assert not (home / "ipc" / "ipc.sock").exists()
     lines, errors = _lines(capsys)
     assert lines == [{"event": "error", "code": "app-socket-unavailable"}]
+    assert errors == ""
+
+
+def test_inaccessible_endpoint_parent_returns_sanitized_bounded_error(
+    monkeypatch, capsys
+):
+    with _home() as directory:
+        home = Path(directory)
+        inaccessible = home / "ipc"
+        inaccessible.mkdir(mode=0o700)
+        original_lstat = Path.lstat
+
+        def denied(path):
+            if path == inaccessible:
+                raise PermissionError(f"access denied: {inaccessible}/{PRIVATE}")
+            return original_lstat(path)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "lstat", denied)
+            result = main(
+                [
+                    "--home",
+                    str(home),
+                    "--thread-id",
+                    "thread-test",
+                    "--duration",
+                    "0.01",
+                    "--connect-timeout",
+                    "0.1",
+                ]
+            )
+        assert result == 2
+        assert not (inaccessible / "ipc.sock").exists()
+    lines, errors = _lines(capsys)
+    assert lines == [{"event": "error", "code": "endpoint-inaccessible"}]
     assert errors == ""
 
 

@@ -224,10 +224,16 @@ async def run_probe(
         except IpcError as exc:
             _emit(event="error", code=_error_code(exc))
             return 2
+        except OSError:
+            _emit(event="error", code="endpoint-inaccessible")
+            return 2
         try:
             initial = await peer.follow(thread_id, timeout=connect_timeout)
         except (IpcError, TimeoutError) as exc:
             _emit(event="error", code=_error_code(exc))
+            return 2
+        except OSError:
+            _emit(event="error", code="follow-unavailable")
             return 2
         if initial is None:
             _emit(event="error", code="no-owner")
@@ -268,7 +274,7 @@ def main(argv=None):
         "--connect-timeout",
         type=float,
         default=3.0,
-        help="Connection/follow seconds (0..10)",
+        help="Connection/follow seconds (0, 10]",
     )
     args = parser.parse_args(argv)
     return asyncio.run(
