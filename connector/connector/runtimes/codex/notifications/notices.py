@@ -94,12 +94,12 @@ class CodexNoticeHandler:
         error instead of leaving the app-server waiting forever.
         """
 
+        request = codex_input_request(params)
         turn_id = _first_string(params, "turnId", "turn_id") or self.active_turn_ids.get(
             session_id
         )
         if turn_id is not None:
             self.active_turn_ids[session_id] = turn_id
-        request = codex_input_request(params)
         is_blocking = params.get("isBlocking", True) is not False
         notice = user_input_notice(
             session_id=session_id,
@@ -143,7 +143,7 @@ class CodexNoticeHandler:
         reason: str,
         source: str,
     ) -> None:
-        """Close currently open blocking notices for a terminal turn.
+        """Close open blocking notices and questionnaires for a terminal turn.
 
         Side effects:
         - mutates the Codex notice registry

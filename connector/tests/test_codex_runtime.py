@@ -57,6 +57,7 @@ from connector.runtime_protocol import (
     RuntimeCapabilitySet,
     RuntimeConfig,
     RuntimeInvalidRequestError,
+    RuntimeUnsupportedError,
     SessionNotice,
     SessionSourceObservation,
     SystemTimelineItem,
@@ -2184,6 +2185,7 @@ def test_codex_runtime_session_sync_force_requires_timeline() -> None:
 
 def test_codex_recovery_uploads_only_changed_items_after_committed_json_restart(tmp_path):
     from unittest.mock import AsyncMock
+
     from connector.server.runtime_host import ConnectorRuntimeHost
     from connector.server.sync_state import JsonSyncStateStore
 
@@ -6374,7 +6376,139 @@ async def _test_codex_runtime_non_blocking_input_request_keeps_session_state() -
 
     assert len(host.notice_upserts) == 1
     assert host.notice_upserts[0].context["isBlocking"] is False
+    assert host.notice_upserts[0].blocking is None
+    assert runtime._notices.open_blocking_for_session("sess_1") == ()
     assert host.state_updates == []
+
+
+@pytest.mark.parametrize("is_blocking", [False, True])
+@pytest.mark.parametrize("method", ["turn/completed", "turn/cancelled", "turn/failed"])
+def test_codex_runtime_terminal_turn_closes_questionnaire(
+    is_blocking: bool, method: str
+) -> None:
+    async def run() -> None:
+        host = FakeHost()
+        runtime = CodexRuntime(config=_config(), host=host, client=FakeCodexClient())
+        await runtime.start()
+        await runtime._handle_notification(
+            _input_request_notification(is_blocking=is_blocking)
+        )
+        await runtime._handle_notification(
+            {
+                "method": method,
+                "params": {
+                    "platformSessionId": "sess_1",
+                    "threadId": "thread_1",
+                    "turnId": "turn_1",
+                },
+            }
+        )
+
+        closed = next(
+            notice
+            for notice in reversed(host.notice_upserts)
+            if notice.notice_id == "notice_codex_input_input_req_1"
+        )
+        assert closed.status == "closed"
+        assert closed.context["inputStatus"] == "closed"
+        assert closed.response_required is False
+        assert closed.actions == ()
+        assert closed.blocking is None
+        assert closed.metadata["close_reason"] == method.split("/")[1]
+        assert not any(
+            notice.notice_id == closed.notice_id
+            for notice in await runtime.get_session_notices("sess_1")
+        )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("is_blocking", [False, True])
+def test_codex_runtime_interrupt_closes_questionnaire(is_blocking: bool) -> None:
+    async def run() -> None:
+        host = FakeHost()
+        runtime = CodexRuntime(config=_config(), host=host, client=FakeCodexClient())
+        await runtime.start()
+        await runtime._handle_notification(
+            {
+                "method": "turn/started",
+                "params": {
+                    "platformSessionId": "sess_1",
+                    "threadId": "thread_1",
+                    "turnId": "turn_1",
+                },
+            }
+        )
+        await runtime._handle_notification(
+            _input_request_notification(is_blocking=is_blocking)
+        )
+
+        result = await runtime.interrupt_session("sess_1")
+
+        assert result.ok is True
+        closed = host.notice_upserts[-1]
+        assert closed.status == "closed"
+        assert closed.context["inputStatus"] == "closed"
+        assert closed.metadata["close_reason"] == "interrupted"
+        assert closed.response_required is False
+        assert closed.actions == ()
+        assert await runtime.get_session_notices("sess_1") == ()
+
+    asyncio.run(run())
+
+
+def test_codex_runtime_rejects_secret_question_before_publishing_card() -> None:
+    async def run() -> None:
+        host = FakeHost()
+        runtime = CodexRuntime(config=_config(), host=host, client=FakeCodexClient())
+        await runtime.start()
+        notification = _input_request_notification()
+        notification["params"]["questions"][0]["isSecret"] = True
+
+        with pytest.raises(RuntimeUnsupportedError, match="secret questions"):
+            await runtime._handle_notification(notification)
+
+        assert host.notice_upserts == []
+        assert host.state_updates == []
+        assert runtime._active_turn_ids == {}
+        assert await runtime.get_session_notices("sess_1") == ()
+
+    asyncio.run(run())
+
+
+def test_codex_runtime_rejects_secret_answer_without_persisting_response() -> None:
+    async def run() -> None:
+        client = FakeCodexClient()
+        host = FakeHost()
+        runtime = CodexRuntime(config=_config(), host=host, client=client)
+        await runtime.start()
+        await runtime._handle_notification(_input_request_notification())
+        # A card restored from a connector that exposed secret questionnaires.
+        params = _input_request_params()
+        params["questions"][0]["isSecret"] = True
+        notice = replace(
+            host.notice_upserts[-1],
+            context={**host.notice_upserts[-1].context, "requestParams": params},
+        )
+        runtime._notices.upsert(notice)
+        host.notice_upserts.clear()
+
+        with pytest.raises(RuntimeUnsupportedError, match="secret questions"):
+            await runtime.respond_interaction(
+                "sess_1",
+                notice.notice_id,
+                "submit",
+                {
+                    "requestId": "input_req_1",
+                    "answers": {"q_lang": {"customText": "test-only-secret-answer"}},
+                },
+            )
+
+        assert client.responses == []
+        assert host.notice_upserts == []
+        assert "responsePayload" not in runtime._notices.get(notice.notice_id).context
+
+    asyncio.run(run())
 
 
 def test_codex_runtime_responds_to_input_request_interaction() -> None:
@@ -6467,6 +6601,38 @@ async def _test_codex_sdk_input_request_waits_for_connector_response() -> None:
     await client.respond(request_id, {"answers": {"q_lang": {"answers": ["Rust"]}}})
 
     assert await task == {"answers": {"q_lang": {"answers": ["Rust"]}}}
+
+
+def test_codex_sdk_shutdown_answers_each_pending_server_request_by_kind() -> None:
+    async def run() -> None:
+        client = CodexSdkClient(_ApprovalBridgeSdkClient())
+        published: list[Any] = []
+        registered = asyncio.Event()
+
+        async def handler(message: Any) -> None:
+            published.append(message)
+            if len(published) == 2:
+                registered.set()
+
+        await client.start(handler)
+        approval = asyncio.create_task(
+            client.publish_sdk_approval_request(
+                "item/commandExecution/requestApproval",
+                {"approvalId": "approval_shutdown", "threadId": "thread_1"},
+            )
+        )
+        questionnaire = asyncio.create_task(
+            client.publish_sdk_input_request(
+                "item/tool/requestUserInput", _input_request_params()
+            )
+        )
+        async with asyncio.timeout(1):
+            await registered.wait()
+            await client.stop()
+            assert await approval == {"decision": "decline"}
+            assert await questionnaire == {"answers": {}}
+
+    asyncio.run(run())
 
 
 def test_codex_input_request_rejects_invalid_questionnaire() -> None:

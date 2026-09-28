@@ -25,6 +25,7 @@ from connector.runtime_protocol import (
     InputRequestForm,
     InputRequestOption,
     InputRequestQuestion,
+    RuntimeUnsupportedError,
     SessionNotice,
 )
 
@@ -72,6 +73,12 @@ def codex_input_request(params: Mapping[str, Any]) -> CodexInputRequest:
     for raw_question in raw_questions:
         if not isinstance(raw_question, Mapping):
             raise TypeError("request_user_input question must be an object")
+        is_secret = raw_question.get("isSecret", False)
+        if not isinstance(is_secret, bool):
+            raise TypeError("request_user_input isSecret must be a boolean")
+        if is_secret:
+            # Platform forms do not provide private input or private answer storage.
+            raise RuntimeUnsupportedError("request_user_input secret questions")
         question_id = _required_text(raw_question.get("id"), "question id")
         if question_id in seen_question_ids:
             raise ValueError("request_user_input question ids must be unique")
@@ -140,7 +147,7 @@ def user_input_notice(
         severity="info",
         status="open",
         interaction_type="input_request",
-        blocking={"scope": "session", "targetId": session_id},
+        blocking={"scope": "session", "targetId": session_id} if is_blocking else None,
         response_required=True,
         actions=(
             request.form.action(),
@@ -161,7 +168,6 @@ def user_input_notice(
             "requestParams": deepcopy(dict(request.params)),
             **({"turnId": turn_id} if turn_id else {}),
             **({"itemId": item_id} if item_id else {}),
-            **_secret_question_context(request),
         },
         metadata={"source": CODEX_REQUEST_USER_INPUT},
     )
@@ -194,15 +200,6 @@ def is_input_request_context(context: Mapping[str, Any]) -> bool:
         context.get("requestKind") == "questionnaire"
         and context.get("method") == CODEX_REQUEST_USER_INPUT
     )
-
-
-def _secret_question_context(request: CodexInputRequest) -> Mapping[str, Any]:
-    secret_ids = [
-        str(question.get("id"))
-        for question in request.params.get("questions", [])
-        if isinstance(question, Mapping) and question.get("isSecret") is True
-    ]
-    return {"secretQuestionIds": secret_ids} if secret_ids else {}
 
 
 def _required_text(value: Any, field_name: str) -> str:

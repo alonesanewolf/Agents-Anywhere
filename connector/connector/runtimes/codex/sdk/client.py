@@ -5,7 +5,8 @@ import hashlib
 import importlib
 import time
 from collections.abc import Mapping
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from openai_codex import JsonRpcError, MethodNotFoundError
 from openai_codex.generated.v2_all import (
@@ -30,7 +31,11 @@ from openai_codex.generated.v2_all import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from connector.logging import logger
-from connector.runtime_protocol import RuntimeConfig, RuntimeConflictError, RuntimeInvalidRequestError
+from connector.runtime_protocol import (
+    RuntimeConfig,
+    RuntimeConflictError,
+    RuntimeInvalidRequestError,
+)
 from connector.runtimes.codex.domain.input_requests import CODEX_REQUEST_USER_INPUT
 from connector.runtimes.codex.runtime_helpers import soft_codex_unavailable_reason
 from connector.runtimes.codex.sdk.binary import (
@@ -56,8 +61,8 @@ from connector.runtimes.codex.sdk.runtime_client import (
     CodexThreadListResult,
     CodexThreadReadResult,
     CodexThreadResult,
-    CodexThreadTurnsResult,
     CodexThreadTurnsPage,
+    CodexThreadTurnsResult,
     CodexTurnResult,
     NotificationHandler,
 )
@@ -88,6 +93,18 @@ CODEX_SDK_APPROVAL_REQUEST_METHODS = {
 }
 CODEX_SDK_INPUT_REQUEST_METHODS = {CODEX_REQUEST_USER_INPUT}
 CODEX_THREAD_TURNS_PAGE_SIZE = 100
+
+
+@dataclass(frozen=True, slots=True)
+class PendingServerRequest:
+    kind: Literal["approval", "input"]
+    response: asyncio.Future[Mapping[str, Any]]
+
+    def cancel(self) -> None:
+        if not self.response.done():
+            self.response.set_result(
+                {"answers": {}} if self.kind == "input" else {"decision": "decline"}
+            )
 
 
 class CodexThreadTurnsListResponse(BaseModel):
@@ -123,9 +140,7 @@ class CodexSdkClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Responses for blocking Codex server requests. Approvals and
         # `request_user_input` questionnaires share this pending map.
-        self._pending_approval_responses: dict[
-            str, asyncio.Future[Mapping[str, Any]]
-        ] = {}
+        self._pending_approval_responses: dict[str, PendingServerRequest] = {}
         self._entered_client: Any | None = None
         self._threads: dict[str, Any] = {}
         self._loaded_thread_ids: set[str] = set()
@@ -172,9 +187,8 @@ class CodexSdkClient:
     def cancel_pending_approval_responses(self) -> None:
         pending = tuple(self._pending_approval_responses.values())
         self._pending_approval_responses.clear()
-        for response in pending:
-            if not response.done():
-                response.set_result({"decision": "decline"})
+        for request in pending:
+            request.cancel()
 
     def start_global_notification_task(self) -> None:
         """Forward SDK global notifications to the runtime projector.
@@ -562,10 +576,10 @@ class CodexSdkClient:
     ) -> None:
         response_payload = dict(result or {})
         request_key = str(request_id)
-        approval_response = self._pending_approval_responses.pop(request_key, None)
-        if approval_response is not None:
-            if not approval_response.done():
-                approval_response.set_result(response_payload)
+        pending_request = self._pending_approval_responses.pop(request_key, None)
+        if pending_request is not None:
+            if not pending_request.response.done():
+                pending_request.response.set_result(response_payload)
             logger.info(
                 "codex sdk approval response delivered request_id={} pending_hit=true payload_keys={}",
                 request_key,
@@ -629,7 +643,9 @@ class CodexSdkClient:
             return {"decision": "decline"}
         request_id = sdk_approval_request_id(method, params)
         response: asyncio.Future[Mapping[str, Any]] = asyncio.Future()
-        self._pending_approval_responses[request_id] = response
+        self._pending_approval_responses[request_id] = PendingServerRequest(
+            kind="approval", response=response
+        )
         logger.info(
             "codex sdk approval request registered method={} request_id={} approval_id={} thread_id={} turn_id={} item_id={}",
             method,
@@ -706,7 +722,9 @@ class CodexSdkClient:
             return {"answers": {}}
         request_id = sdk_input_request_id(method, params)
         response: asyncio.Future[Mapping[str, Any]] = asyncio.Future()
-        self._pending_approval_responses[request_id] = response
+        self._pending_approval_responses[request_id] = PendingServerRequest(
+            kind="input", response=response
+        )
         logger.info(
             "codex sdk input request registered method={} request_id={} thread_id={} turn_id={} item_id={} question_count={} is_blocking={}",
             method,
