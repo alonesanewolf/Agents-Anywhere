@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+from connector.runtimes.codex.domain.activity import activity, native_status
+
 from .context import queue_start
 from .projection import active_turn
 from .state import enumerate_turns
@@ -70,11 +72,18 @@ async def execute_head(operations, thread_id):
         if not messages or messages[0].get("pausedReason") or active_turn(state):
             return False
         turns = enumerate_turns(state)
-        if turns and (
-            turns[-1].get("status") != "completed"
-            or not any(
-                item.get("type") in ("agentMessage", "contextCompaction")
-                for item in turns[-1].get("items", [])
+        explicit_idle = (
+            native_status(state) == "idle" and not activity(state, turns)["running"]
+        )
+        if (
+            turns
+            and not explicit_idle
+            and (
+                turns[-1].get("status") != "completed"
+                or not any(
+                    item.get("type") in ("agentMessage", "contextCompaction")
+                    for item in turns[-1].get("items", [])
+                )
             )
         ):
             return False

@@ -67,6 +67,7 @@ class CodexSteerTurnRequest:
     turn_id: str
     content: str
     client_message_id: str | None = None
+    attachments: tuple[CodexTurnInputAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

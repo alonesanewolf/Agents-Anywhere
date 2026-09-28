@@ -6,7 +6,10 @@ from dataclasses import dataclass, field, replace
 from hashlib import sha256
 
 from connector.runtime_protocol import SessionNotice
-from connector.runtimes.codex.coordination.projection import state_to_native
+from connector.runtimes.codex.coordination.projection import (
+    active_turn,
+    state_to_native,
+)
 from connector.runtimes.codex.coordination.requests import REQUEST_ROUTES
 from connector.runtimes.codex.coordination.state import history_complete
 from connector.runtimes.codex.domain import sessions as codex_sessions
@@ -225,9 +228,7 @@ class CoordinationSnapshotProjector:
             if key in thread
         }
         turns = thread.get("turns", [])
-        active = next(
-            (t for t in reversed(turns) if t.get("status") == "inProgress"), None
-        )
+        active = active_turn(thread)
         if active is not None:
             self.active_turn_ids[session_id] = active.get("id") or active.get("turnId")
         else:

@@ -11,6 +11,8 @@ from openai_codex.errors import (
     MethodNotFoundError,
 )
 
+from connector.runtimes.codex.domain.activity import activity, observe_activity
+
 from .context import prepare_start, require_feature
 from .history import hydrate
 from .projection import active_turn, canonical_turn
@@ -164,9 +166,14 @@ class OwnerOperations:
         finally:
             self.epoch.reset(token)
 
-    async def mutation(self, thread_id, stage, method, params):
+    async def mutation(self, thread_id, stage, method, params, *, activity_epoch=None):
         await self.journal.stage(thread_id, stage)
         try:
+            if activity_epoch is not None:
+                state = self.state(thread_id)
+                activity_epoch["sequence"] = activity(state, enumerate_turns(state))[
+                    "sequence"
+                ]
             return await self.call(thread_id, method, params)
         except (InvalidParamsError, InvalidRequestError, MethodNotFoundError):
             record = self.journal.operation(thread_id)
@@ -268,8 +275,11 @@ class OwnerOperations:
             await self.journal.stage(thread_id, "injected", injectionConfirmed=True)
             if passive.get("items"):
                 await self.journal.set_passive_key(thread_id, passive.get("key"))
+        activity_before = {}
         settings_before = dict(self.settings_epochs[thread_id])
-        result = await self.mutation(thread_id, "starting", "turn/start", request)
+        result = await self.mutation(
+            thread_id, "starting", "turn/start", request, activity_epoch=activity_before
+        )
         if not isinstance(result.get("turn"), dict) or not result["turn"].get("id"):
             await self.journal.stage(thread_id, "unknown", uncertainMethod="turn/start")
             raise ValueError("native start returned no confirmed turn")
@@ -296,6 +306,11 @@ class OwnerOperations:
             for key in ("params", "turnStartContext", "localMetadata"):
                 if key in turn:
                     old[key] = turn[key]
+        if (
+            activity(state, turns)["sequence"] == activity_before["sequence"]
+            and turn.get("status") == "inProgress"
+        ):
+            observe_activity(state, turns=turns, started=turn["turnId"])
         state["turns"] = turns
         await self.peer.publish_state(thread_id, state)
         return result
@@ -329,12 +344,9 @@ class OwnerOperations:
                 },
             )
             return {"turnId": result["turn"]["id"]}
-        if params.get("attachments"):
-            raise ValueError(
-                "unsupported steering attachment preparation; native input required"
-            )
-        if not isinstance(params.get("input"), list):
-            raise TypeError("steer input must be typed array")
+        from .steering import confirmed_steer, validate_attachments
+
+        validate_attachments(params)
         request = {
             "threadId": thread_id,
             "expectedTurnId": active["turnId"],
@@ -347,6 +359,23 @@ class OwnerOperations:
             thread_id,
             {**request, "restoreMessage": deepcopy(params.get("restoreMessage"))},
         )
-        result = await self.mutation(thread_id, "steering", "turn/steer", request)
+        activity_before = {}
+        result = await self.mutation(
+            thread_id, "steering", "turn/steer", request, activity_epoch=activity_before
+        )
+        try:
+            confirmed_steer(result)
+        except ValueError:
+            await self.journal.stage(thread_id, "unknown", uncertainMethod="turn/steer")
+            raise
         await self.journal.stage(thread_id, "confirmed", result=result)
+        state = self.state(thread_id)
+        turns = enumerate_turns(state)
+        if activity(state, turns)["sequence"] == activity_before["sequence"]:
+            observe_activity(state, turns=turns, started=result["turnId"])
+            state["aaAcknowledgedTurn"] = {
+                "turnId": result["turnId"],
+                "status": "inProgress",
+            }
+            await self.peer.publish_state(thread_id, state)
         return result

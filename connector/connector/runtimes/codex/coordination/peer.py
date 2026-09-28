@@ -11,7 +11,14 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
-from .state import apply_patches, history_complete, read_context_matches
+from connector.runtimes.codex.domain.activity import activity_patch, activity_signature
+
+from .state import (
+    apply_patches,
+    enumerate_turns,
+    history_complete,
+    read_context_matches,
+)
 from .wire import METHOD_VERSIONS, IpcError
 
 # Installed routers allow 10 seconds per discovery candidate, independently of
@@ -80,6 +87,8 @@ class CoordinationPeer:
         self._owned: dict[str, _Owned] = {}
         self._followed: dict[str, _Followed] = {}
         self._queues: dict[str, dict] = {}
+        self._activity = {}
+        self._activity_clock = 0
         self._waiters: dict[str, set] = {}
         self._follow_locks: dict[str, asyncio.Lock] = {}
         self._restores: dict[str, asyncio.Task] = {}
@@ -263,6 +272,7 @@ class CoordinationPeer:
         return revision
 
     async def release(self, thread_id):
+        self._activity.pop(thread_id, None)
         self._owned.pop(thread_id, None)
         self._queues.pop(thread_id, None)
         self._fail_waiters(thread_id, "ownership-released")
@@ -298,7 +308,7 @@ class CoordinationPeer:
         record.state = result
         record.revision += 1
         revision = record.revision
-        self._state_changed(thread_id)
+        self._state_changed(thread_id, activity_changed=activity_patch(patches))
         await self._broadcast_change(thread_id, change, list(record.followers))
         return revision
 
@@ -413,7 +423,22 @@ class CoordinationPeer:
                 if not entries:
                     self._waiters.pop(thread_id, None)
 
-    def _state_changed(self, thread_id):
+    def activity_revision(self, thread_id):
+        return self._activity.get(thread_id, (None, 0))[1]
+
+    def _state_changed(self, thread_id, *, activity_changed=False):
+        state = self.get_state(thread_id)
+        if state is not None:
+            try:
+                signature = activity_signature(state, enumerate_turns(state))
+            except (AttributeError, TypeError, ValueError):
+                # Keep the peer lossless for malformed/forward native state. The
+                # presentation boundary reports unreadable state without logging it.
+                signature = ("unreadable", self.get_revision(thread_id))
+            previous, _ = self._activity.get(thread_id, (None, 0))
+            if activity_changed or signature != previous:
+                self._activity_clock += 1
+                self._activity[thread_id] = (deepcopy(signature), self._activity_clock)
         # Commit notifications synchronously with the state transition, before
         # awaiting transport I/O. Each waiter/callback receives its own snapshot,
         # even when a later publication finishes sending before this one.
@@ -438,6 +463,7 @@ class CoordinationPeer:
                 future.set_exception(IpcError(code))
 
     def _invalidate(self, thread_id, code):
+        self._activity.pop(thread_id, None)
         self._fail_waiters(thread_id, code)
         record = self._followed.get(thread_id)
         if record:
@@ -632,7 +658,11 @@ class CoordinationPeer:
                 record.state, record.revision = result, revision
             else:
                 return
-            self._state_changed(thread_id)
+            self._state_changed(
+                thread_id,
+                activity_changed=change.get("type") == "patches"
+                and activity_patch(change.get("patches", [])),
+            )
             return
         if method in EVENT_METHODS:
             if method == "thread-queued-followups-changed":
@@ -688,3 +718,4 @@ class CoordinationPeer:
             self._followed.clear()
             self._follow_locks.clear()
             self._queues.clear()
+            self._activity.clear()

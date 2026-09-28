@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+from connector.runtimes.codex.domain.activity import activity
+
 from .settings import merge_settings, observed_settings
 from .state import enumerate_turns
 
@@ -127,11 +129,16 @@ def presentation(state):
 
 
 def active_turn(state):
+    turns = enumerate_turns(state)
+    ids = activity(state, turns)["turnIds"]
+    acknowledged = state.get("aaAcknowledgedTurn")
+    if acknowledged and ids and acknowledged.get("turnId") == ids[-1]:
+        return deepcopy(acknowledged)
     return next(
         (
             turn
-            for turn in reversed(enumerate_turns(state))
-            if turn.get("status") == "inProgress"
+            for turn in reversed(turns)
+            if turn.get("turnId") in ids and turn.get("status") == "inProgress"
         ),
         None,
     )

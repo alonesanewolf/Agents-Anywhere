@@ -22,6 +22,15 @@ from connector.runtimes.codex.timeline.identity import (
 )
 from connector.runtimes.codex.timeline.plans import plan_item, plan_items
 
+HIDDEN_REVIEW_MARKERS = frozenset(
+    {
+        "enteredReviewMode",
+        "exitedReviewMode",
+        "EnteredReviewModeThreadItem",
+        "ExitedReviewModeThreadItem",
+    }
+)
+
 
 @dataclass(slots=True)
 class ActiveTurnPositions:
@@ -109,7 +118,7 @@ class CodexTimelineAccumulator:
         projection = codex_timeline.timeline_projection_from_sdk_event(
             event
         ) or codex_timeline.timeline_projection_from_event(event)
-        if projection is None:
+        if projection is None or projection.raw_type in HIDDEN_REVIEW_MARKERS:
             return None
         projection = self._attach_client_message_id(external_session_id, projection)
         projection = self._assign_live_turn_position(
@@ -248,6 +257,8 @@ class CodexTimelineAccumulator:
         prepared: list[tuple[codex_timeline.CodexTimelineProjection, int]] = []
         index_by_id: dict[str, int] = {}
         for index, projection in enumerate(projections):
+            if projection.raw_type in HIDDEN_REVIEW_MARKERS:
+                continue
             projection = self._attach_client_message_id(external_session_id, projection)
             if (
                 preserve_native_ids

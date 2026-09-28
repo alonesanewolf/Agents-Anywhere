@@ -3,6 +3,8 @@
 from copy import deepcopy
 from uuid import uuid4
 
+from connector.runtimes.codex.domain.activity import observe_activity
+
 from .projection import canonical_turn
 from .settings import merge_settings
 from .state import enumerate_turns
@@ -36,7 +38,13 @@ def reduce_event(previous, message):
     elif method == "thread/tokenUsage/updated":
         state["latestTokenUsageInfo"] = deepcopy(params.get("tokenUsage"))
     elif method == "thread/status/changed":
-        state["threadRuntimeStatus"] = deepcopy(params.get("status"))
+        status = params.get("status")
+        observe_activity(
+            state,
+            turns=enumerate_turns(state),
+            status=status.get("type") if isinstance(status, dict) else status,
+        )
+        state["threadRuntimeStatus"] = deepcopy(status)
     elif method in ("thread/settings/updated", "thread/settings/changed"):
         settings = params.get("settings", params.get("threadSettings", {}))
         merge_settings(state, settings)
@@ -56,6 +64,11 @@ def reduce_event(previous, message):
             )
             turns.append(turn)
         if method in ("turn/started", "turn/completed"):
+            observe_activity(
+                state,
+                turns=turns,
+                **{"started" if method == "turn/started" else "completed": turn_id},
+            )
             raw = params["turn"]
             converted = canonical_turn(raw, state["id"])
             # Completion messages may omit historical items and prepared inputs.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from connector.runtime_protocol import (
     RuntimeAttachment,
@@ -180,6 +181,22 @@ class CodexTurnActions:
             and latest.get("status")
             in {"completed", "failed", "interrupted", "cancelled"}
         )
+        if callable(getattr(self.client, "owner_operation", None)):
+            # The coordinated facade has already projected the current canonical
+            # state. Its ACK can name an older physical turn. Never repaint it.
+            self.pending_messages.bind_turn(
+                external_session_id=external_session_id,
+                client_message_id=client_message_id,
+                turn_id=turn_id,
+            )
+            return RuntimeOperationResult(
+                ok=True,
+                result={
+                    "turnId": turn_id,
+                    "turn": dict(result.payload),
+                    "externalSessionId": external_session_id,
+                },
+            )
         if canonical_terminal or turn_completed_before_start_returned(current_state):
             return RuntimeOperationResult(
                 ok=True,
@@ -283,10 +300,11 @@ class CodexTurnActions:
             session_id,
             attachments,
         )
-        effective_content = content_with_codex_attachment_notes(
-            content,
-            codex_attachments,
-        )
+        if len(codex_attachments) != len(attachments):
+            raise RuntimeInvalidRequestError(
+                "Steering attachment materialization failed"
+            )
+        client_message_id = client_message_id or str(uuid4())
         self.pending_messages.register(
             external_session_id=external_session_id,
             client_message_id=client_message_id,
@@ -300,7 +318,8 @@ class CodexTurnActions:
                 CodexSteerTurnRequest(
                     thread_id=external_session_id,
                     turn_id=turn_id,
-                    content=effective_content,
+                    content=content,
+                    attachments=codex_attachments,
                     client_message_id=client_message_id,
                 )
             )
@@ -325,17 +344,23 @@ class CodexTurnActions:
                 message="Codex turn was unavailable to steer",
                 result={"steered": False, "turnId": turn_id},
             )
-        await self._set_session_state(
-            session_id=session_id,
+        self.pending_messages.bind_turn(
             external_session_id=external_session_id,
-            status="running",
-            metadata={"source": "codex.turn/steer", "turn_id": turn_id},
+            client_message_id=client_message_id,
+            turn_id=result.turn_id,
         )
+        if not callable(getattr(self.client, "owner_operation", None)):
+            await self._set_session_state(
+                session_id=session_id,
+                external_session_id=external_session_id,
+                status="running",
+                metadata={"source": "codex.turn/steer", "turn_id": result.turn_id},
+            )
         return RuntimeOperationResult(
             ok=True,
             result={
                 "steered": True,
-                "turnId": turn_id,
+                "turnId": result.turn_id,
                 "externalSessionId": external_session_id,
                 "turn": dict(result.payload),
             },

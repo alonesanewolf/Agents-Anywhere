@@ -23,7 +23,7 @@ from .projection import (
 from .queue import execute_head
 from .reducer import exact_id, reduce_event
 from .requests import REQUEST_ROUTES, ResponseContexts, validate_response
-from .state import history_complete
+from .state import enumerate_turns, history_complete
 
 
 class CoordinatedCodexClient:
@@ -40,6 +40,7 @@ class CoordinatedCodexClient:
         self.starting = {}
         self.locks = defaultdict(asyncio.Lock)
         self.last_emitted = {}
+        self.ack_activity = {}
         self.queue_tasks = {}
         self.queue_wakes = set()
         self.tasks = set()
@@ -65,6 +66,7 @@ class CoordinatedCodexClient:
     async def stop(self):
         self.closed = True
         self.contexts.clear()
+        self.ack_activity.clear()
         if self.remover:
             self.remover()
         for task in self.tasks | set(self.queue_tasks.values()):
@@ -196,6 +198,23 @@ class CoordinatedCodexClient:
             self.generation,
             self.sdk.native_generation,
         )
+        acknowledged = self.ack_activity.get(thread_id)
+        if acknowledged is not None:
+            authority, epoch, turn_id = acknowledged
+            if (
+                state is not None
+                and source == authority
+                and self.peer.activity_revision(thread_id) == epoch
+            ):
+                from connector.runtimes.codex.domain.activity import observe_activity
+
+                observe_activity(state, turns=enumerate_turns(state), started=turn_id)
+                state["aaAcknowledgedTurn"] = {
+                    "turnId": turn_id,
+                    "status": "inProgress",
+                }
+            else:
+                self.ack_activity.pop(thread_id, None)
         return state, owner, revision, role, source
 
     async def refresh_state(self, thread_id, *, force=False):
@@ -286,11 +305,13 @@ class CoordinatedCodexClient:
             try:
                 return await self.peer.follow(thread_id)
             except BaseException:
+                self.ack_activity.pop(thread_id, None)
                 self.attached.discard(thread_id)
                 raise
 
     async def detach_thread(self, thread_id):
         async with self.locks[thread_id]:
+            self.ack_activity.pop(thread_id, None)
             self.attached.discard(thread_id)
             self.contexts.clear(thread_id)
             self.last_emitted.pop(thread_id, None)
@@ -327,7 +348,26 @@ class CoordinatedCodexClient:
         params = {**deepcopy(params), "conversationId": thread_id}
         if self.peer.is_owner(thread_id):
             return await self._owner_operation(method, params)
-        return await self.peer.request_owner(thread_id, method, params)
+        before = (self._snapshot(thread_id)[4], self.peer.activity_revision(thread_id))
+        result = await self.peer.request_owner(thread_id, method, params)
+        if suffix == "start-turn" and isinstance(result, dict):
+            turn = (result.get("result") or {}).get("turn")
+            if isinstance(turn, dict) and turn.get("status") == "inProgress":
+                self._acknowledge_activity(thread_id, turn.get("id"), before)
+        return result
+
+    def _acknowledge_activity(self, thread_id, turn_id, before):
+        state, owner, _, role, source = self._snapshot(thread_id)
+        epoch = self.peer.activity_revision(thread_id)
+        if (
+            isinstance(turn_id, str)
+            and turn_id
+            and state is not None
+            and owner is not None
+            and role == "follower"
+            and before == (source, epoch)
+        ):
+            self.ack_activity[thread_id] = (source, epoch, turn_id)
 
     async def _owner_operation(self, method, params):
         result = await self.operations.handle(method, params)
@@ -381,6 +421,7 @@ class CoordinatedCodexClient:
                 if state is None:
                     state = await self.peer.follow(thread_id)
                 if state is not None:
+                    state = self._snapshot(thread_id)[0]
                     thread = state_to_native(state)
                     if not include_turns:
                         thread["turns"] = []
@@ -571,18 +612,29 @@ class CoordinatedCodexClient:
         )
 
     async def steer_turn(self, request):
-        result = await self._route(
-            request.thread_id,
-            "steer-turn",
-            {
-                "input": [{"type": "text", "text": request.content}],
-                "clientUserMessageId": request.client_message_id,
-                "expectedTurnId": request.turn_id,
-            },
+        from .steering import confirmed_steer, prepare_steer
+
+        state, owner, _, role, _ = self._snapshot(request.thread_id)
+        if state is None or owner is None or role not in {"owner", "follower"}:
+            raise ValueError("steering requires an existing observed owner")
+        params = prepare_steer(request, state)
+        before = (
+            self._snapshot(request.thread_id)[4],
+            self.peer.activity_revision(request.thread_id),
         )
-        return CodexTurnResult(
-            turn_id=result["result"]["turnId"], payload=result["result"]
-        )
+        try:
+            result = await self.command_owner_operation(
+                request.thread_id, "thread-follower-steer-turn", params
+            )
+            payload = confirmed_steer(
+                result.get("result") if isinstance(result, dict) else None
+            )
+        except Exception:
+            await self.refresh_state(request.thread_id, force=True)
+            raise
+        self._acknowledge_activity(request.thread_id, payload["turnId"], before)
+        await self.refresh_state(request.thread_id, force=True)
+        return CodexTurnResult(turn_id=payload["turnId"], payload=payload)
 
     async def interrupt_turn(self, request):
         result = await self._route(

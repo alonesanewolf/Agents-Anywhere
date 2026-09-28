@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from openai_codex import JsonRpcError, MethodNotFoundError
+from openai_codex import JsonRpcError, LocalImageInput, MethodNotFoundError, TextInput
 from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     AskForApproval,
@@ -499,9 +499,21 @@ class CodexSdkClient:
             thread_id=request.thread_id,
             turn_id=request.turn_id,
         )
-        result = await turn.steer(request.content)
-        payload = turn_action_result(result) or turn_ref(turn)
-        return CodexTurnResult(turn_id=id_of(turn), payload=payload)
+        result = await turn.steer(
+            [
+                TextInput(codex_turn_text_input(request)),
+                *[LocalImageInput(a.path) for a in request.attachments if a.is_image],
+            ]
+            if request.attachments
+            else request.content
+        )
+        payload = turn_action_result(result)
+        turn_id = payload.get("turnId")
+        if not isinstance(turn_id, str) or not turn_id.strip():
+            raise ValueError(
+                "Native steer acknowledgement is missing or malformed; outcome unknown"
+            )
+        return CodexTurnResult(turn_id=turn_id, payload=payload)
 
     async def interrupt_turn(
         self,
@@ -1062,7 +1074,9 @@ def codex_turn_start_params(request: CodexStartTurnRequest) -> TurnStartParams:
     )
 
 
-def codex_turn_user_input(request: CodexStartTurnRequest) -> list[UserInput]:
+def codex_turn_user_input(
+    request: CodexStartTurnRequest | CodexSteerTurnRequest,
+) -> list[UserInput]:
     values: list[UserInput] = [
         UserInput(
             root=TextUserInput(
@@ -1085,7 +1099,9 @@ def codex_turn_user_input(request: CodexStartTurnRequest) -> list[UserInput]:
     return values
 
 
-def codex_turn_text_input(request: CodexStartTurnRequest) -> str:
+def codex_turn_text_input(
+    request: CodexStartTurnRequest | CodexSteerTurnRequest,
+) -> str:
     notes = [
         attachment.reference_note()
         for attachment in request.attachments
@@ -1096,7 +1112,9 @@ def codex_turn_text_input(request: CodexStartTurnRequest) -> str:
     return "\n\n".join([request.content, *notes])
 
 
-def codex_turn_user_input_wire(request: CodexStartTurnRequest) -> list[dict[str, Any]]:
+def codex_turn_user_input_wire(
+    request: CodexStartTurnRequest | CodexSteerTurnRequest,
+) -> list[dict[str, Any]]:
     return [
         item.model_dump(
             by_alias=True,
