@@ -327,10 +327,16 @@ async def refresh_runtime_state_in_background(
             if state is None:
                 return
             async with db.session_revision_fence(session_id):
+                # The snapshot baseline can become stale during the RPC. The
+                # persisted projection is the current status baseline when the
+                # ephemeral presentation cache has not been populated.
+                current_state = await runtime_state_cache.get(session_id)
+                if current_state is None:
+                    current_state = await db.get_session_runtime_state(session_id)
                 persisted_session = await db.set_session_status(session.id, state.status)
                 state = state.model_copy(update={"updatedSeq": persisted_session.updatedSeq})
                 await runtime_state_cache.put(state)
-                if runtime_state_semantically_equal(previous_state, state):
+                if runtime_state_semantically_equal(current_state, state):
                     return
                 await _publish_session_runtime_state_update(
                     db,

@@ -88,6 +88,93 @@ def test_background_refresh_publishes_ownerless_recovery_without_sequence_change
             assert event["sequence"] == subscribed["sequence"]
 
 
+@pytest.mark.parametrize(
+    ("initial_available", "ingested_available", "expected_events"),
+    [
+        pytest.param(True, False, [False, True], id="intervening-preparing-recovery"),
+        pytest.param(False, True, [True], id="already-published-recovery"),
+    ],
+)
+def test_background_refresh_compares_intervening_ingest_to_current_cache(
+    tmp_path,
+    monkeypatch,
+    initial_available,
+    ingested_available,
+    expected_events,
+):
+    with make_client(tmp_path) as client:
+        connector_id, _, session_id, headers = create_connector_and_session(client)
+        initial_metadata = {
+            "codexCoordination": {
+                "role": "unattached",
+                "available": initial_available,
+            },
+        }
+        initial = _cached_state(client, session_id, initial_metadata)
+        client.app.state.rpc = PassiveRpc(client.app.state.rpc)
+
+        async def read_after_ingest(_manager, _session):
+            # Real ingest publishes during the background RPC, after the
+            # snapshot has read its initial runtime projection.
+            ingest = get_connector_ingest_service(
+                HTTPConnection({"type": "http", "app": client.app})
+            )
+            await ingest.handle_notification_message(
+                connector_id=connector_id,
+                method="session.state.updated",
+                params=_connector_state(
+                    initial,
+                    {
+                        "codexCoordination": {
+                            "role": "unattached",
+                            "available": ingested_available,
+                        },
+                    },
+                ),
+            )
+            return initial.model_copy(
+                update={
+                    "metadata": {
+                        "codexCoordination": {"role": "unattached", "available": True},
+                    }
+                }
+            )
+
+        monkeypatch.setattr(
+            session_routes, "read_runtime_state_from_connector", read_after_ingest
+        )
+        ticket = ws_ticket(client, session_id, headers)
+        with client.websocket_connect(
+            f"/sessions/{session_id}/ws?ticket={ticket}"
+        ) as ws:
+            subscribed = ws.receive_json()
+            snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+            assert snapshot.status_code == 200, snapshot.text
+            assert (
+                snapshot.json()["state"]["metadata"]["codexCoordination"]["available"]
+                is initial_available
+            )
+            for available in expected_events:
+                event = receive_session_ws_event(ws, "runtime.state.updated", timeout=1)
+                assert (
+                    event["payload"]["state"]["metadata"]["codexCoordination"][
+                        "available"
+                    ]
+                    is available
+                )
+                assert event["sequence"] == subscribed["sequence"]
+            with pytest.raises(
+                AssertionError, match="did not receive runtime.state.updated"
+            ):
+                receive_session_ws_event(ws, "runtime.state.updated", timeout=0.2)
+
+        latest = asyncio.run(
+            client.app.state.session_runtime_state_cache.get(session_id)
+        )
+        assert latest is not None
+        assert latest.metadata["codexCoordination"]["available"] is True
+
+
 def test_background_refresh_publishes_goal_and_settings_but_ignores_diagnostics(
     tmp_path,
 ):
