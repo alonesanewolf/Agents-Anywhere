@@ -46,7 +46,8 @@ and phase status.
 1. Install DevEco Studio 6.1 or newer with the HarmonyOS 6.1.0 (API 23) SDK.
 2. Open this `harmony/` directory (not the repository root).
 3. Wait for the project sync to finish.
-4. Select the `entry` module and run it on a device or emulator.
+4. Configure a local signing profile as described below before running on a device.
+5. Select the `entry` module and run it on a device or emulator.
 
 ## Build from the command line
 
@@ -89,22 +90,18 @@ committed so the IDE uses the project rule set.
 
 ### Signing
 
-`build-profile.json5` currently carries a `signingConfigs` block that DevEco
-Studio generated for this machine: the `material` paths point at
-`C:\Users\<user>\.ohos\config\...` and the block contains `keyPassword` /
-`storePassword` values. That is why both a signed and an unsigned HAP are
-produced.
+The checked-in `build-profile.json5` has no signing configuration, passwords or
+machine-specific certificate paths. A fresh checkout is configured to produce
+an unsigned HAP. The build still requires the DevEco Studio and HarmonyOS SDK
+versions listed above.
 
-Consequences worth knowing before sharing this directory:
-
-- the absolute paths only exist on the machine that generated them, so a fresh
-  checkout must either run `File > Project Structure > Signing Configs` once or
-  drop the `signingConfigs` block (and the `"signingConfig": "default"` reference)
-  to build an unsigned HAP;
-- the password fields and the referenced `.cer` / `.p7b` / `.p12` must not be
-  committed. `harmony/.gitignore` excludes local signing material.
-
-The build succeeds either way; only device installation needs a profile.
+For device installation, use `File > Project Structure > Signing Configs` on
+your own workstation to configure a signing profile. DevEco Studio can write
+the profile into `build-profile.json5`; keep those changes local and remove the
+`signingConfigs` block and product `signingConfig` reference before committing.
+Signing passwords and `.cer` / `.p7b` / `.p12` files must not be committed.
+`harmony/.gitignore` excludes local signing material, but it does not hide
+changes to the tracked build profile.
 
 ## Localization
 
