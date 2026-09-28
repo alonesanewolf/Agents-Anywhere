@@ -185,3 +185,51 @@ session display components with tests when behavior changes; UI design note.
   edits; use existing framework/components. No dev server or heavy local build.
 - [ ] Run focused connector and UI tests/type checks, review, commit. Final task
   order puts this before Task 5 final audit so the complete branch is reviewed.
+
+### Task 17: Bound session-opening waits to one second
+
+The user reported slow Codex session opening on the isolated Web at 3019 and
+requires an ownerless opening wait of at most one second. After source and stage
+log diagnosis, prioritize a small correction to the existing read path. Do not
+build the previously considered new snapshot/enrichment state architecture.
+
+- [ ] Cap the foreground Codex view/notices preparation wait at an absolute
+  1.0 second, including queue/lock/dispatch waits. The persisted history response
+  must not await the router's fixed 10-second candidate window. Use the existing
+  bounded shared observer preparation for any work which continues afterward;
+  do not start unbounded detached requests or cancel another waiter's preparation.
+- [ ] Preserve the native IDE distinction: a requester timeout remains unknown;
+  only a formal router `no-client-found` reply has the existing absent-owner
+  interpretation. Never use the one-second cutoff to claim or resume a thread.
+  A selected owner's full snapshot and explicit send/acquisition retain their
+  existing budgets and settings/generation/ownership checks.
+- [ ] Keep existing unavailable-state presentation and fresh mutation admission.
+  A timed-out opening cannot advertise stale action availability or clear an
+  outstanding approval as if an authoritative empty notice list was obtained.
+  Preserve the E15 final timeline/state/cursor fence and completion publication.
+  If a narrowly necessary subscription/read recovery change is required to avoid
+  a gap introduced by returning earlier, make that change in the existing flow;
+  do not introduce a new endpoint, protocol revision or general job/state store.
+- [ ] Preserve non-Codex/DSH behavior and default consumers. Keep the source
+  correction focused; no unrelated router rewrite, settings refactor, new
+  dependencies, heavy builds, service actions or computer testing by the agent.
+- [ ] Add meaningful gated regression tests for the one-second foreground bound,
+  fast owner/explicit absence, shared preparation completing after caller timeout,
+  failure staying unavailable, follow-snapshot budgets, cancellation and fresh
+  recovery. Use only covering suites on affected components; all Python tests
+  unset the five live database/Redis environment variables and run with existing
+  uv Python 3.12 `--no-sync`. Capture RED, GREEN and exact retained output.
+- [ ] Commit the focused fix, report its actual diff/test evidence and remaining
+  limits, and pass an independent scoped review. The user has deferred computer
+  E2E; do not label this code gate as installed acceptance or finish the full goal.
+
+Task-local source evidence: fresh installed IDE 26.917.62051 waits 10 seconds
+per router candidate, independently of request `timeoutMs`, and maps a formal
+`no-client-found` reply to no owner; a local timeout throws. The formal reply
+does not expose individual candidate results. Existing native cold continuation
+remains supported with that protocol limitation and the current fresh guards.
+
+Applicable global constraints remain binding: use only fresh installed IDE/App
+and this branch's new implementation; never read or use old AA IPC/reference or
+deprecated code. Work only in this worktree, one implementation agent, no main
+merge/production actions, no automatic replay and no automatic approvals.
