@@ -168,6 +168,73 @@ test('deliberate model and permission changes remain selected when observation b
   assert.deepEqual(sends, [{ model: 'model:nova', permission: 'permission:grant' }])
 })
 
+test('acknowledged and observed choices yield to later authoritative native settings', async t => {
+  const sends = []
+  const models = { models: [...modelCatalog.models, { ...modelCatalog.models[0], id: 'nova', displayName: 'Nova', selectionId: 'model:nova', default: false }] }
+  const permissions = { permissions: [...permissionCatalog.permissions, { ...permissionCatalog.permissions[0], id: 'grant', displayName: 'Full access', selectionId: 'permission:grant', default: false }] }
+  function Host() {
+    const [selections, setSelections] = useState({ model: 'model:astra', permission: 'permission:request' })
+    const [value, setValue] = useState('continue')
+    window.observeLaterNativeSettings = () => setSelections({ model: 'model:astra', permission: 'permission:request' })
+    return h(SessionComposer, props({
+      runtimeState: { status: 'idle', selections, metadata: {} }, value, onValueChange: setValue,
+      effectiveCapabilities: capability('session.send_message', 'catalog.model', 'catalog.permission'),
+      modelCatalog: models, permissionCatalog: permissions,
+      onSelectionChange: async selection => { setSelections(current => ({ ...current, ...selection })); return true },
+      onSend: async (_text, _files, selected) => { sends.push(selected); return true },
+    }))
+  }
+  const host = await mount(t, h(Host))
+  const choose = async (current, target) => {
+    const trigger = [...host.querySelectorAll('button[aria-haspopup="menu"]')].find(button => button.textContent.includes(current))
+    assert.ok(trigger)
+    await act(async () => trigger.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 })))
+    const item = [...document.querySelectorAll('[role="menuitem"]')].find(element => element.textContent.includes(target))
+    assert.ok(item)
+    await act(async () => item.click())
+  }
+  await choose('Astra', 'Nova')
+  await choose('Request approval', 'Full access')
+  await act(async () => window.observeLaterNativeSettings())
+  assert.match(host.textContent, /Astra/)
+  assert.match(host.textContent, /Request approval/)
+  await act(async () => host.querySelector('button[aria-label="Send"]').click())
+  assert.deepEqual(sends, [{ model: 'model:astra', permission: 'permission:request' }])
+})
+
+test('pending permission intent survives observations until acknowledgement, then yields to native', async t => {
+  let acknowledge
+  const sends = []
+  const permissions = { permissions: [...permissionCatalog.permissions, { ...permissionCatalog.permissions[0], id: 'grant', displayName: 'Full access', selectionId: 'permission:grant', default: false }] }
+  function Host() {
+    const [selections, setSelections] = useState({ permission: 'permission:request' })
+    const [value, setValue] = useState('continue')
+    window.observeAcceptedPermission = () => setSelections({ permission: 'permission:grant' })
+    window.observeNativeTightening = () => setSelections({ permission: 'permission:request' })
+    return h(SessionComposer, props({
+      runtimeState: { status: 'idle', selections, metadata: {} }, value, onValueChange: setValue,
+      effectiveCapabilities: capability('session.send_message', 'catalog.permission'),
+      permissionCatalog: permissions,
+      onSelectionChange: () => new Promise(resolve => { acknowledge = resolve }),
+      onSend: async (_text, _files, selected) => { sends.push(selected); return true },
+    }))
+  }
+  const host = await mount(t, h(Host))
+  const trigger = host.querySelector('button[aria-haspopup="menu"]')
+  await act(async () => trigger.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 })))
+  const item = [...document.querySelectorAll('[role="menuitem"]')].find(element => element.textContent.includes('Full access'))
+  assert.ok(item)
+  await act(async () => item.click())
+  assert.ok(acknowledge)
+  await act(async () => window.observeAcceptedPermission())
+  await act(async () => window.observeNativeTightening())
+  assert.match(host.textContent, /Full access/)
+  await act(async () => acknowledge(true))
+  assert.match(host.textContent, /Request approval/)
+  await act(async () => host.querySelector('button[aria-label="Send"]').click())
+  assert.deepEqual(sends, [{ permission: 'permission:request' }])
+})
+
 test('an explicit model choice writes settings while an untouched permission remains inherited', async t => {
   const writes = []
   const sent = []

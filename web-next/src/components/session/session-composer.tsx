@@ -239,7 +239,9 @@ export function SessionComposer({
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
   const [selectedModel, setSelectedModel] = React.useState("")
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
-  const explicitSelectionRef = React.useRef<{ model: string | null; permission: string | null }>({ model: null, permission: null })
+  const [selectionIntentRevision, setSelectionIntentRevision] = React.useState(0)
+  type ExplicitSelection = { id: string; acknowledged: boolean; observed: boolean }
+  const explicitSelectionRef = React.useRef<{ model: ExplicitSelection | null; permission: ExplicitSelection | null }>({ model: null, permission: null })
   const selectionRequestRef = React.useRef({ model: 0, permission: 0 })
   React.useEffect(() => {
     explicitSelectionRef.current = { model: null, permission: null }
@@ -302,31 +304,41 @@ export function SessionComposer({
   React.useEffect(() => {
     if (dsh) { setSelectedPermissionMode(permissionValue); return }
     const explicit = explicitSelectionRef.current.permission
-    if (explicit) {
-      setSelectedPermissionMode(permissionItems.find((item) => item.selectionId === explicit && item.enabled)?.id ?? "")
+    if (explicit && runtimeSelections.permission === explicit.id) {
+      explicit.observed = true
+      if (explicit.acknowledged) explicitSelectionRef.current.permission = null
+    }
+    const retained = explicitSelectionRef.current.permission
+    if (retained) {
+      setSelectedPermissionMode(permissionItems.find((item) => item.selectionId === retained.id && item.enabled)?.id ?? "")
       return
     }
     const hasRuntimePermission = permissionItems.some((item) => item.id === permissionValue && item.enabled)
     const nextPermission = hasRuntimePermission ? permissionValue : ""
     setSelectedPermissionMode(nextPermission)
-  }, [dsh, permissionItems, permissionValue])
+  }, [dsh, permissionItems, permissionValue, runtimeSelections.permission, selectionIntentRevision])
 
   React.useEffect(() => {
     if (dsh) { setSelectedModel(modelValue); return }
     const explicit = explicitSelectionRef.current.model
-    if (explicit) {
-      setSelectedModel(modelIdsForSelectionId(modelCatalog, explicit)?.modelId ?? "")
+    if (explicit && runtimeSelections.model === explicit.id) {
+      explicit.observed = true
+      if (explicit.acknowledged) explicitSelectionRef.current.model = null
+    }
+    const retained = explicitSelectionRef.current.model
+    if (retained) {
+      setSelectedModel(modelIdsForSelectionId(modelCatalog, retained.id)?.modelId ?? "")
       return
     }
     const hasRuntimeModel = modelItems.some((item) => item.id === modelValue && item.enabled)
     setSelectedModel(hasRuntimeModel ? modelValue : "")
-  }, [dsh, modelCatalog, modelItems, modelValue])
+  }, [dsh, modelCatalog, modelItems, modelValue, selectionIntentRevision])
 
   React.useEffect(() => {
     if (dsh) { setSelectedReasoning(effortValue); return }
     const explicit = explicitSelectionRef.current.model
     if (explicit) {
-      setSelectedReasoning(modelIdsForSelectionId(modelCatalog, explicit)?.reasoningId ?? "")
+      setSelectedReasoning(modelIdsForSelectionId(modelCatalog, explicit.id)?.reasoningId ?? "")
       return
     }
     if (!runtimeSelections.model) { setSelectedReasoning(""); return }
@@ -339,7 +351,7 @@ export function SessionComposer({
     setSelectedReasoning((current) =>
       hasRuntimeEffort || !current || !effortItems.some((item) => item.id === current && item.enabled) ? nextEffort : current,
     )
-  }, [dsh, effortItems, effortValue, modelCatalog, runtimeSelections.model])
+  }, [dsh, effortItems, effortValue, modelCatalog, runtimeSelections.model, selectionIntentRevision])
   const selectedModelSelection = modelObservedOrChosen
     ? selectionIdForModelCatalog(modelCatalog, selectedModel, selectedReasoning) ?? (dsh ? runtimeSelections.model : null)
     : null
@@ -354,12 +366,21 @@ export function SessionComposer({
     if (!nextSelection) return
     const visit = sessionVisitRef.current
     const request = ++selectionRequestRef.current.permission
-    explicitSelectionRef.current.permission = nextSelection
+    const intent: ExplicitSelection = { id: nextSelection, acknowledged: false, observed: false }
+    explicitSelectionRef.current.permission = intent
     setSelectedPermissionMode(permissionId)
     void onSelectionChange({ permission: nextSelection }).then((ok) => {
-      if (!ok && !dsh && sessionVisitRef.current === visit && selectionRequestRef.current.permission === request) {
-        explicitSelectionRef.current.permission = previousIntent
-        setSelectedPermissionMode(previousPermission)
+      if (!dsh && sessionVisitRef.current === visit && selectionRequestRef.current.permission === request) {
+        if (ok) {
+          intent.acknowledged = true
+          if (intent.observed) {
+            explicitSelectionRef.current.permission = null
+            setSelectionIntentRevision((current) => current + 1)
+          }
+        } else {
+          explicitSelectionRef.current.permission = previousIntent
+          setSelectedPermissionMode(previousPermission)
+        }
       }
     })
   }
@@ -372,14 +393,23 @@ export function SessionComposer({
     if (!nextSelection) return
     const visit = sessionVisitRef.current
     const request = ++selectionRequestRef.current.model
-    explicitSelectionRef.current.model = nextSelection
+    const intent: ExplicitSelection = { id: nextSelection, acknowledged: false, observed: false }
+    explicitSelectionRef.current.model = intent
     setSelectedModel(modelId)
     setSelectedReasoning(reasoningId)
     void onSelectionChange({ model: nextSelection }).then((ok) => {
-      if (!ok && !dsh && sessionVisitRef.current === visit && selectionRequestRef.current.model === request) {
-        explicitSelectionRef.current.model = previousIntent
-        setSelectedModel(previousModel)
-        setSelectedReasoning(previousReasoning)
+      if (!dsh && sessionVisitRef.current === visit && selectionRequestRef.current.model === request) {
+        if (ok) {
+          intent.acknowledged = true
+          if (intent.observed) {
+            explicitSelectionRef.current.model = null
+            setSelectionIntentRevision((current) => current + 1)
+          }
+        } else {
+          explicitSelectionRef.current.model = previousIntent
+          setSelectedModel(previousModel)
+          setSelectedReasoning(previousReasoning)
+        }
       }
     })
   }
