@@ -7,7 +7,10 @@ import pytest
 from codex_resume_fixture import RolloutNative
 from test_codex_owner_absence_budget import THREAD, network
 
-from connector.runtimes.codex.coordination.resume_settings import ResumeSettings
+from connector.runtimes.codex.coordination.resume_settings import (
+    CONTEXT_KNOWN_FIELDS,
+    ResumeSettings,
+)
 from connector.runtimes.codex.coordination.wire import IpcError
 from connector.runtimes.codex.sdk.runtime_client import CodexStartTurnRequest
 
@@ -33,6 +36,21 @@ def initial_native(tmp_path, *, tier="flex"):
     native.records += [{"type": "event_msg", "payload": {"type": "task_complete"}}]
     native.save()
     return native
+
+
+def omit_post_tier(native, *, response_tier=None, contradict_response=False):
+    original = native.request
+
+    async def request(method, params, **kwargs):
+        result = await original(method, params, **kwargs)
+        if method == "thread/resume":
+            native.records[-1]["payload"]["thread_settings"].pop("service_tier")
+            native.save()
+            if contradict_response:
+                result.root["serviceTier"] = response_tier
+        return result
+
+    native.request = request
 
 
 @pytest.mark.parametrize("tier", [None, "flex", "priority"])
@@ -69,6 +87,181 @@ def test_initial_context_omits_unknown_tier_then_learns_validated_native_value(
                 caller.get_state(THREAD)["latestThreadSettings"]["serviceTier"] == tier
             )
             assert caller.is_owner(THREAD)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("omit_response", [False, True])
+def test_initial_unknown_tier_learns_native_omitted_tier_as_null(
+    tmp_path, omit_response
+):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = initial_native(tmp_path, tier=None)
+            native.response_omit = ("serviceTier",) if omit_response else ()
+            omit_post_tier(native)
+            authority = ResumeSettings.resolve({"thread": native.thread()}, THREAD)
+            assert authority.source_kind == "initial_context"
+            assert "service_tier" not in authority.known_fields
+            assert not authority.tier_wire_present
+            assert "serviceTier" not in authority.params()
+            facade.sdk = facade.operations.sdk = native.sdk
+            await facade.start_turn(
+                CodexStartTurnRequest(thread_id=THREAD, content="once")
+            )
+            resume = [p for m, p in native.calls if m == "thread/resume"]
+            assert len(resume) == 1 and "serviceTier" not in resume[0]
+            assert "service_tier" not in native.records[-1]["payload"][
+                "thread_settings"
+            ]
+            assert caller.get_state(THREAD)["latestThreadSettings"]["serviceTier"] is None
+            assert len([p for m, p in native.calls if m == "turn/start"]) == 1
+            assert caller.is_owner(THREAD)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("later_context", [False, True])
+def test_newest_complete_snapshot_missing_tier_has_null_authority(
+    tmp_path, later_context
+):
+    native = initial_native(tmp_path)
+    native.settings["service_tier"] = "priority"
+    native.records.append(native.applied())
+    latest = native.applied()
+    latest["payload"]["thread_settings"].pop("service_tier")
+    native.records.append(latest)
+    if later_context:
+        native.records.append(native.context())
+    native.save()
+    authority = ResumeSettings.resolve({"thread": native.thread()}, THREAD)
+    assert authority.source_kind == "settings_applied"
+    assert authority.source_ordinal == 14
+    assert not authority.tier_wire_present
+    assert "service_tier" in authority.known_fields
+    assert authority.settings["service_tier"] is None
+    assert authority.params()["serviceTier"] is None
+    assert authority.canonical_settings()["serviceTier"] is None
+
+
+def test_newest_missing_tier_cold_acquisition_sends_explicit_null(tmp_path):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = initial_native(tmp_path, tier="priority")
+            latest = native.applied()
+            latest["payload"]["thread_settings"].pop("service_tier")
+            native.records.append(latest)
+            native.save()
+            native.native_defaults["service_tier"] = "flex"
+            facade.sdk = facade.operations.sdk = native.sdk
+            await facade.start_turn(
+                CodexStartTurnRequest(thread_id=THREAD, content="once")
+            )
+            resume = [p for m, p in native.calls if m == "thread/resume"]
+            assert len(resume) == 1 and "serviceTier" in resume[0]
+            assert resume[0]["serviceTier"] is None
+            assert caller.get_state(THREAD)["latestThreadSettings"]["serviceTier"] is None
+            assert len([p for m, p in native.calls if m == "turn/start"]) == 1
+            assert caller.is_owner(THREAD)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("tier,accepted", [(None, True), ("priority", False)])
+def test_known_tier_compares_native_omission_as_null(tmp_path, tier, accepted):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = RolloutNative(
+                tmp_path,
+                settings={"service_tier": tier},
+                native_defaults={"service_tier": "flex"},
+            )
+            omit_post_tier(native)
+            facade.sdk = facade.operations.sdk = native.sdk
+            if accepted:
+                await facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="once")
+                )
+            else:
+                with pytest.raises(
+                    IpcError, match="codex_resume_effective_settings_mismatch"
+                ):
+                    await facade.start_turn(
+                        CodexStartTurnRequest(thread_id=THREAD, content="never")
+                    )
+            resume = [p for m, p in native.calls if m == "thread/resume"]
+            assert len(resume) == 1 and resume[0]["serviceTier"] == tier
+            assert len([p for m, p in native.calls if m == "turn/start"]) == int(
+                accepted
+            )
+            assert caller.is_owner(THREAD) == accepted
+
+    asyncio.run(run())
+
+
+def test_native_response_tier_cannot_override_omitted_snapshot(tmp_path):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = initial_native(tmp_path, tier=None)
+            omit_post_tier(native, response_tier="priority", contradict_response=True)
+            facade.sdk = facade.operations.sdk = native.sdk
+            with pytest.raises(
+                IpcError, match="codex_resume_effective_settings_mismatch"
+            ):
+                await facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="never")
+                )
+            assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
+            assert not [p for m, p in native.calls if m == "turn/start"]
+            assert not caller.is_owner(THREAD)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("field", sorted(CONTEXT_KNOWN_FIELDS))
+def test_newest_snapshot_missing_other_required_field_never_falls_back(
+    tmp_path, field
+):
+    native = initial_native(tmp_path)
+    native.records.append(native.applied())
+    latest = native.applied()
+    latest["payload"]["thread_settings"].pop("service_tier")
+    latest["payload"]["thread_settings"].pop(field)
+    native.records.append(latest)
+    native.save()
+    with pytest.raises(IpcError, match="codex_resume_settings_unavailable"):
+        ResumeSettings.resolve({"thread": native.thread()}, THREAD)
+
+
+@pytest.mark.parametrize("field", sorted(CONTEXT_KNOWN_FIELDS))
+def test_post_snapshot_missing_other_required_field_never_claims(
+    tmp_path, field
+):
+    async def run():
+        async with network(silent=False) as (_, caller, _, facade, _):
+            native = initial_native(tmp_path, tier=None)
+            original = native.request
+
+            async def request(method, params, **kwargs):
+                result = await original(method, params, **kwargs)
+                if method == "thread/resume":
+                    settings = native.records[-1]["payload"]["thread_settings"]
+                    settings.pop("service_tier")
+                    settings.pop(field)
+                    native.save()
+                return result
+
+            native.request = request
+            facade.sdk = facade.operations.sdk = native.sdk
+            with pytest.raises(
+                IpcError, match="codex_resume_effective_settings_unavailable"
+            ):
+                await facade.start_turn(
+                    CodexStartTurnRequest(thread_id=THREAD, content="never")
+                )
+            assert len([p for m, p in native.calls if m == "thread/resume"]) == 1
+            assert not [p for m, p in native.calls if m == "turn/start"]
+            assert not caller.is_owner(THREAD)
 
     asyncio.run(run())
 
@@ -284,7 +477,7 @@ def test_newest_unsupported_or_conflicting_evidence_blocks_older_fallback(
         if fault == "null-settings":
             record["payload"]["thread_settings"] = None
         elif fault == "partial-settings":
-            record["payload"]["thread_settings"].pop("service_tier")
+            record["payload"]["thread_settings"].pop("approval_policy")
         else:
             record["payload"]["thread_settings"]["disabled_plugin_ids"] = ["other"]
         native.records.append(record)

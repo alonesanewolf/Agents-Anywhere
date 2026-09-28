@@ -234,6 +234,16 @@ def validate_settings(settings, cwd, known_fields=SETTINGS_FIELDS):
     policy(settings)
 
 
+def decode_snapshot(settings, cwd):
+    """Decode current native optional-tier wire format without changing evidence."""
+    validate_settings(settings, cwd, CONTEXT_KNOWN_FIELDS)
+    tier_present = "service_tier" in settings
+    tier = settings.get("service_tier")
+    if tier is not None and not isinstance(tier, str):
+        unavailable()
+    return {**settings, "service_tier": tier}, tier_present
+
+
 def projection(settings, known_fields):
     """Compare represented settings, retaining exact mode instructions and rules."""
     result = {key: deepcopy(settings[key]) for key in known_fields}
@@ -343,9 +353,9 @@ def scan(data, thread):
         if provider != thread.get("modelProvider"):
             unavailable()
         settings = context_settings(context, thread["cwd"], provider)
-        return settings, "initial_context", ordinal, CONTEXT_KNOWN_FIELDS
+        return settings, "initial_context", ordinal, CONTEXT_KNOWN_FIELDS, False
     settings_ordinal, settings = latest
-    validate_settings(settings, thread["cwd"])
+    settings, tier_present = decode_snapshot(settings, thread["cwd"])
     if ordinal > settings_ordinal:
         # A later execution context must corroborate, never replace, settings.
         corroboration = context_settings(
@@ -355,7 +365,7 @@ def scan(data, thread):
             settings, CONTEXT_KNOWN_FIELDS
         ):
             unavailable()
-    return settings, "settings_applied", settings_ordinal, SETTINGS_FIELDS
+    return settings, "settings_applied", settings_ordinal, SETTINGS_FIELDS, tier_present
 
 
 @dataclass
@@ -368,6 +378,8 @@ class ResumeSettings:
     source_kind: str
     source_ordinal: int
     known_fields: frozenset[str]
+    tier_wire_present: bool
+    post_tier_wire_present: bool | None = None
 
     @classmethod
     def resolve(cls, raw, thread_id):
@@ -387,7 +399,9 @@ class ResumeSettings:
             unavailable()
         data, stamp = read_source(path)
         try:
-            settings, source_kind, source_ordinal, known_fields = scan(data, thread)
+            settings, source_kind, source_ordinal, known_fields, tier_present = scan(
+                data, thread
+            )
         except (TypeError, ValueError, AttributeError, KeyError, RecursionError):
             unavailable()
         return cls(
@@ -399,6 +413,7 @@ class ResumeSettings:
             source_kind,
             source_ordinal,
             known_fields,
+            tier_present,
         )
 
     def revalidate(self):
@@ -478,7 +493,7 @@ class ResumeSettings:
                 raise ResumeSettingsError("codex_resume_effective_settings_unavailable")
             observed = p.get("thread_settings")
         try:
-            validate_settings(observed, self.thread["cwd"])
+            observed, tier_present = decode_snapshot(observed, self.thread["cwd"])
         except IpcError as exc:
             raise ResumeSettingsError(
                 "codex_resume_effective_settings_unavailable"
@@ -508,6 +523,7 @@ class ResumeSettings:
         # Only fresh validated native evidence may fill the initial unknown tier.
         self.settings = {**self.settings, "service_tier": observed["service_tier"]}
         self.known_fields = SETTINGS_FIELDS
+        self.post_tier_wire_present = tier_present
 
     def canonical_settings(self):
         s = self.settings
