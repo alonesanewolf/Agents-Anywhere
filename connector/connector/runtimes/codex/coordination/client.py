@@ -26,6 +26,16 @@ from .requests import REQUEST_ROUTES, ResponseContexts, validate_response
 from .state import enumerate_turns, history_complete
 
 
+def _ack_target_terminal(state, turn_id):
+    # A newly inserted terminal-only record need not change the global activity
+    # epoch. Inspect this ACK's target, including canonical paged history.
+    return any(
+        turn.get("turnId", turn.get("id")) == turn_id
+        and turn.get("status") in {"completed", "failed", "interrupted", "cancelled"}
+        for turn in enumerate_turns(state)
+    )
+
+
 class CoordinatedCodexClient:
     def __init__(self, sdk_client, peer, *, kv_store, namespace):
         self.sdk = sdk_client
@@ -205,6 +215,7 @@ class CoordinatedCodexClient:
                 state is not None
                 and source == authority
                 and self.peer.activity_revision(thread_id) == epoch
+                and not _ack_target_terminal(state, turn_id)
             ):
                 from connector.runtimes.codex.domain.activity import observe_activity
 
@@ -388,6 +399,7 @@ class CoordinatedCodexClient:
             and owner is not None
             and role == "follower"
             and before == (source, epoch)
+            and not _ack_target_terminal(state, turn_id)
         ):
             self.ack_activity[thread_id] = (source, epoch, turn_id)
 
