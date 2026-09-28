@@ -167,6 +167,7 @@ fun SessionDetailScreen(
     val colors = LocalAAColors.current
     val darkMode = colors.isDark
     val context = LocalContext.current
+    val runtimeNoticeDraftStore = rememberRuntimeNoticeDraftStore()
     val clipboard = LocalClipboardManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
@@ -1168,6 +1169,7 @@ fun SessionDetailScreen(
         scope.launch {
             controller.respondNotice(id, notice.noticeId, action.actionId, input)
                 .onSuccess {
+                    runtimeNoticeDraftStore.clear(notice.sessionId, notice.noticeId)
                     state = state.copy(
                         notices = state.notices.copy(
                             notices = state.notices.notices.filterNot { observed ->
@@ -1187,6 +1189,7 @@ fun SessionDetailScreen(
                             "approval_not_found",
                         )
                     ) {
+                        runtimeNoticeDraftStore.clear(notice.sessionId, notice.noticeId)
                         state = state.copy(
                             notices = state.notices.copy(
                                 notices = state.notices.notices.filterNot { it.noticeId == notice.noticeId },
