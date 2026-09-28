@@ -325,6 +325,15 @@
       "needsAttention": "待处理",
       "clear": "清除筛选"
     },
+    "agentPresets": {
+      "label": "预设模式",
+      "unavailable": "预设模式不可用",
+      "loading": "正在加载模式...",
+      "standard": "标准模式",
+      "minimal": "极简模式",
+      "ptc": "PTC 模式",
+      "cordis": "创造模式"
+    },
     "new": {
       "askApproval": "请求确认",
       "attach": "添加附件",
@@ -347,14 +356,17 @@
         "dsh": {
           "readOnly": { "label": "仅可查看" },
           "workspaceWrite": { "label": "工作区内修改" },
-          "fullAccess": { "label": "完全权限" }
+          "fullAccess": { "label": "完全权限" },
+          "auto": {
+            "label": "Auto review"
+          }
         },
         "requestApproval": {
           "label": "请求批准",
           "description": "编辑外部文件和使用互联网时始终询问"
         },
         "autoReview": {
-          "label": "替我审批",
+          "label": "Auto review",
           "description": "仅对检测到的风险操作请求批准"
         },
         "fullAccess": {
