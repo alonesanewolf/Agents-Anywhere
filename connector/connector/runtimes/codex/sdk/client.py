@@ -113,7 +113,7 @@ class PendingServerRequest:
 class TurnStreamState:
     thread_id: str
     turn_id: str
-    terminal_emitted: bool = False
+    terminal_delivery: asyncio.Task[None] | None = None
 
 
 class CodexThreadTurnsListResponse(BaseModel):
@@ -185,9 +185,7 @@ class CodexSdkClient:
         await self.stop_native_client(self._client)
 
     async def cancel_background_tasks(self, *, transport_failed: bool = False) -> None:
-        interrupted_streams = (
-            tuple(self._stream_states.values()) if transport_failed else ()
-        )
+        interrupted_streams = tuple(self._stream_states.values())
         self.cancel_pending_approval_responses()
         if self._global_notification_task is not None:
             self._global_notification_task.cancel()
@@ -202,25 +200,25 @@ class CodexSdkClient:
             await asyncio.gather(*self._stream_tasks.values(), return_exceptions=True)
             self._stream_tasks.clear()
         for stream in interrupted_streams:
-            if stream.terminal_emitted:
-                continue
-            # A read retry creates a new transport. Its old turns cannot keep
-            # running, and must finish their platform lifecycle before retrying.
-            await self._emit(
-                {
-                    "method": "turn/failed",
-                    "params": {
-                        "threadId": stream.thread_id,
-                        "turnId": stream.turn_id,
-                        "error": {
-                            "code": "codex_transport_closed",
-                            "message": "Codex connection closed while this turn was active.",
+            if stream.terminal_delivery is None and transport_failed:
+                # Only a turn without a terminal owner needs a synthetic failure.
+                # An in-flight terminal must finish its notices and state first.
+                self._start_terminal_delivery(
+                    stream,
+                    {
+                        "method": "turn/failed",
+                        "params": {
+                            "threadId": stream.thread_id,
+                            "turnId": stream.turn_id,
+                            "error": {
+                                "code": "codex_transport_closed",
+                                "message": "Codex connection closed while this turn was active.",
+                            },
+                            "metadata": {"source": "codex.sdk.transport.recovery"},
                         },
-                        "metadata": {"source": "codex.sdk.transport.recovery"},
                     },
-                }
-            )
-            stream.terminal_emitted = True
+                )
+            await self._finish_terminal_delivery(stream)
         self._stream_states.clear()
         self._threads.clear()
         self._loaded_thread_ids.clear()
@@ -961,37 +959,76 @@ class CodexSdkClient:
                 }
                 if is_terminal:
                     completed_seen = True
-                await self._emit(message)
-                if is_terminal:
-                    stream_state.terminal_emitted = True
+                    delivery = self._start_terminal_delivery(stream_state, message)
+                    await asyncio.shield(delivery)
+                else:
+                    await self._emit(message)
         except asyncio.CancelledError:
             cancelled = True
             raise
         finally:
-            if not completed_seen and not cancelled:
-                await self._emit(
-                    {
-                        "method": "turn/failed",
-                        "params": {
-                            "threadId": thread_id,
-                            "turnId": turn_id,
-                            "error": {
-                                "code": "codex_stream_ended_without_terminal_event",
-                                "message": "Codex stream ended without a terminal turn event.",
+            try:
+                if not completed_seen and not cancelled:
+                    self._start_terminal_delivery(
+                        stream_state,
+                        {
+                            "method": "turn/failed",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "error": {
+                                    "code": "codex_stream_ended_without_terminal_event",
+                                    "message": "Codex stream ended without a terminal turn event.",
+                                },
+                                "metadata": {"source": "codex.sdk.stream.exhausted"},
                             },
-                            "metadata": {"source": "codex.sdk.stream.exhausted"},
                         },
-                    }
-                )
-                stream_state.terminal_emitted = True
-            if self._stream_tasks.get(turn_id) is asyncio.current_task():
-                self._stream_tasks.pop(turn_id, None)
-            if self._stream_states.get(turn_id) is stream_state:
-                self._stream_states.pop(turn_id, None)
-            if self._turns.get(turn_id) is turn:
-                self._turns.pop(turn_id, None)
-            if self._turns.get(thread_id) is turn:
-                self._turns.pop(thread_id, None)
+                    )
+                await self._finish_terminal_delivery(stream_state)
+            finally:
+                if self._stream_tasks.get(turn_id) is asyncio.current_task():
+                    self._stream_tasks.pop(turn_id, None)
+                if self._stream_states.get(turn_id) is stream_state:
+                    self._stream_states.pop(turn_id, None)
+                if self._turns.get(turn_id) is turn:
+                    self._turns.pop(turn_id, None)
+                if self._turns.get(thread_id) is turn:
+                    self._turns.pop(thread_id, None)
+
+    def _start_terminal_delivery(
+        self, stream: TurnStreamState, message: CodexNotificationMessage
+    ) -> asyncio.Task[None]:
+        if stream.terminal_delivery is None:
+            # The projector performs several awaited host writes. Give the whole
+            # terminal one owner so stream cancellation cannot interrupt it.
+            stream.terminal_delivery = asyncio.create_task(self._emit(message))
+        return stream.terminal_delivery
+
+    async def _finish_terminal_delivery(self, stream: TurnStreamState) -> None:
+        delivery = stream.terminal_delivery
+        if delivery is None:
+            return
+        cancelled = False
+        while not delivery.done():
+            try:
+                await asyncio.shield(delivery)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:  # noqa: BLE001
+                break
+        try:
+            delivery.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "codex terminal delivery failed thread_id={} turn_id={} error_type={}",
+                stream.thread_id,
+                stream.turn_id,
+                type(exc).__name__,
+            )
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _emit(self, message: CodexNotificationMessage) -> None:
         if self._handler is not None:
