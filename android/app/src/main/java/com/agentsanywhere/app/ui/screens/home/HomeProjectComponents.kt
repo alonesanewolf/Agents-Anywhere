@@ -65,8 +65,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.agentsanywhere.app.R
 import com.agentsanywhere.app.feature.sessions.ProjectSessionStatusFilter
+import com.agentsanywhere.app.feature.sessions.ProjectDeviceAgentFilter
+import com.agentsanywhere.app.model.AgentDevice
 import com.agentsanywhere.app.model.AgentProject
 import com.agentsanywhere.app.model.AgentSession
+import com.agentsanywhere.app.model.runtimeTypeLabel
 import com.agentsanywhere.app.ui.designsystem.LocalAAColors
 import com.agentsanywhere.app.ui.screens.common.AppEmptyState
 import com.composables.icons.lucide.Archive
@@ -79,6 +82,7 @@ import com.composables.icons.lucide.Pencil
 import com.composables.icons.lucide.Pin
 import com.composables.icons.lucide.Plus
 import com.composables.icons.lucide.SquarePen
+import com.composables.icons.lucide.X
 import kotlin.math.roundToInt
 
 internal data class HomeProjectActionMenu(
@@ -92,6 +96,9 @@ internal data class HomeProjectActionMenu(
 internal fun HomeProjectList(
     projects: List<AgentProject>,
     deviceNamesById: Map<String, String>,
+    devices: List<AgentDevice>,
+    agentRuntimes: List<String>,
+    deviceAgentFilter: ProjectDeviceAgentFilter,
     hasProjectsInOtherStatuses: Boolean,
     allSessions: List<AgentSession>,
     projectPreferences: HomeProjectPreferences,
@@ -118,26 +125,31 @@ internal fun HomeProjectList(
     }
     val pinnedProjects = ordered.filter(AgentProject::pinned)
     val regularProjects = ordered.filterNot(AgentProject::pinned)
+    val agentLabel = deviceAgentFilter.runtime?.runtimeTypeLabel()
 
     if (projects.isEmpty() && pinnedSessions.isEmpty()) {
         Box(Modifier.fillMaxSize()) {
             AppEmptyState(
                 message = stringResource(
-                    when (projectSessionStatus) {
+                    if (deviceAgentFilter.active && loadingProjectIds.isNotEmpty()) R.string.home_project_filter_loading
+                    else if (deviceAgentFilter.active) R.string.home_project_filter_empty else when (projectSessionStatus) {
                         ProjectSessionStatusFilter.Active -> R.string.home_no_active_projects_create
                         ProjectSessionStatusFilter.Archived -> R.string.home_no_archived_projects_yet
                         ProjectSessionStatusFilter.All -> R.string.home_no_projects_create
                     },
                 ),
-                buttonLabel = stringResource(R.string.new_session_create_project),
-                buttonIcon = Lucide.Plus,
-                onButtonClick = onCreateProject,
+                buttonLabel = stringResource(if (deviceAgentFilter.active) R.string.home_project_filter_clear else R.string.new_session_create_project),
+                buttonIcon = if (deviceAgentFilter.active) Lucide.X else Lucide.Plus,
+                onButtonClick = if (deviceAgentFilter.active) projectPreferences::clearDeviceAgentFilter else onCreateProject,
             )
             // Keep a way out of an empty filter without restoring the section title.
-            if (hasProjectsInOtherStatuses) Box(Modifier.align(Alignment.TopEnd)) {
-                HomeProjectIconButton(Lucide.Ellipsis, stringResource(R.string.home_project_filter_sessions)) {
-                    filterAnchor = it
-                }
+            if (hasProjectsInOtherStatuses || deviceAgentFilter.active) Box(Modifier.align(Alignment.TopEnd)) {
+                HomeProjectIconButton(
+                    Lucide.Ellipsis,
+                    stringResource(R.string.home_project_filter_sessions),
+                    onClick = { filterAnchor = it },
+                    active = deviceAgentFilter.active || projectSessionStatus != ProjectSessionStatusFilter.Active,
+                )
             }
         }
     } else LazyColumn(
@@ -157,6 +169,7 @@ internal fun HomeProjectList(
                     HomeProjectTreeItem(
                         project = project,
                         deviceName = deviceNamesById[project.connectorId],
+                        agentLabel = agentLabel,
                         sessions = sessionsByProject[project.id].orEmpty(),
                         expanded = project.id in expandedProjectIds,
                         loading = project.id in loadingProjectIds,
@@ -186,19 +199,25 @@ internal fun HomeProjectList(
                 expanded = projectsExpanded,
                 onClick = projectPreferences::toggleSection,
                 onFilter = { filterAnchor = it },
+                filterActive = deviceAgentFilter.active || projectSessionStatus != ProjectSessionStatusFilter.Active,
                 onCreate = onCreateProject,
             )
         }
         if (projectsExpanded) {
             if (regularProjects.isEmpty()) {
                 item("projects-empty") {
-                    HomeProjectEmptyText(stringResource(R.string.home_no_projects))
+                    HomeProjectEmptyText(stringResource(
+                        if (deviceAgentFilter.active && loadingProjectIds.isNotEmpty()) R.string.home_project_filter_loading
+                        else if (deviceAgentFilter.active) R.string.home_project_filter_empty
+                        else R.string.home_no_projects,
+                    ))
                 }
             } else {
                 items(regularProjects, key = { "project-${it.id}" }) { project ->
                     HomeProjectTreeItem(
                         project = project,
                         deviceName = deviceNamesById[project.connectorId],
+                        agentLabel = agentLabel,
                         sessions = sessionsByProject[project.id].orEmpty(),
                         expanded = project.id in expandedProjectIds,
                         loading = project.id in loadingProjectIds,
@@ -218,8 +237,14 @@ internal fun HomeProjectList(
         HomeProjectFilterMenu(
             anchorBounds = anchor,
             selected = projectSessionStatus,
+            deviceAgentFilter = deviceAgentFilter,
+            devices = devices,
+            agentRuntimes = agentRuntimes,
             onDismiss = { filterAnchor = null },
-            onSelect = onProjectSessionStatusChange,
+            onSelectStatus = onProjectSessionStatusChange,
+            onSelectDevice = projectPreferences::selectDevice,
+            onSelectAgent = projectPreferences::selectAgent,
+            onClearDeviceAgentFilter = projectPreferences::clearDeviceAgentFilter,
         )
     }
 }
@@ -228,6 +253,7 @@ internal fun HomeProjectList(
 private fun HomeProjectTreeItem(
     project: AgentProject,
     deviceName: String?,
+    agentLabel: String?,
     sessions: List<AgentSession>,
     expanded: Boolean,
     loading: Boolean,
@@ -242,6 +268,7 @@ private fun HomeProjectTreeItem(
     HomeProjectRow(
         project = project,
         deviceName = deviceName,
+        agentLabel = agentLabel,
         expanded = expanded,
         onClick = { onExpandedChange(!expanded) },
         onMenu = onMenu,
@@ -301,6 +328,7 @@ private fun HomeProjectTreeItem(
 private fun HomeProjectRow(
     project: AgentProject,
     deviceName: String?,
+    agentLabel: String?,
     expanded: Boolean,
     onClick: () -> Unit,
     onMenu: (HomeProjectActionMenu) -> Unit,
@@ -313,7 +341,7 @@ private fun HomeProjectRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .height(if (agentLabel == null) 56.dp else 64.dp)
             .onGloballyPositioned { bounds = it.boundsInRoot() }
             .pointerInput(onClick, onMenu, bounds, expanded) {
                 detectTapGestures(
@@ -337,7 +365,16 @@ private fun HomeProjectRow(
             tint = colors.faint,
             modifier = Modifier.size(21.dp),
         )
-        HomeProjectTitle(project, deviceName, Modifier.weight(1f))
+        Column(modifier = Modifier.weight(1f)) {
+            HomeProjectTitle(project, deviceName, Modifier.fillMaxWidth())
+            if (agentLabel != null) Text(
+                text = agentLabel,
+                color = colors.faint,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         HomeProjectIconButton(Lucide.Ellipsis, stringResource(R.string.home_project_options)) { anchor ->
             onMenu(HomeProjectActionMenu(project, bounds, anchorBounds = anchor, expanded = expanded))
         }
@@ -395,6 +432,7 @@ internal fun HomeListSectionHeader(
     expanded: Boolean,
     onClick: () -> Unit,
     onFilter: ((Rect) -> Unit)? = null,
+    filterActive: Boolean = false,
     onCreate: (() -> Unit)? = null,
 ) {
     val colors = LocalAAColors.current
@@ -434,7 +472,12 @@ internal fun HomeListSectionHeader(
             )
         }
         onFilter?.let { onShow ->
-            HomeProjectIconButton(Lucide.Ellipsis, stringResource(R.string.home_project_filter_sessions), onShow)
+            HomeProjectIconButton(
+                Lucide.Ellipsis,
+                stringResource(R.string.home_project_filter_sessions),
+                active = filterActive,
+                onClick = onShow,
+            )
         }
         onCreate?.let { create ->
             HomeProjectIconButton(Lucide.Plus, stringResource(R.string.new_session_create_project)) { create() }
@@ -443,7 +486,7 @@ internal fun HomeListSectionHeader(
 }
 
 @Composable
-private fun HomeProjectIconButton(icon: ImageVector, description: String, onClick: (Rect) -> Unit) {
+private fun HomeProjectIconButton(icon: ImageVector, description: String, active: Boolean = false, onClick: (Rect) -> Unit) {
     var bounds by remember { mutableStateOf(Rect.Zero) }
     Box(
         modifier = Modifier.size(38.dp).clip(CircleShape)
@@ -451,7 +494,12 @@ private fun HomeProjectIconButton(icon: ImageVector, description: String, onClic
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onClick(bounds) },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = description, tint = LocalAAColors.current.faint, modifier = Modifier.size(19.dp))
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = if (active) LocalAAColors.current.inkSoft else LocalAAColors.current.faint,
+            modifier = Modifier.size(19.dp),
+        )
     }
 }
 
