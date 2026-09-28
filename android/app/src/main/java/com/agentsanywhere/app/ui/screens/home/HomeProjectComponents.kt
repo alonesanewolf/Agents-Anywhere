@@ -91,6 +91,7 @@ internal data class HomeProjectActionMenu(
 @Composable
 internal fun HomeProjectList(
     projects: List<AgentProject>,
+    deviceNamesById: Map<String, String>,
     hasProjectsInOtherStatuses: Boolean,
     allSessions: List<AgentSession>,
     projectPreferences: HomeProjectPreferences,
@@ -155,6 +156,7 @@ internal fun HomeProjectList(
                 items(pinnedProjects, key = { "pinned-project-${it.id}" }) { project ->
                     HomeProjectTreeItem(
                         project = project,
+                        deviceName = deviceNamesById[project.connectorId],
                         sessions = sessionsByProject[project.id].orEmpty(),
                         expanded = project.id in expandedProjectIds,
                         loading = project.id in loadingProjectIds,
@@ -196,6 +198,7 @@ internal fun HomeProjectList(
                 items(regularProjects, key = { "project-${it.id}" }) { project ->
                     HomeProjectTreeItem(
                         project = project,
+                        deviceName = deviceNamesById[project.connectorId],
                         sessions = sessionsByProject[project.id].orEmpty(),
                         expanded = project.id in expandedProjectIds,
                         loading = project.id in loadingProjectIds,
@@ -224,6 +227,7 @@ internal fun HomeProjectList(
 @Composable
 private fun HomeProjectTreeItem(
     project: AgentProject,
+    deviceName: String?,
     sessions: List<AgentSession>,
     expanded: Boolean,
     loading: Boolean,
@@ -237,6 +241,7 @@ private fun HomeProjectTreeItem(
 ) {
     HomeProjectRow(
         project = project,
+        deviceName = deviceName,
         expanded = expanded,
         onClick = { onExpandedChange(!expanded) },
         onMenu = onMenu,
@@ -295,6 +300,7 @@ private fun HomeProjectTreeItem(
 @Composable
 private fun HomeProjectRow(
     project: AgentProject,
+    deviceName: String?,
     expanded: Boolean,
     onClick: () -> Unit,
     onMenu: (HomeProjectActionMenu) -> Unit,
@@ -331,15 +337,7 @@ private fun HomeProjectRow(
             tint = colors.faint,
             modifier = Modifier.size(21.dp),
         )
-        Text(
-            text = project.name,
-            modifier = Modifier.weight(1f),
-            color = colors.inkSoft,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        HomeProjectTitle(project, deviceName, Modifier.weight(1f))
         HomeProjectIconButton(Lucide.Ellipsis, stringResource(R.string.home_project_options)) { anchor ->
             onMenu(HomeProjectActionMenu(project, bounds, anchorBounds = anchor, expanded = expanded))
         }
@@ -361,6 +359,33 @@ private fun HomeProjectRow(
                 modifier = Modifier.size(19.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun HomeProjectTitle(project: AgentProject, deviceName: String?, modifier: Modifier = Modifier) {
+    val colors = LocalAAColors.current
+    val trimmedDeviceName = deviceName?.trim().orEmpty()
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = project.name,
+            color = colors.inkSoft,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (trimmedDeviceName.isNotEmpty()) Text(
+            text = " · $trimmedDeviceName",
+            modifier = Modifier.weight(1f, fill = false),
+            color = colors.faint,
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -450,6 +475,7 @@ private fun HomeProjectEmptyText(message: String) {
 @Composable
 internal fun HomeProjectActionOverlay(
     menu: HomeProjectActionMenu,
+    deviceName: String?,
     onDismiss: () -> Unit,
     onEdit: () -> Unit,
     onTogglePinned: () -> Unit,
@@ -496,7 +522,7 @@ internal fun HomeProjectActionOverlay(
                 .clip(highlightShape)
                 .background(if (darkMode) Color(0xFF202020) else Color.White),
         ) {
-            HomeProjectHighlightRow(menu.project, menu.expanded)
+            HomeProjectHighlightRow(menu.project, deviceName, menu.expanded)
         }
         HomeProjectActionCard(
             project = menu.project,
@@ -509,7 +535,7 @@ internal fun HomeProjectActionOverlay(
 }
 
 @Composable
-private fun HomeProjectHighlightRow(project: AgentProject, expanded: Boolean) {
+private fun HomeProjectHighlightRow(project: AgentProject, deviceName: String?, expanded: Boolean) {
     val colors = LocalAAColors.current
     Row(
         modifier = Modifier
@@ -520,14 +546,7 @@ private fun HomeProjectHighlightRow(project: AgentProject, expanded: Boolean) {
     ) {
         Icon(if (expanded) Lucide.FolderOpen else Lucide.Folder, contentDescription = null, tint = colors.faint, modifier = Modifier.size(21.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = project.name,
-                color = colors.inkSoft,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            HomeProjectTitle(project, deviceName, Modifier.fillMaxWidth())
             Text(
                 text = project.workspacePath,
                 color = colors.faint,

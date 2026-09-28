@@ -278,6 +278,7 @@ fun HomeScreen(
             projectActionMenu?.let { menu ->
                 HomeProjectActionOverlay(
                     menu = menu,
+                    deviceName = state.devices.firstOrNull { it.id == menu.project.connectorId }?.name,
                     onDismiss = { projectActionMenu = null },
                     onEdit = {
                         projectActionMenu = null
@@ -609,6 +610,9 @@ private fun HomeProjectModeList(
             }
             HomeProjectList(
                 projects = state.projects.filter { projectHasVisibleSessions(it, allSessions, projectSessionStatus) },
+                deviceNamesById = remember(state.devices) {
+                    state.devices.associate { it.id to it.name.trim() }
+                },
                 hasProjectsInOtherStatuses = state.projects.any { projectHasVisibleSessions(it, allSessions, ProjectSessionStatusFilter.All) },
                 allSessions = allSessions,
                 projectPreferences = projectPreferences,
