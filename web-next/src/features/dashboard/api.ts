@@ -51,6 +51,7 @@ import type {
   SessionShareCreateRequest,
   SessionShareCreateResponse,
   SessionSelectionPatchResponse,
+  SessionSteerResult,
   SessionSnapshotResponse,
   SessionTimelineResponse,
   TakeoverResponse,
@@ -767,6 +768,24 @@ export class DashboardApi {
     const { attachments, clientMessageId } = options;
     return this.client.post<RpcResponse<unknown>>(
       `/sessions/${encodeURIComponent(sessionId)}/runtime/messages`,
+      {
+        content,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        ...(clientMessageId ? { clientMessageId } : {}),
+      },
+      { token },
+    );
+  }
+
+  steerSession(
+    token: string,
+    sessionId: string,
+    content: string,
+    options: MessageSendOptions = {},
+  ): Promise<RpcResponse<SessionSteerResult>> {
+    const { attachments, clientMessageId } = options;
+    return this.client.post<RpcResponse<SessionSteerResult>>(
+      `/sessions/${encodeURIComponent(sessionId)}/runtime/steer`,
       {
         content,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),

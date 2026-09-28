@@ -50,6 +50,7 @@ import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runti
 import { commandActionReason, commandAllowed, commandRequest, commandUi, exactCommand, parseSlashIntent, type CommandOutcome } from "@/components/session/runtime-command-model"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { MarkdownText } from "@/components/markdown-text"
+import type { SteerOutcome } from "@/components/session/session-steer-result"
 
 export type { AttachedFile }
 
@@ -74,6 +75,7 @@ export function SessionComposer({
   onValueChange,
   onSelectionChange,
   onSend,
+  onSteer,
   onInterrupt,
   onCommand,
   onToggleTakeover,
@@ -102,6 +104,7 @@ export function SessionComposer({
     attachments: AttachedFile[],
     selections: { model?: string; permission?: string },
   ) => Promise<boolean>
+  onSteer?: (content: string, attachments: AttachedFile[]) => Promise<SteerOutcome>
   onInterrupt: () => void
   onCommand: (command: string, options: { args: string[]; raw: string }) => Promise<CommandOutcome>
   onToggleTakeover: () => void
@@ -113,12 +116,19 @@ export function SessionComposer({
   const valueRef = React.useRef(value)
   valueRef.current = value
   const pendingCommandRef = React.useRef(false)
+  const pendingMessageRef = React.useRef(false)
   const sessionVisitRef = React.useRef({ id: session.id, sequence: 0 })
   if (sessionVisitRef.current.id !== session.id) {
     sessionVisitRef.current = { id: session.id, sequence: sessionVisitRef.current.sequence + 1 }
   }
   const requestSequenceRef = React.useRef(0)
   const activeCommandRequestRef = React.useRef<number | null>(null)
+  const activeMessageRequestRef = React.useRef<number | null>(null)
+  const pendingSteerRef = React.useRef(false)
+  const activeSteerRequestRef = React.useRef<number | null>(null)
+  const [steerPending, setSteerPending] = React.useState(false)
+  const [messagePending, setMessagePending] = React.useState(false)
+  const [steerFeedback, setSteerFeedback] = React.useState<SteerOutcome | null>(null)
   const [commandPending, setCommandPending] = React.useState(false)
   const [commandFeedback, setCommandFeedback] = React.useState<CommandOutcome | null>(null)
   const [commandInputError, setCommandInputError] = React.useState<string | null>(null)
@@ -129,7 +139,14 @@ export function SessionComposer({
     setCommandInputError(null)
     setCommandPending(false)
     pendingCommandRef.current = false
+    pendingMessageRef.current = false
     activeCommandRequestRef.current = null
+    activeMessageRequestRef.current = null
+    setMessagePending(false)
+    pendingSteerRef.current = false
+    activeSteerRequestRef.current = null
+    setSteerPending(false)
+    setSteerFeedback(null)
   }, [session.id])
   const composerWidth = useElementWidth(composerRef)
   const runtimeStatus = effectiveRuntimeStatus(runtimeState, session)
@@ -160,6 +177,7 @@ export function SessionComposer({
     !isWaitingApproval &&
     !isBlocked
   const canUseSendMessage = capabilityIsUsable(effectiveCapabilities, CAPABILITY.sendMessage, runtimeScope)
+  const canUseSteer = capabilityIsUsable(effectiveCapabilities, CAPABILITY.steer, runtimeScope)
   const canUseInterrupt = capabilityIsUsable(effectiveCapabilities, CAPABILITY.interrupt, runtimeScope)
   const canUseCommands = capabilityIsUsable(effectiveCapabilities, CAPABILITY.commands, runtimeScope)
   const interruptCapability = findCapability(effectiveCapabilities, CAPABILITY.interrupt, runtimeScope)
@@ -183,6 +201,8 @@ export function SessionComposer({
     add,
     remove,
     clear,
+    clearIfUnchanged,
+    restoreIfEmpty,
     onDragEnter,
     onDragLeave,
     onDragOver,
@@ -192,11 +212,15 @@ export function SessionComposer({
     canUseSendMessage &&
     !creatingSession &&
     !sending &&
+    !messagePending &&
     !interrupting &&
     acceptsUserInput
-  const commandWritable = !creatingSession && !sending && !interrupting && !commandPending && session.takeover && !sourceUnavailable
+  const commandWritable = !creatingSession && !sending && !messagePending && !interrupting && !steerPending && !commandPending && session.takeover && !sourceUnavailable
   const hasInput = value.trim().length > 0 || attachments.length > 0
   const attachmentsReady = attachmentsAllowed && (attachments.length === 0 || (allUploaded && !uploadsPending && !uploadFailed))
+  const canSteer = Boolean(onSteer && canUseSteer && isRunning && connectorOnline && session.takeover &&
+    !creatingSession && !sourceUnavailable && pendingInteractionCount === 0 &&
+    !sending && !messagePending && !interrupting && !pendingSteerRef.current && !steerPending)
   const activeSessionCanInterrupt = Boolean(
     connectorOnline &&
     interruptCapability?.supported &&
@@ -213,6 +237,14 @@ export function SessionComposer({
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
   const [selectedModel, setSelectedModel] = React.useState("")
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
+  const selectionRequestRef = React.useRef({ model: 0, permission: 0 })
+  React.useEffect(() => {
+    setSelectedPermissionMode("")
+    setSelectedModel("")
+    setSelectedReasoning("")
+    selectionRequestRef.current.model += 1
+    selectionRequestRef.current.permission += 1
+  }, [session.id])
   const permissionItems = permissionCatalog?.permissions.map((item) => ({
     id: item.id,
     label: catalogI18nText(tNew, item.metadata, "labelKey", item.displayName),
@@ -251,26 +283,22 @@ export function SessionComposer({
   const modelValue = modelSelectionValue?.modelId ?? ""
   const effortValue = modelSelectionValue?.reasoningId ?? ""
   const permissionLabel =
-    permissionItems.find((item) => item.id === selectedPermissionMode)?.label ?? (dsh ? actualPermission?.name : null) ?? tNew("permissionMode")
-  const modelLabel = selectedModelItem?.label ?? (dsh && actualModel?.model ? `${actualModel.model}（${actualModel.provider}）` : tNew("model"))
+    permissionItems.find((item) => item.id === selectedPermissionMode)?.label ?? (dsh ? actualPermission?.name : null) ?? tSession("currentSettingUnknown")
+  const modelLabel = selectedModelItem?.label ?? (dsh && actualModel?.model ? `${actualModel.model}（${actualModel.provider}）` : tSession("currentSettingUnknown"))
   const effortLabel = effortItems.find((item) => item.id === selectedReasoning)?.label ?? (dsh ? actualModel?.reasoningEffort : null) ?? tNew("reasoning")
   const hasSelectors = Boolean(permissionItems.length > 0 || modelItems.length > 0)
   const compactSelectors = hasSelectors && ((composerWidth > 0 && composerWidth < 560) || selectorRequest > 0)
-  const permissionSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || !canUsePermissionCatalog
-  const modelSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || !canUseModelCatalog
-  const effortSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || !canUseEffortCatalog
+  const permissionSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || sending || messagePending || steerPending || !canUsePermissionCatalog
+  const modelSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || sending || messagePending || steerPending || !canUseModelCatalog
+  const effortSelectorDisabled = creatingSession || sourceUnavailable || !connectorOnline || sending || messagePending || steerPending || !canUseEffortCatalog
   const selectorsDisabled = permissionSelectorDisabled && modelSelectorDisabled
 
   React.useEffect(() => {
     if (dsh) { setSelectedPermissionMode(permissionValue); return }
     const hasRuntimePermission = permissionItems.some((item) => item.id === permissionValue && item.enabled)
-    const nextPermission = hasRuntimePermission
-      ? permissionValue
-      : permissionItems.find((item) => item.default && item.enabled)?.id
-        ?? permissionItems.find((item) => item.enabled)?.id
-        ?? ""
+    const nextPermission = hasRuntimePermission ? permissionValue : ""
     setSelectedPermissionMode((current) =>
-      hasRuntimePermission || !current || !permissionItems.some((item) => item.id === current && item.enabled)
+      hasRuntimePermission || !permissionItems.some((item) => item.id === current && item.enabled)
         ? nextPermission
         : current,
     )
@@ -279,13 +307,9 @@ export function SessionComposer({
   React.useEffect(() => {
     if (dsh) { setSelectedModel(modelValue); return }
     const hasRuntimeModel = modelItems.some((item) => item.id === modelValue && item.enabled)
-    const nextModel = hasRuntimeModel
-      ? modelValue
-      : modelItems.find((item) => item.default && item.enabled)?.id
-        ?? modelItems.find((item) => item.enabled)?.id
-        ?? ""
+    const nextModel = hasRuntimeModel ? modelValue : ""
     setSelectedModel((current) =>
-      hasRuntimeModel || !current || !modelItems.some((item) => item.id === current && item.enabled) ? nextModel : current,
+      hasRuntimeModel || !modelItems.some((item) => item.id === current && item.enabled) ? nextModel : current,
     )
   }, [dsh, modelItems, modelValue])
 
@@ -308,9 +332,11 @@ export function SessionComposer({
     const previousPermission = selectedPermissionMode
     const nextSelection = selectionIdForPermissionCatalog(permissionCatalog, permissionId)
     if (!nextSelection) return
+    const visit = sessionVisitRef.current
+    const request = ++selectionRequestRef.current.permission
     setSelectedPermissionMode(permissionId)
     void onSelectionChange({ permission: nextSelection }).then((ok) => {
-      if (!ok && !dsh) setSelectedPermissionMode(previousPermission)
+      if (!ok && !dsh && sessionVisitRef.current === visit && selectionRequestRef.current.permission === request) setSelectedPermissionMode(previousPermission)
     })
   }
   const chooseModel = (modelId: string, reasoningId: string) => {
@@ -319,10 +345,12 @@ export function SessionComposer({
     const previousReasoning = selectedReasoning
     const nextSelection = selectionIdForModelCatalog(modelCatalog, modelId, reasoningId)
     if (!nextSelection) return
+    const visit = sessionVisitRef.current
+    const request = ++selectionRequestRef.current.model
     setSelectedModel(modelId)
     setSelectedReasoning(reasoningId)
     void onSelectionChange({ model: nextSelection }).then((ok) => {
-      if (!ok && !dsh) {
+      if (!ok && !dsh && sessionVisitRef.current === visit && selectionRequestRef.current.model === request) {
         setSelectedModel(previousModel)
         setSelectedReasoning(previousReasoning)
       }
@@ -341,14 +369,13 @@ export function SessionComposer({
         : isWaiting
           ? tSession("pendingPlaceholder")
           : isStopping || isRunning
-            ? tSession("busyPlaceholder")
+            ? isRunning && canSteer ? tSession("steerPlaceholder") : tSession("busyPlaceholder")
             : isWaitingApproval || isBlocked
               ? tSession("waitingApprovalPlaceholder")
               : isError
                 ? tSession("errorPlaceholder")
                 : tSession("replyPlaceholder")
   const slashIntent = parseSlashIntent(value)
-  const showInterruptButton = showInterrupt && !slashIntent
   const commandQuery = slashIntent?.command ?? null
   const showCommandMenu = commandQuery !== null && !slashIntent?.multiline && !slashIntent?.suffix.trim() && attachments.length === 0
   const commandSuggestions = React.useMemo(
@@ -365,11 +392,14 @@ export function SessionComposer({
     hasInput &&
     attachmentsReady &&
     (attachments.length === 0 || canUseAttachments) && !slashIntent
+  const canSubmitSteer = canSteer && value.trim().length > 0 && attachmentsReady &&
+    (attachments.length === 0 || canUseAttachments) && !slashIntent
   const concurrentWriter = runtimeState?.error?.code === "DSH_CONCURRENT_WRITER_DETECTED"
   const updateValue = React.useCallback((nextValue: string) => {
     valueRef.current = nextValue
     onValueChange(nextValue)
     setCommandInputError(null)
+    setSteerFeedback(null)
   }, [onValueChange])
 
   const runCommand = async (command: RuntimeCommand, raw: string, sourceDraft = raw) => {
@@ -427,6 +457,36 @@ export function SessionComposer({
     }
   }
 
+  const runSteer = async () => {
+    if (!canSubmitSteer || pendingSteerRef.current || !onSteer) return
+    const text = value
+    const files = attachments
+    const visit = sessionVisitRef.current
+    const requestId = ++requestSequenceRef.current
+    activeSteerRequestRef.current = requestId
+    const isCurrentRequest = () => sessionVisitRef.current === visit && activeSteerRequestRef.current === requestId
+    pendingSteerRef.current = true
+    setSteerPending(true)
+    setSteerFeedback(null)
+    try {
+      const outcome = await onSteer(text, files)
+      if (!isCurrentRequest()) return
+      if (outcome.ok && outcome.state === "accepted") {
+        if (valueRef.current === text && clearIfUnchanged(files)) updateValue("")
+      } else {
+        setSteerFeedback(outcome)
+      }
+    } catch (error) {
+      if (isCurrentRequest()) setSteerFeedback({ ok: false, state: "unknown", message: error instanceof Error ? error.message : null })
+    } finally {
+      if (isCurrentRequest()) {
+        activeSteerRequestRef.current = null
+        pendingSteerRef.current = false
+        setSteerPending(false)
+      }
+    }
+  }
+
   const submit = async () => {
     if (!hasInput) return
     if (slashIntent) {
@@ -437,26 +497,42 @@ export function SessionComposer({
       await runCommand(command, value)
       return
     }
-    if (!canSubmitMessage) return
-    const text = value
-    const files = attachments
-    updateValue("")
-    clear({ revokePreviews: false })
-    const sent = await onSend(text, files, {
-      ...(selectedModelSelection ? { model: selectedModelSelection } : {}),
-      ...(selectedPermissionSelection ? { permission: selectedPermissionSelection } : {}),
-    })
-    if (!sent && valueRef.current === "") {
-      updateValue(text)
-    }
-  }
-
-  const primaryAction = () => {
-    if (showInterruptButton) {
-      onInterrupt()
+    if (isRunning) {
+      await runSteer()
       return
     }
-    void submit()
+    if (!canSubmitMessage || pendingMessageRef.current) return
+    const text = value
+    const files = attachments
+    const visit = sessionVisitRef.current
+    const requestId = ++requestSequenceRef.current
+    activeMessageRequestRef.current = requestId
+    const isCurrentRequest = () => sessionVisitRef.current === visit && activeMessageRequestRef.current === requestId
+    pendingMessageRef.current = true
+    setMessagePending(true)
+    updateValue("")
+    clear({ revokePreviews: false })
+    try {
+      const sent = await onSend(text, files, {
+        ...(selectedModelSelection ? { model: selectedModelSelection } : {}),
+        ...(selectedPermissionSelection ? { permission: selectedPermissionSelection } : {}),
+      })
+      if (!sent && isCurrentRequest() && valueRef.current === "") {
+        updateValue(text)
+        restoreIfEmpty(files)
+      }
+    } catch {
+      if (isCurrentRequest() && valueRef.current === "") {
+        updateValue(text)
+        restoreIfEmpty(files)
+      }
+    } finally {
+      if (isCurrentRequest()) {
+        activeMessageRequestRef.current = null
+        pendingMessageRef.current = false
+        setMessagePending(false)
+      }
+    }
   }
 
   return (
@@ -470,6 +546,10 @@ export function SessionComposer({
       <DragOverlay isDragging={isDragging} />
       <div className="mx-auto w-full max-w-3xl space-y-2">
         {stopOutcome ? <Alert variant={stopOutcome.ok ? "default" : "destructive"} role={stopOutcome.ok ? "status" : "alert"}><AlertDescription>{stopOutcome.message}</AlertDescription></Alert> : null}
+        {steerFeedback ? <Alert variant="destructive" role="alert"><AlertDescription>
+          {tSession(steerFeedback.state === "unknown" ? "steerUnknownOutcome" : "steerRejected")}
+          {steerFeedback.message ? <span> {steerFeedback.message}</span> : null}
+        </AlertDescription></Alert> : null}
         {commandFeedback ? <Alert variant={commandFeedback.ok ? "default" : "destructive"} role={commandFeedback.ok ? "status" : "alert"}>
           <AlertDescription>
             <span>{tSession(commandFeedback.ok ? (commandFeedback.state === "completed" ? "commandCompleted" : "commandAccepted") : commandFeedback.state === "unknown" ? "commandUnknownOutcome" : "commandFailed")}</span>
@@ -551,7 +631,7 @@ export function SessionComposer({
                 if (event.nativeEvent.isComposing) return
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault()
-                  if (!showInterruptButton) void submit()
+                  void submit()
                 }
               }}
               placeholder={placeholder}
@@ -756,18 +836,27 @@ export function SessionComposer({
               {tSession("takeover")}
             </div>
             <span className="mx-1 h-5 w-px shrink-0 bg-border" />
+            {showInterrupt ? <Button
+              type="button"
+              size="icon"
+              variant="destructive"
+              aria-label={tSession("interrupt")}
+              className="size-8 rounded-full"
+              disabled={interrupting}
+              onClick={onInterrupt}
+            >
+              {interrupting ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+            </Button> : null}
             <Button
               type="button"
               size="icon"
-              aria-label={showInterruptButton ? tSession("interrupt") : tSession("send")}
-              className={cn("size-8 rounded-full", showInterruptButton && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
-              disabled={showInterruptButton ? interrupting : !(canSubmitCommand || canSubmitMessage)}
-              onClick={primaryAction}
+              aria-label={isRunning && !slashIntent && canUseSteer ? tSession("sendWhileRunning") : tSession("send")}
+              className="size-8 rounded-full"
+              disabled={!(canSubmitCommand || canSubmitMessage || canSubmitSteer)}
+              onClick={() => void submit()}
             >
-              {sending || interrupting ? (
+              {sending || messagePending || steerPending ? (
                 <Loader2 className="size-4 animate-spin" />
-              ) : showInterruptButton ? (
-                <Square className="size-4" />
               ) : (
                 <ArrowUp className="size-4" />
               )}

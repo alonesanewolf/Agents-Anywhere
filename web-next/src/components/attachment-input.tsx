@@ -154,6 +154,21 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
     })
   }, [])
 
+  const clearIfUnchanged = useCallback((submitted: AttachedFile[]) => {
+    const current = attachmentsRef.current
+    if (current.length !== submitted.length || current.some((file, index) =>
+      file.id !== submitted[index]?.id || file.uploaded?.fileId !== submitted[index]?.uploaded?.fileId
+    )) return false
+    clear({ revokePreviews: false })
+    return true
+  }, [clear])
+
+  const restoreIfEmpty = useCallback((submitted: AttachedFile[]) => {
+    if (attachmentsRef.current.length > 0) return
+    attachmentsRef.current = submitted
+    setAttachments((current) => current.length === 0 ? submitted : current)
+  }, [])
+
   useEffect(() => {
     if (sessionIdRef.current === sessionId) return
     sessionIdRef.current = sessionId
@@ -280,6 +295,8 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
     add,
     remove,
     clear,
+    clearIfUnchanged,
+    restoreIfEmpty,
     onDragEnter,
     onDragLeave,
     onDragOver,

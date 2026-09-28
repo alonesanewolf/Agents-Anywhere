@@ -50,6 +50,7 @@ import { createTimelineScrollFollow } from "@/components/session/timeline-scroll
 import { createSessionEventBuffer } from "@/components/session/session-event-buffer"
 import { CAPABILITY, capabilityIsUsable, findCapability } from "@/components/session/capabilities"
 import { SessionComposer, type AttachedFile } from "@/components/session/session-composer"
+import { sessionSteerFailure, sessionSteerResult, type SteerOutcome } from "@/components/session/session-steer-result"
 import { SessionGoalPanel } from "@/components/session/session-goal-panel"
 import { commandResult, commandTransportFailure, type CommandOutcome } from "@/components/session/runtime-command-model"
 import { latestPlanItems, runtimeStatesSemanticallyEqual } from "@/components/session/runtime-presentation"
@@ -402,6 +403,10 @@ export function SessionDetail({
   const activeStopRequestRef = React.useRef<number | null>(null)
   const commandRequestSeqRef = React.useRef(0)
   const activeCommandRequestRef = React.useRef<number | null>(null)
+  const sendRequestSeqRef = React.useRef(0)
+  const activeSendRequestRef = React.useRef<{ visit: typeof sessionVisitRef.current; id: number } | null>(null)
+  const steerRequestSeqRef = React.useRef(0)
+  const activeSteerRequestRef = React.useRef<{ visit: typeof sessionVisitRef.current; id: number } | null>(null)
 
   const session = state?.session ?? fallbackSession
   const runtimeState = state?.state ?? null
@@ -520,14 +525,17 @@ export function SessionDetail({
     selections: { model?: string; permission?: string },
   ): Promise<boolean> => {
     if (!session) return false
+    const visit = sessionVisitRef.current
+    if (session.id !== visit.sessionId) return false
     const selectionPatch = selectionPatchFromComposerSelections(state?.state?.selections ?? {}, selections)
     if (Object.keys(selectionPatch).length === 0) return true
 
     const previousRuntimeState = state?.state ?? null
     const selectionUpdateSeq = selectionUpdateSeqRef.current + 1
     selectionUpdateSeqRef.current = selectionUpdateSeq
+    const isCurrentRequest = () => sessionVisitRef.current === visit && selectionUpdateSeqRef.current === selectionUpdateSeq
     setState((current) =>
-      current
+      current?.session.id === visit.sessionId
         ? {
             ...current,
             state: runtimeStateWithSelections(current.state, current.session, selectionPatch),
@@ -541,9 +549,9 @@ export function SessionDetail({
       const result = await write.finally(() => {
         if (selectionWritesRef.current.get(session.id) === write) selectionWritesRef.current.delete(session.id)
       })
-      if (selectionUpdateSeqRef.current !== selectionUpdateSeq) return true
+      if (!isCurrentRequest()) return sessionVisitRef.current === visit
       setState((current) =>
-        current
+        current?.session.id === visit.sessionId
           ? {
               ...current,
               state: runtimeStateWithSelectionResult(
@@ -557,13 +565,14 @@ export function SessionDetail({
       )
       return true
     } catch (err) {
+      if (!isCurrentRequest()) return sessionVisitRef.current === visit
       // An official operation can partially succeed. Read the actual selection before rolling back.
       const actual = sessionRuntimeType(session) === "dsh"
         ? await dashboardApi.getSessionRuntimeState(token, session.id).catch(() => null)
         : null
-      if (selectionUpdateSeqRef.current === selectionUpdateSeq) {
+      if (isCurrentRequest()) {
         setState((current) =>
-          current
+          current?.session.id === visit.sessionId
             ? {
                 ...current,
                 state: actual?.state ?? runtimeStateWithSelectionRollback(
@@ -576,10 +585,10 @@ export function SessionDetail({
             : current,
         )
       }
-      if (selectionUpdateSeqRef.current === selectionUpdateSeq) {
+      if (isCurrentRequest()) {
         toast.error(err instanceof Error ? err.message : tSession("updateSelectionsFailed"))
       }
-      return selectionUpdateSeqRef.current !== selectionUpdateSeq
+      return !isCurrentRequest()
     }
   }
 
@@ -1185,10 +1194,15 @@ export function SessionDetail({
     selections: { model?: string; permission?: string },
   ): Promise<boolean> => {
     if (!session || (!content.trim() && attachments.length === 0)) return false
+    const visit = sessionVisitRef.current
+    if (activeSendRequestRef.current?.visit === visit) return false
     const uploadedAttachments = attachments.flatMap((attachment) =>
       attachment.uploaded ? [attachment.uploaded] : [],
     )
     if (uploadedAttachments.length !== attachments.length) return false
+    const request = { visit, id: ++sendRequestSeqRef.current }
+    activeSendRequestRef.current = request
+    const isCurrentRequest = () => sessionVisitRef.current === visit && activeSendRequestRef.current === request
     const clientMessageId = createClientId("msg")
     const messageText = content.trim() || tNew("attachmentOnlyPrompt")
     timelineFollowRef.current?.resume()
@@ -1207,7 +1221,7 @@ export function SessionDetail({
     })
     const previousRuntimeState = state?.state ?? null
     setState((current) => {
-      if (!current) return current
+      if (!current || current.session.id !== visit.sessionId) return current
       return {
         ...current,
         state: nextOptimisticRuntimeState(current.state, current.session, "waiting"),
@@ -1216,11 +1230,13 @@ export function SessionDetail({
     })
     setSending(true)
     try {
+      const pendingSelectionWrite = selectionWritesRef.current.get(visit.sessionId)
+      if (pendingSelectionWrite) await pendingSelectionWrite
       const selectionPatch = selectionPatchFromComposerSelections(runtimeState?.selections ?? {}, selections)
       if (Object.keys(selectionPatch).length > 0) {
         const selectionResult = await dashboardApi.updateSessionSelections(token, session.id, selectionPatch)
-        setState((current) =>
-          current
+        if (isCurrentRequest()) setState((current) =>
+          current?.session.id === visit.sessionId
             ? {
                 ...current,
                 state: runtimeStateWithSelectionResult(
@@ -1246,8 +1262,8 @@ export function SessionDetail({
           ? err.message
           : tSession("sendFailed")
       markOptimisticMessageFailed(clientMessageId, message)
-      setState((current) => {
-        if (!current) return current
+      if (isCurrentRequest()) setState((current) => {
+        if (!current || current.session.id !== visit.sessionId) return current
         return {
           ...current,
           state:
@@ -1261,7 +1277,7 @@ export function SessionDetail({
           ),
         }
       })
-      if (nextSourceErrorCode) {
+      if (nextSourceErrorCode && isCurrentRequest()) {
         const sourceAvailability = sourceAvailabilityFromError(nextSourceErrorCode)
         const nextSession: SessionView = {
           ...session,
@@ -1270,15 +1286,45 @@ export function SessionDetail({
           sourceAvailabilityUpdatedAt: new Date().toISOString(),
           sourceObservationOrigin: "operation",
         }
-        setState((current) => current ? { ...current, session: nextSession } : current)
+        setState((current) => current?.session.id === visit.sessionId ? { ...current, session: nextSession } : current)
         onSessionUpdated?.(nextSession)
         setSourceErrorCode(nextSourceErrorCode)
-      } else {
+      } else if (isCurrentRequest()) {
         toast.error(err instanceof Error ? err.message : tSession("sendFailed"))
       }
       return false
     } finally {
-      setSending(false)
+      if (isCurrentRequest()) {
+        activeSendRequestRef.current = null
+        setSending(false)
+      }
+    }
+  }
+
+  const handleSteer = async (content: string, attachments: AttachedFile[]): Promise<SteerOutcome> => {
+    const visit = sessionVisitRef.current
+    if (!session || session.id !== visit.sessionId || runtimeStatus !== "running" ||
+      session.connectorStatus !== "online" || !session.takeover || session.archived ||
+      !capabilityIsUsable(state?.effectiveCapabilities, CAPABILITY.steer, {
+        runtimeId: sessionRuntimeId(session), runtimeType: sessionRuntimeType(session),
+      }) || !content.trim() || sending || activeSendRequestRef.current?.visit === visit || interrupting || blockingInteractionCount > 0 ||
+      activeSteerRequestRef.current?.visit === visit) {
+      return { ok: false, state: "rejected", message: tSession("steerUnavailable") }
+    }
+    const uploaded = attachments.flatMap((file) => file.uploaded ? [{ fileId: file.uploaded.fileId }] : [])
+    if (uploaded.length !== attachments.length) return { ok: false, state: "rejected", message: tSession("steerUnavailable") }
+    const request = { visit, id: ++steerRequestSeqRef.current }
+    activeSteerRequestRef.current = request
+    try {
+      const response = await dashboardApi.steerSession(token, visit.sessionId, content, {
+        attachments: uploaded,
+        clientMessageId: createClientId("msg"),
+      })
+      return sessionSteerResult(response)
+    } catch (error) {
+      return sessionSteerFailure(error)
+    } finally {
+      if (activeSteerRequestRef.current === request) activeSteerRequestRef.current = null
     }
   }
 
@@ -1815,6 +1861,7 @@ export function SessionDetail({
             onValueChange={setComposerDraft}
             onSelectionChange={handleSelectionChange}
             onSend={handleSend}
+            onSteer={handleSteer}
             onInterrupt={handleInterrupt}
             onCommand={handleSessionCommand}
             onToggleTakeover={() => setPendingTakeover(!session.takeover)}

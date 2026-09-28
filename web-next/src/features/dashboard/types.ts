@@ -732,6 +732,14 @@ export type MessageSendOptions = {
   clientMessageId?: string;
 };
 
+export type SessionSteerResult = {
+  ok?: boolean;
+  steered?: boolean;
+  code?: string;
+  message?: string;
+  executionState?: string;
+};
+
 export type SessionRuntimeState = {
   sessionId: string;
   runtime: string;
