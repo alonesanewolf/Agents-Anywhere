@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
+
 from connector.core.json_kv import JsonKeyValueStore
 from connector.runtimes.codex.coordination import peer as peer_module
 from connector.runtimes.codex.coordination import router as router_module
@@ -201,6 +202,63 @@ def test_default_budget_receives_router_absence_after_silent_candidate(method):
                 for frame in router.negative_responses
             )
             assert not caller.client._pending
+
+    asyncio.run(run())
+
+
+def test_passive_view_discovery_stops_at_one_second_without_claiming_absence():
+    async def run():
+        async with network() as (router, caller, _, facade, sdk):
+            original_request = caller.client.request
+            discovery_budgets = []
+
+            async def observed_request(method, params, **kwargs):
+                if method == "thread-owner-discovery":
+                    discovery_budgets.append(kwargs["timeout"])
+                return await original_request(method, params, **kwargs)
+
+            caller.client.request = observed_request
+            with pytest.raises(IpcError, match="^timeout$"):
+                await facade.prepare_view(THREAD)
+            assert discovery_budgets == [1]
+            assert router.discovery_count == 1
+            assert not caller.client._pending
+            assert not sdk.calls and not caller.is_owner(THREAD)
+            assert facade.journal.operation(THREAD) is None
+
+    asyncio.run(run())
+
+
+def test_passive_view_accepts_formal_negative_without_native_mutation():
+    async def run():
+        async with network(silent=False) as (router, caller, _, facade, sdk):
+            result, _ = await facade.prepare_view(THREAD)
+            assert result.coordination_role is None
+            assert result.thread["id"] == THREAD
+            assert router.last_error == "no-client-found"
+            assert not sdk.calls
+            assert not caller.is_owner(THREAD)
+
+    asyncio.run(run())
+
+
+def test_passive_view_waits_for_selected_owner_snapshot_after_discovery_budget(
+    monkeypatch,
+):
+    async def run():
+        async with network(silent=False) as (_, caller, owner, facade, sdk):
+            await claim_ready(owner, caller)
+            original_snapshot = owner._snapshot
+
+            async def slow_snapshot(*args, **kwargs):
+                await asyncio.sleep(3 * SCALE)
+                return await original_snapshot(*args, **kwargs)
+
+            monkeypatch.setattr(owner, "_snapshot", slow_snapshot)
+            result, _ = await facade.prepare_view(THREAD)
+            assert result.coordination_role == "follower"
+            assert caller.get_owner(THREAD).client_id == owner.client.client_id
+            assert not sdk.calls and not caller.is_owner(THREAD)
 
     asyncio.run(run())
 

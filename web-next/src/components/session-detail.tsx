@@ -110,6 +110,7 @@ export type SessionMemorySnapshot = {
 type SessionRemoteState = {
   session: SessionView
   state?: SessionRuntimeState | null
+  runtimeSyncPending?: boolean
   items: TimelineItem[]
   notices: Notice[]
   nextSeq: number
@@ -162,8 +163,10 @@ async function loadInitialSessionState(
   const reason = options.reason ?? "session-detail.initial-load"
   const snapshot = await dashboardApi.getSessionSnapshot(token, sessionId, INITIAL_TIMELINE_LIMIT, {
     reason,
+    historyOnly: options.reason === "session-detail.initial-load",
+    fresh: options.reason?.endsWith(":live-facts"),
   })
-  const state = sessionStateFromSnapshot(snapshot)
+  const state = sessionStateFromSnapshot(snapshot, options.reason === "session-detail.initial-load")
   console.info("[session_status_trace]", {
     layer: "frontend-snapshot",
     reason,
@@ -179,10 +182,11 @@ async function loadInitialSessionState(
   return state
 }
 
-function sessionStateFromSnapshot(snapshot: SessionSnapshotResponse): SessionRemoteState {
+function sessionStateFromSnapshot(snapshot: SessionSnapshotResponse, historyOnly = false): SessionRemoteState {
   return {
     session: snapshot.session,
     state: snapshot.state ?? null,
+    runtimeSyncPending: historyOnly && snapshot.session.runtime === "codex",
     items: mergeTimelineItems([], snapshot.timeline.items),
     notices: snapshot.notices,
     nextSeq: snapshot.timeline.nextSeq,
@@ -524,7 +528,7 @@ export function SessionDetail({
   const handleSelectionChange = async (
     selections: { model?: string; permission?: string },
   ): Promise<boolean> => {
-    if (!session) return false
+    if (!session || state?.runtimeSyncPending) return false
     const visit = sessionVisitRef.current
     if (session.id !== visit.sessionId) return false
     const selectionPatch = selectionPatchFromComposerSelections(state?.state?.selections ?? {}, selections)
@@ -883,6 +887,8 @@ export function SessionDetail({
     let recoveryStarting = false
     let snapshotReady = false
     let socketSubscribed = false
+    let needsLiveSnapshot = false
+    let liveSnapshotLoading = false
     let connectionSequence = 0
     const recoveredSubscriptions = createRecoveredSubscriptionTracker(() => {
       if (!cancelled) setCatalogRecoveryGeneration((current) => current + 1)
@@ -905,7 +911,12 @@ export function SessionDetail({
     })
     const refetch = (reason: string) => {
       if (refetchPromise) return refetchPromise
-      refetchPromise = loadInitialSessionState(token, sessionId, { reason })
+      // Until the live read succeeds, every snapshot replacement must verify
+      // notices and capabilities. A fallback snapshot cannot unlock controls.
+      const readReason = needsLiveSnapshot && !reason.endsWith(":live-facts")
+        ? `${reason}:live-facts`
+        : reason
+      refetchPromise = loadInitialSessionState(token, sessionId, { reason: readReason })
         .then((next) => {
           if (cancelled) return
           const merged = applyOptimisticItemsRef.current(next)
@@ -921,6 +932,7 @@ export function SessionDetail({
             timelineResetVersion: nextTimelineResetVersion(current?.timelineResetVersion ?? 0, true),
           }))
           onSessionUpdatedRef.current?.(next.session)
+          needsLiveSnapshot = false
         })
         .catch(() => undefined)
         .finally(() => {
@@ -1089,6 +1101,15 @@ export function SessionDetail({
       if (pendingRecovery) await pendingRecovery
       if (cancelled || !snapshotReady || !socketSubscribed) return
       await recoverEvents(eventSequenceCursor.current(sessionId), reason)
+      if (!cancelled && socketSubscribed && connection === connectionSequence && needsLiveSnapshot) {
+        liveSnapshotLoading = true
+        try {
+          await refetch(`${reason}:live-facts`)
+        } finally {
+          liveSnapshotLoading = false
+          drainBufferedEvents()
+        }
+      }
       if (!cancelled && socketSubscribed && connection === connectionSequence) recoveredSubscriptions.recovered(connection)
     }
 
@@ -1117,7 +1138,7 @@ export function SessionDetail({
             }
             return
           }
-          if (!snapshotReady || recoveryPromise || recoveryStarting) {
+          if (!snapshotReady || recoveryPromise || recoveryStarting || liveSnapshotLoading) {
             bufferedEvents.push(event)
             return
           }
@@ -1150,6 +1171,7 @@ export function SessionDetail({
         if (cancelled) return
         setError(null)
         const merged = applyOptimisticItemsRef.current(next)
+        needsLiveSnapshot = Boolean(merged.runtimeSyncPending)
         clearResolvedOptimisticMessagesRef.current(sessionId, merged.items)
         setState((current) => current ? mergeSessionSnapshot(current, merged) : merged)
         eventSequenceCursor.advance(
@@ -1196,7 +1218,7 @@ export function SessionDetail({
     attachments: AttachedFile[],
     selections: { model?: string; permission?: string },
   ): Promise<boolean> => {
-    if (!session || (!content.trim() && attachments.length === 0)) return false
+    if (!session || state?.runtimeSyncPending || (!content.trim() && attachments.length === 0)) return false
     const visit = sessionVisitRef.current
     if (activeSendRequestRef.current?.visit === visit || activeSteerRequestRef.current?.visit === visit) return false
     const uploadedAttachments = attachments.flatMap((attachment) =>
@@ -1306,7 +1328,7 @@ export function SessionDetail({
 
   const handleSteer = async (content: string, attachments: AttachedFile[]): Promise<SteerOutcome> => {
     const visit = sessionVisitRef.current
-    if (!session || session.id !== visit.sessionId || runtimeStatus !== "running" ||
+    if (!session || state?.runtimeSyncPending || session.id !== visit.sessionId || runtimeStatus !== "running" ||
       session.connectorStatus !== "online" || !session.takeover || session.archived ||
       !capabilityIsUsable(state?.effectiveCapabilities, CAPABILITY.steer, {
         runtimeId: sessionRuntimeId(session), runtimeType: sessionRuntimeType(session),
@@ -1362,7 +1384,7 @@ export function SessionDetail({
   }
 
   const handleInterrupt = async () => {
-    if (!session || interrupting) return
+    if (!session || state?.runtimeSyncPending || interrupting) return
     const visit = sessionVisitRef.current
     const request = ++stopRequestSeqRef.current
     activeStopRequestRef.current = request
@@ -1387,7 +1409,7 @@ export function SessionDetail({
     command: string,
     options: { args: string[]; raw: string },
   ): Promise<CommandOutcome> => {
-    if (!session) return {ok:false,state:"unknown",code:"session_unavailable",message:tSession("commandUnavailable"),result:null}
+    if (!session || state?.runtimeSyncPending) return {ok:false,state:"unknown",code:"session_unavailable",message:tSession("commandUnavailable"),result:null}
     const visit = sessionVisitRef.current
     const request = ++commandRequestSeqRef.current
     activeCommandRequestRef.current = request
@@ -1428,7 +1450,7 @@ export function SessionDetail({
     actionId: string,
     input?: Record<string, unknown>,
   ) => {
-    if (!session || resolvingNoticeId || interactionTakeoverRef.current) return
+    if (!session || state?.runtimeSyncPending || resolvingNoticeId || interactionTakeoverRef.current) return
     setResolvingNoticeId(noticeId)
     setResolvingActionId(actionId)
     try {
@@ -1847,6 +1869,7 @@ export function SessionDetail({
             token={token}
             session={session}
             runtimeState={runtimeState}
+            runtimeSyncPending={state?.runtimeSyncPending ?? false}
             pendingInteractionCount={blockingInteractionCount}
             creatingSession={isLocalOptimisticSession}
             sending={sending}

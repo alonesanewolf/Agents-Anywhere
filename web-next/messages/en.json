@@ -897,6 +897,7 @@
       "loadRuntimeSettingsFailed": "Failed to load runtime settings.",
       "sendFailed": "Failed to send message.",
       "sourceUnavailablePlaceholder": "This session can no longer continue",
+      "syncingSessionPlaceholder": "Syncing session state...",
       "sourceArchivedTitle": "Session archived in {client}",
       "sourceArchivedDescription": "This session was archived in the local {client} client and cannot continue. Unarchive it to resume the conversation.",
       "sourceDeletedTitle": "Session deleted in {client}",

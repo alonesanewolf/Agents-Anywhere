@@ -4851,6 +4851,53 @@ def test_session_snapshot_falls_back_when_live_notices_and_capabilities_timeout(
     assert notices.json()["detail"]["code"] == "runtime_notices_timeout"
 
 
+def test_codex_history_first_snapshot_never_waits_for_live_ipc(tmp_path):
+    client = make_client(tmp_path)
+    _connector_id, _access_token, session_id, headers = create_connector_and_session(
+        client
+    )
+
+    class WaitingOwnerRpc(FakeLocalRpc):
+        async def request(self, connector_id, method, params, *, timeout=30):
+            if method in {"session.notices", "session.capabilities"}:
+                raise AssertionError(f"history waited for {method}")
+            return await super().request(
+                connector_id, method, params, timeout=timeout
+            )
+
+    rpc = WaitingOwnerRpc()
+    client.app.state.rpc = rpc
+    response = client.get(
+        f"/sessions/{session_id}/snapshot?historyOnly=true", headers=headers
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["session"]["id"] == session_id
+    assert body["timeline"]["nextSeq"] >= 0
+    assert not any(
+        method in {"session.notices", "session.capabilities"}
+        for _, method, _, _ in rpc.requests
+    )
+
+
+def test_codex_live_followup_does_not_silently_clear_unread_notices(tmp_path):
+    client = make_client(tmp_path)
+    _connector_id, _access_token, session_id, headers = create_connector_and_session(
+        client
+    )
+    rpc = FakeLocalRpc()
+    rpc.timeout_session_methods = {"session.notices"}
+    client.app.state.rpc = rpc
+
+    response = client.get(
+        f"/sessions/{session_id}/snapshot?fresh=true", headers=headers
+    )
+
+    assert response.status_code == 504
+    assert response.json()["detail"]["code"] == "runtime_notices_timeout"
+
+
 def test_session_snapshot_does_not_block_on_runtime_state_read(tmp_path):
     client = make_client(tmp_path)
     _connector_id, _access_token, session_id, headers = create_connector_and_session(

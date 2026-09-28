@@ -897,6 +897,7 @@
       "loadRuntimeSettingsFailed": "无法加载运行时设置。",
       "sendFailed": "无法发送消息。",
       "sourceUnavailablePlaceholder": "当前会话已无法继续对话",
+      "syncingSessionPlaceholder": "正在同步会话状态…",
       "sourceArchivedTitle": "会话已在 {client} 中归档",
       "sourceArchivedDescription": "当前会话已在本地 {client} 客户端中归档，无法继续对话。请在该客户端取消归档后继续。",
       "sourceDeletedTitle": "会话已在 {client} 中删除",

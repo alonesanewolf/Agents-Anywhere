@@ -6,6 +6,26 @@ function timelineSnapshot(sequence) {
   return { protocolVersion: '1.0', eventId: `timeline:${sequence}`, sessionId: 's1', type: 'timeline.snapshot', sequence, cursor: `seq:${sequence}`, payload: { items: [] } }
 }
 
+test('history-first Codex view refuses input until live synchronization completes', async t => {
+  let sends = 0
+  let steers = 0
+  const harness = createDetailStateHarness({
+    send: async () => { sends++; return { ok: true } },
+    steer: async () => { steers++; return { ok: true, result: { steered: true } } },
+  })
+  t.after(() => harness.dispose())
+  harness.replaceRenderState(current => ({ ...current, runtimeSyncPending: true }))
+  assert.equal(await harness.handleSend('wait for the owner', [], {}), false)
+  harness.applyEvent(runtimeEvent('running', 121))
+  harness.renderBuffer.flush()
+  assert.equal((await harness.handleSteer('not yet', [])).ok, false)
+  assert.equal(sends, 0)
+  assert.equal(steers, 0)
+  harness.replaceRenderState(current => ({ ...current, runtimeSyncPending: false }))
+  assert.equal((await harness.handleSteer('ready', [])).state, 'accepted')
+  assert.equal(steers, 1)
+})
+
 test('ordinary start reconciles published timeline 123 then native running 122 without reload', async t => {
   let finish
   let sends = 0

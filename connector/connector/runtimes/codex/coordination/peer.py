@@ -183,7 +183,9 @@ class CoordinationPeer:
             result.get("supportsUntrustedAppInput") is True,
         )
 
-    async def follow(self, thread_id, *, timeout=OWNER_DISCOVERY_TIMEOUT):
+    async def follow(
+        self, thread_id, *, timeout=OWNER_DISCOVERY_TIMEOUT, discovery_timeout=None
+    ):
         self._require_open()
         if self.is_owner(thread_id):
             return self.get_state(thread_id)
@@ -195,7 +197,10 @@ class CoordinationPeer:
         lock = self._follow_locks.setdefault(thread_id, asyncio.Lock())
         try:
             async with asyncio.timeout(timeout), lock:
-                owner = await self.discover_owner(thread_id, timeout=timeout)
+                owner = await self.discover_owner(
+                    thread_id,
+                    timeout=timeout if discovery_timeout is None else discovery_timeout,
+                )
                 if self._followed.get(thread_id) is not record:
                     raise IpcError("unfollowed")
                 if owner is None:

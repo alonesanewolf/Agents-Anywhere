@@ -901,6 +901,8 @@ async def session_snapshot(
     session_id: str,
     background_tasks: BackgroundTasks,
     limit: int = Query(100, ge=1, le=500),
+    historyOnly: bool = Query(False),
+    fresh: bool = Query(False),
     user_id: str = Depends(current_user_id),
     db: Store = Depends(get_store),
     manager: ConnectorRpcManager = Depends(get_rpc),
@@ -929,9 +931,17 @@ async def session_snapshot(
         stage_started_at = time.monotonic()
         session = await db.get_session(session_id, user_id=user_id)
         log_snapshot_stage("authorization", stage_started_at)
+        history_only = historyOnly and session.runtime == "codex"
 
         stage_started_at = time.monotonic()
-        notices = await read_session_notices_for_snapshot(manager, session)
+        # A first history page uses persisted facts. Owner discovery and
+        # ephemeral notices are read after the subscriber is installed.
+        if history_only:
+            notices = []
+        elif fresh and session.runtime == "codex":
+            notices = await read_session_notices_from_connector(manager, session)
+        else:
+            notices = await read_session_notices_for_snapshot(manager, session)
         log_snapshot_stage("notices", stage_started_at)
 
         stage_started_at = time.monotonic()
@@ -950,12 +960,20 @@ async def session_snapshot(
         log_snapshot_stage("connector_status", stage_started_at)
 
         stage_started_at = time.monotonic()
-        runtime_capabilities = await read_session_capabilities_with_fallback(
-            db,
-            manager,
-            session,
-            user_id,
-        )
+        if history_only:
+            runtime_capabilities = ProtocolCapabilitySet.model_validate(
+                await db.get_protocol_capabilities(
+                    session.connectorId, user_id=user_id
+                )
+            )
+        elif fresh and session.runtime == "codex":
+            runtime_capabilities = await read_session_capabilities_from_connector(
+                manager, session
+            )
+        else:
+            runtime_capabilities = await read_session_capabilities_with_fallback(
+                db, manager, session, user_id
+            )
         log_snapshot_stage("capabilities", stage_started_at)
 
         stage_started_at = time.monotonic()

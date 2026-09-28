@@ -77,6 +77,7 @@ export function SessionComposer({
   token,
   session,
   runtimeState,
+  runtimeSyncPending = false,
   pendingInteractionCount,
   creatingSession = false,
   sending,
@@ -102,6 +103,7 @@ export function SessionComposer({
   token: string
   session: SessionView
   runtimeState?: SessionRuntimeState | null
+  runtimeSyncPending?: boolean
   pendingInteractionCount: number
   creatingSession?: boolean
   sending: boolean
@@ -184,7 +186,7 @@ export function SessionComposer({
   const isWaiting = runtimeStatus === "waiting" || runtimeStatus === "pending"
   const isError = runtimeStatus === "error"
   const isDisconnected = runtimeStatus === "disconnected"
-  const sourceUnavailable = session.archived
+  const sourceUnavailable = session.archived || runtimeSyncPending
   const connectorOnline = session.connectorStatus === "online"
   const acceptsUserInput =
     connectorOnline &&
@@ -404,6 +406,8 @@ export function SessionComposer({
   }
   const placeholder = creatingSession
     ? tSession("creatingPlaceholder")
+    : runtimeSyncPending
+      ? tSession("syncingSessionPlaceholder")
     : sourceUnavailable
       ? tSession("sourceUnavailablePlaceholder")
     : !session.takeover

@@ -540,7 +540,9 @@ class CoordinatedCodexClient:
         async with self.locks[thread_id]:
             self.attached.add(thread_id)
             self.view_epochs.setdefault(thread_id, 0)
-            result, token = await self._read_thread_locked(thread_id, True)
+            result, token = await self._read_thread_locked(
+                thread_id, True, passive_discovery_timeout=1
+            )
             return result, token
 
     async def detach_view(self, thread_id, can_detach):
@@ -557,11 +559,15 @@ class CoordinatedCodexClient:
                 await self.peer.unfollow(thread_id)
             return True
 
-    async def _read_thread_locked(self, thread_id, include_turns):
+    async def _read_thread_locked(
+        self, thread_id, include_turns, *, passive_discovery_timeout=None
+    ):
         initial = self.view_token(thread_id)
         state = self.peer.get_state(thread_id)
         if state is None:
-            state = await self.peer.follow(thread_id)
+            state = await self.peer.follow(
+                thread_id, discovery_timeout=passive_discovery_timeout
+            )
         if state is not None:
             # Preserve the reviewed target-specific ACK/activity overlay.
             state = self._snapshot(thread_id)[0]

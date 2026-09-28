@@ -72,6 +72,8 @@ export type SessionStateQuery = {
 
 export type SessionSnapshotRequestOptions = {
   reason?: string;
+  historyOnly?: boolean;
+  fresh?: boolean;
 };
 
 export class DashboardApi {
@@ -358,7 +360,11 @@ export class DashboardApi {
     });
     return this.client.get<SessionSnapshotResponse>(
       `/sessions/${encodeURIComponent(sessionId)}/snapshot`,
-      { token, query: { limit } },
+      { token, query: {
+        limit,
+        ...(options.historyOnly ? { historyOnly: true } : {}),
+        ...(options.fresh ? { fresh: true } : {}),
+      } },
     );
   }
 
