@@ -221,7 +221,7 @@ class CoordinatedCodexClient:
             "owner"
             if self.peer.is_owner(thread_id)
             else "follower"
-            if self.peer.is_follower(thread_id)
+            if owner is not None and self.peer.is_follower(thread_id)
             else "none"
         )
         source = (
@@ -299,21 +299,29 @@ class CoordinatedCodexClient:
         return self.peer.is_follower(thread_id)
 
     def has_canonical_authority(self, thread_id):
-        return self.peer.is_owner(thread_id) or self.peer.is_follower(thread_id)
+        return self.peer.is_owner(thread_id) or (
+            self.peer.is_follower(thread_id)
+            and self.peer.get_owner(thread_id) is not None
+            and self.peer.get_state(thread_id) is not None
+        )
 
     def capabilities(self, thread_id):
+        has_follower_owner = (
+            self.peer.is_follower(thread_id)
+            and self.peer.get_owner(thread_id) is not None
+        )
         return {
             "role": "owner"
             if self.peer.is_owner(thread_id)
             else "follower"
-            if self.peer.is_follower(thread_id)
+            if has_follower_owner
             else "unattached",
             "nativeVersion": self.sdk.native_runtime_info().get("version"),
             "goalControl": self.peer.is_owner(thread_id)
             and self.command_capabilities(thread_id)["nativeControls"]
             and self.goal_support.get(thread_id, False),
             "userSessionStop": self.peer.is_owner(thread_id)
-            or self.peer.is_follower(thread_id),
+            or has_follower_owner,
             "supportsUntrustedAppInput": False,
             "modelCatalogScope": "local-sdk",
             "unsupportedContexts": [
@@ -535,13 +543,13 @@ class CoordinatedCodexClient:
     def view_is_current(self, thread_id, token):
         return not self.closed and token == self.view_token(thread_id)
 
-    async def prepare_view(self, thread_id):
+    async def prepare_view(self, thread_id, *, discovery_timeout=12):
         """One fresh passive follow/read. Its absence never authorizes mutation."""
         async with self.locks[thread_id]:
             self.attached.add(thread_id)
             self.view_epochs.setdefault(thread_id, 0)
             result, token = await self._read_thread_locked(
-                thread_id, True, passive_discovery_timeout=1
+                thread_id, True, passive_discovery_timeout=discovery_timeout
             )
             return result, token
 

@@ -54,7 +54,7 @@ export function runtimeEvent(status, sequence, overrides = {}) {
   }
 }
 
-export function createDetailStateHarness({ onChange = () => {}, send, steer } = {}) {
+export function createDetailStateHarness({ onChange = () => {}, send, steer, onLiveRecovery = () => {} } = {}) {
   let state = {
     session: { id: 's1', runtime: 'codex', runtimeId: 'codex', externalSessionId: 'thread-1', connectorStatus: 'online', status: 'idle', updatedSeq: 120, takeover: true, archived: false },
     state: runtimeEvent('idle', 120).payload.state, items: [], notices: [], catalogs: {}, timelineResetVersion: 0,
@@ -65,6 +65,9 @@ export function createDetailStateHarness({ onChange = () => {}, send, steer } = 
   let sending = false
   const environment = {
     ...dependencies, console: { info() {} }, token: 'test', sessionId: 's1', cancelled: false,
+    needsLiveSnapshot: false, socketSubscribed: true, liveSnapshotLoading: false, liveRetryScheduled: false,
+    recoveryPromise: null, recoveryStarting: false, connectionSequence: 1,
+    recoverAfterSubscription: onLiveRecovery,
     get state() { return state }, get session() { return state.session }, get runtimeState() { return state.state },
     get runtimeStatus() { return state.state.status }, get sending() { return sending },
     sessionRuntimeId: session => session.runtimeId, sessionRuntimeType: session => session.runtime,

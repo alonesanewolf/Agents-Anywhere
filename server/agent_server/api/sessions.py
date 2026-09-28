@@ -939,7 +939,9 @@ async def session_snapshot(
         if history_only:
             notices = []
         elif fresh and session.runtime == "codex":
-            notices = await read_session_notices_from_connector(manager, session)
+            notices = await read_session_notices_from_connector(
+                manager, session, fast_discovery=True
+            )
         else:
             notices = await read_session_notices_for_snapshot(manager, session)
         log_snapshot_stage("notices", stage_started_at)
@@ -1014,15 +1016,16 @@ async def session_snapshot(
         raise HTTPException(status_code=404, detail="session not found") from None
     # Refresh the live runtime state after the response so a slow runtime read
     # never delays first paint. A real change is pushed to the session stream.
-    background_tasks.add_task(
-        refresh_runtime_state_in_background,
-        db=db,
-        broker=broker,
-        manager=manager,
-        runtime_state_cache=runtime_state_cache,
-        session_id=session_id,
-        previous_state=runtime_state,
-    )
+    if not history_only:
+        background_tasks.add_task(
+            refresh_runtime_state_in_background,
+            db=db,
+            broker=broker,
+            manager=manager,
+            runtime_state_cache=runtime_state_cache,
+            session_id=session_id,
+            previous_state=runtime_state,
+        )
     return ProtocolSessionSnapshotResponse(
         session=session.model_dump(mode="json"),
         state=(
@@ -1812,6 +1815,8 @@ async def request_session_runtime_catalog(
 async def read_session_notices_from_connector(
     manager: ConnectorRpcManager,
     session: SessionView,
+    *,
+    fast_discovery: bool = False,
 ) -> list[NoticeIn]:
     params: dict[str, Any] = {
         "sessionId": session.id,
@@ -1820,6 +1825,8 @@ async def read_session_notices_from_connector(
     }
     if session.externalSessionId:
         params["externalSessionId"] = session.externalSessionId
+    if fast_discovery:
+        params["fastDiscovery"] = True
     try:
         result = await manager.request(
             session.connectorId,

@@ -4859,7 +4859,7 @@ def test_codex_history_first_snapshot_never_waits_for_live_ipc(tmp_path):
 
     class WaitingOwnerRpc(FakeLocalRpc):
         async def request(self, connector_id, method, params, *, timeout=30):
-            if method in {"session.notices", "session.capabilities"}:
+            if method in {"session.notices", "session.capabilities", "session.state"}:
                 raise AssertionError(f"history waited for {method}")
             return await super().request(
                 connector_id, method, params, timeout=timeout
@@ -4876,7 +4876,7 @@ def test_codex_history_first_snapshot_never_waits_for_live_ipc(tmp_path):
     assert body["session"]["id"] == session_id
     assert body["timeline"]["nextSeq"] >= 0
     assert not any(
-        method in {"session.notices", "session.capabilities"}
+        method in {"session.notices", "session.capabilities", "session.state"}
         for _, method, _, _ in rpc.requests
     )
 
@@ -4896,6 +4896,10 @@ def test_codex_live_followup_does_not_silently_clear_unread_notices(tmp_path):
 
     assert response.status_code == 504
     assert response.json()["detail"]["code"] == "runtime_notices_timeout"
+    assert any(
+        method == "session.notices" and params.get("fastDiscovery") is True
+        for _, method, params, _ in rpc.requests
+    )
 
 
 def test_session_snapshot_does_not_block_on_runtime_state_read(tmp_path):

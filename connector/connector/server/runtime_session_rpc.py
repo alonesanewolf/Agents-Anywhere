@@ -166,7 +166,12 @@ async def read_session_notices(
     params: dict[str, Any],
 ) -> dict[str, Any]:
     parsed = SessionReadParams.parse(params)
-    await runtime.prepare_session_view(parsed.session_id, parsed.external_session_id)
+    if params.get("fastDiscovery") is True and runtime.identity.runtime == "codex":
+        await runtime.prepare_session_view(
+            parsed.session_id, parsed.external_session_id, fast_discovery=True
+        )
+    else:
+        await runtime.prepare_session_view(parsed.session_id, parsed.external_session_id)
     notices = await runtime.get_session_notices(
         parsed.session_id,
         parsed.external_session_id,

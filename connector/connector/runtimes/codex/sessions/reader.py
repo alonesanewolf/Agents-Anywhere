@@ -543,8 +543,12 @@ class CodexSessionReader:
         result = await self.client.read_thread(external_session_id, include_turns=True)
         return await self._coordinated_state(session_id, external_session_id, result)
 
-    async def prepare_coordinated_state(self, session_id, external_session_id):
-        result, token = await self.client.prepare_view(external_session_id)
+    async def prepare_coordinated_state(
+        self, session_id, external_session_id, *, discovery_timeout=12
+    ):
+        result, token = await self.client.prepare_view(
+            external_session_id, discovery_timeout=discovery_timeout
+        )
         state = await self._coordinated_state(session_id, external_session_id, result)
         return state, token
 

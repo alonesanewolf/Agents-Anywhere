@@ -26,6 +26,19 @@ test('history-first Codex view refuses input until live synchronization complete
   assert.equal(steers, 1)
 })
 
+test('a recovered native projection retries live synchronization while input stays locked', async t => {
+  const recoveries = []
+  const harness = createDetailStateHarness({ onLiveRecovery: (reason, connection) => { recoveries.push([reason, connection]) } })
+  t.after(() => harness.dispose())
+  harness.environment.needsLiveSnapshot = true
+  harness.replaceRenderState(current => ({ ...current, runtimeSyncPending: true }))
+  harness.applyEvent(runtimeEvent('idle', 121, { metadata: { codexCoordination: { role: 'unattached', available: false } } }))
+  assert.deepEqual(recoveries, [])
+  harness.applyEvent(runtimeEvent('idle', 122, { metadata: { codexCoordination: { role: 'unattached', available: true } } }))
+  assert.deepEqual(recoveries, [['runtime-state-recovered', 1]])
+  assert.equal(harness.state.runtimeSyncPending, true)
+})
+
 test('ordinary start reconciles published timeline 123 then native running 122 without reload', async t => {
   let finish
   let sends = 0

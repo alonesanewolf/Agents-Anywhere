@@ -5,6 +5,8 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from functools import wraps
 
+from loguru import logger
+
 from connector.runtime_protocol.errors import RuntimeProtocolError
 from connector.runtimes.codex.coordination.wire import IpcError
 
@@ -61,6 +63,8 @@ class Preparation:
     session_id: str
     generation: int
     deadline: float
+    fast_discovery: bool = False
+    recovering: bool = False
     victim: tuple[str, str] | None = None
     task: asyncio.Task | None = None
 
@@ -87,16 +91,21 @@ class CodexSessionObservers:
         self.views = OrderedDict()
         self.busy = Counter()
         self.inflight = {}
+        self.recoveries = {}
+        self.recovered_views = {}
         self.evicting = {}
         self.generation = 0
         self.closed = False
 
     def clear(self):
         tasks = [entry.task for entry in self.inflight.values()]
+        tasks.extend(self.recoveries.values())
         self.generation += 1
         self.views = OrderedDict()
         self.busy = Counter()
         self.inflight = {}
+        self.recoveries = {}
+        self.recovered_views = {}
         self.evicting = {}
         for task in tasks:
             task.cancel()
@@ -125,18 +134,38 @@ class CodexSessionObservers:
             and self.inflight.get(thread_id) is entry
         )
 
-    async def prepare(self, session_id, thread_id):
+    async def prepare(
+        self, session_id, thread_id, *, fast_discovery=False, recovering=False
+    ):
         if not thread_id or not callable(getattr(self.client, "attach_thread", None)):
             return
         if self.closed:
             raise CodexViewChanged("Codex observer is closed")
+        if fast_discovery:
+            recovery = self.recoveries.get(thread_id)
+            if recovery is not None:
+                await asyncio.shield(recovery)
+            verified = self.recovered_views.pop(thread_id, None)
+            if (
+                verified is not None
+                and verified
+                == (session_id, self.generation, self.client.view_token(thread_id))
+                and self.views.get(thread_id) == session_id
+            ):
+                return
         deadline = asyncio.get_running_loop().time() + PREPARE_TIMEOUT_SECONDS
         async with self.lock:
             if thread_id in self.evicting:
                 raise CodexViewChanged("Codex view is being released; refresh it")
             entry = self.inflight.get(thread_id)
             if entry is None:
-                entry = Preparation(session_id, self.generation, deadline)
+                entry = Preparation(
+                    session_id,
+                    self.generation,
+                    deadline,
+                    fast_discovery=fast_discovery,
+                    recovering=recovering,
+                )
                 reserved = set(self.views) | set(self.inflight)
                 if (
                     thread_id not in reserved
@@ -164,6 +193,37 @@ class CodexSessionObservers:
                 raise CodexViewChanged("Codex view session identity changed")
         # Caller cancellation cannot cancel another caller's shared preparation.
         await asyncio.shield(entry.task)
+
+    async def _recover(self, thread_id, session_id, generation):
+        task = asyncio.current_task()
+        try:
+            # The failed preparation must release its shared slot first.
+            await asyncio.sleep(0)
+            if (
+                self.closed
+                or generation != self.generation
+                or self.views.get(thread_id) != session_id
+            ):
+                return
+            await self.prepare(session_id, thread_id, recovering=True)
+            if (
+                not self.closed
+                and generation == self.generation
+                and self.views.get(thread_id) == session_id
+            ):
+                self.recovered_views[thread_id] = (
+                    session_id,
+                    generation,
+                    self.client.view_token(thread_id),
+                )
+        except Exception as exc:  # noqa: BLE001 - detached retry owns its errors
+            # Preserve the unavailable state and omit native payloads from logs.
+            logger.warning(
+                "Codex passive recovery failed error_type={}", type(exc).__name__
+            )
+        finally:
+            if self.recoveries.get(thread_id) is task:
+                self.recoveries.pop(thread_id, None)
 
     async def _prepare(self, thread_id, entry):
         try:
@@ -209,7 +269,12 @@ class CodexSessionObservers:
                     },
                 )
                 if callable(getattr(self.client, "prepare_view", None)):
-                    state, token = await self.prepare_state(entry.session_id, thread_id)
+                    if entry.fast_discovery:
+                        state, token = await self.prepare_state(
+                            entry.session_id, thread_id, discovery_timeout=1
+                        )
+                    else:
+                        state, token = await self.prepare_state(entry.session_id, thread_id)
                     if not self._current(
                         thread_id, entry
                     ) or not self.client.view_is_current(thread_id, token):
@@ -256,6 +321,16 @@ class CodexSessionObservers:
                 raise CodexViewChanged(
                     "Codex authority changed during passive read"
                 ) from exc
+            if (
+                exc.code == "timeout"
+                and entry.fast_discovery
+                and not entry.recovering
+                and self._current(thread_id, entry)
+                and thread_id not in self.recoveries
+            ):
+                self.recoveries[thread_id] = asyncio.create_task(
+                    self._recover(thread_id, entry.session_id, entry.generation)
+                )
             raise
         except TimeoutError as exc:
             raise CodexViewTimeout("Codex passive view preparation timed out") from exc

@@ -889,6 +889,7 @@ export function SessionDetail({
     let socketSubscribed = false
     let needsLiveSnapshot = false
     let liveSnapshotLoading = false
+    let liveRetryScheduled = false
     let connectionSequence = 0
     const recoveredSubscriptions = createRecoveredSubscriptionTracker(() => {
       if (!cancelled) setCatalogRecoveryGeneration((current) => current + 1)
@@ -965,6 +966,22 @@ export function SessionDetail({
       }
       renderBuffer.push(event)
       eventSequenceCursor.advance(sessionId, event.sequence)
+      const recoveredState = event.type === "runtime.state.updated"
+        ? readPayloadValue<SessionRuntimeState>(event.payload.state)
+        : null
+      const coordination = readPayloadValue<{ available?: boolean }>(
+        recoveredState?.metadata?.codexCoordination,
+      )
+      if (
+        needsLiveSnapshot && coordination?.available === true &&
+        socketSubscribed && !liveSnapshotLoading && !liveRetryScheduled &&
+        !recoveryPromise && !recoveryStarting
+      ) {
+        liveRetryScheduled = true
+        void Promise.resolve(
+          recoverAfterSubscription("runtime-state-recovered", connectionSequence),
+        ).finally(() => { liveRetryScheduled = false })
+      }
     }
 
     const recoverEvents = async (afterSeq: number, reason: string) => {

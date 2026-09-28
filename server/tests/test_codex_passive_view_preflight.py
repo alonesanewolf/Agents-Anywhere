@@ -769,6 +769,42 @@ def test_repeated_failures_retain_only_bounded_unavailable_views_then_retry():
     asyncio.run(run())
 
 
+def test_ambiguous_one_second_view_timeout_recovers_without_native_mutation():
+    async def run():
+        async with runtime_network() as c:
+            with pytest.raises(Exception) as error:
+                await read_session_notices(
+                    c.runtime, {**PARAMS, "fastDiscovery": True}
+                )
+            assert getattr(error.value, "code", None) == "timeout"
+            assert c.runtime._observers.states.get("session").metadata[
+                "codexCoordination"
+            ]["available"] is False
+            async with asyncio.timeout(14 * SCALE):
+                while True:
+                    state = c.runtime._observers.states.get("session")
+                    if state and state.metadata["codexCoordination"]["available"]:
+                        break
+                    await asyncio.sleep(0.01)
+            assert state.metadata["codexCoordination"]["role"] == "unattached"
+            assert c.router.discovery_count == 2
+            assert any(
+                update["metadata"].get("codexCoordination", {}).get("available")
+                is True
+                for update in c.host.state_updates
+            )
+            assert c.facade.capabilities(THREAD)["role"] == "unattached"
+            assert c.facade.capabilities(THREAD)["userSessionStop"] is False
+            assert not any(method in {"turn/start", "thread/resume"} for method, _ in c.native.calls)
+            notices = await read_session_notices(
+                c.runtime, {**PARAMS, "fastDiscovery": True}
+            )
+            assert notices["notices"] == []
+            assert c.router.discovery_count == 2
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("boundary", ["native-read", "catalog"])
 def test_real_native_disconnect_fences_ownerless_public_state(monkeypatch, boundary):
     async def run():

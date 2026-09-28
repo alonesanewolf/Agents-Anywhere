@@ -219,7 +219,7 @@ def test_passive_view_discovery_stops_at_one_second_without_claiming_absence():
 
             caller.client.request = observed_request
             with pytest.raises(IpcError, match="^timeout$"):
-                await facade.prepare_view(THREAD)
+                await facade.prepare_view(THREAD, discovery_timeout=1)
             assert discovery_budgets == [1]
             assert router.discovery_count == 1
             assert not caller.client._pending
@@ -232,7 +232,7 @@ def test_passive_view_discovery_stops_at_one_second_without_claiming_absence():
 def test_passive_view_accepts_formal_negative_without_native_mutation():
     async def run():
         async with network(silent=False) as (router, caller, _, facade, sdk):
-            result, _ = await facade.prepare_view(THREAD)
+            result, _ = await facade.prepare_view(THREAD, discovery_timeout=1)
             assert result.coordination_role is None
             assert result.thread["id"] == THREAD
             assert router.last_error == "no-client-found"
@@ -255,7 +255,7 @@ def test_passive_view_waits_for_selected_owner_snapshot_after_discovery_budget(
                 return await original_snapshot(*args, **kwargs)
 
             monkeypatch.setattr(owner, "_snapshot", slow_snapshot)
-            result, _ = await facade.prepare_view(THREAD)
+            result, _ = await facade.prepare_view(THREAD, discovery_timeout=1)
             assert result.coordination_role == "follower"
             assert caller.get_owner(THREAD).client_id == owner.client.client_id
             assert not sdk.calls and not caller.is_owner(THREAD)

@@ -231,9 +231,15 @@ class CodexRuntime(AgentRuntime):
         )
 
     async def prepare_session_view(
-        self, session_id: str, external_session_id: str | None = None
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+        *,
+        fast_discovery: bool = False,
     ) -> None:
-        await self._observers.prepare(session_id, external_session_id)
+        await self._observers.prepare(
+            session_id, external_session_id, fast_discovery=fast_discovery
+        )
         if not callable(getattr(self.client, "attach_thread", None)):
             await self._turns.commands.hydrate(session_id, external_session_id)
 
