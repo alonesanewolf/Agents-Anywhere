@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from typing import Any
 
 import pytest
@@ -309,6 +310,53 @@ def test_terminal_delivery_error_does_not_block_transport_cleanup() -> None:
             host.release.set()
             if operation is not None:
                 await asyncio.gather(operation, return_exceptions=True)
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_terminal_delivery_error_without_recovery_is_observed() -> None:
+    async def run() -> None:
+        client = CodexSdkClient(NativeReadClient(), client_factory=NativeReadClient)
+        host = PausedTerminalHost("state", fail_delivery=True)
+        runtime = CodexRuntime(config=_config(), host=host, client=client)
+        await runtime.start()
+        turn = LiveTurn()
+        client._remember_turn("thread_1", turn)
+        client._start_stream_task("thread_1", turn)
+        unhandled_errors: list[dict[str, Any]] = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda loop, context: unhandled_errors.append(context)
+        )
+        try:
+            await client._emit(
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "platformSessionId": "sess_1",
+                        "threadId": "thread_1",
+                        "turnId": turn.id,
+                    },
+                }
+            )
+            turn.complete.set()
+            async with asyncio.timeout(1):
+                await host.paused.wait()
+                host.release.set()
+                while client._stream_tasks:
+                    await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+
+            assert unhandled_errors == []
+            assert [event["outcome"] for event in host.turn_ends] == ["completed"]
+            assert host.state_updates[-1]["status"] == "running"
+            assert runtime._active_turn_ids == {}
+            assert client._stream_states == {}
+            assert client._turns == {}
+        finally:
+            host.release.set()
             await runtime.stop()
 
     asyncio.run(run())
