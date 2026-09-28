@@ -14,7 +14,11 @@ test('outer RPC success is accepted only with native steer evidence', () => {
   assert.deepEqual(sessionSteerResult({ ok: false, result: { steered: true } }), { ok: false, state: 'unknown', message: null })
 })
 
-test('explicit HTTP conflict is rejected; transport loss remains unknown', () => {
-  assert.deepEqual(sessionSteerFailure(new ApiError({ status: 409, detail: 'Not running', kind: 'http' })), { ok: false, state: 'rejected', message: 'Not running' })
+test('proven pre-dispatch conflict is rejected; ambiguous disconnect remains unknown', () => {
+  assert.deepEqual(sessionSteerFailure(new ApiError({ status: 409, detail: 'session is not running', kind: 'http' })), { ok: false, state: 'rejected', message: 'session is not running' })
+  assert.deepEqual(sessionSteerFailure(new ApiError({ status: 409, detail: 'connector is offline', kind: 'http' })), { ok: false, state: 'rejected', message: 'connector is offline' })
+  assert.deepEqual(sessionSteerFailure(new ApiError({ status: 409, detail: 'connector disconnected', kind: 'http' })), { ok: false, state: 'unknown', message: 'connector disconnected' })
+  assert.deepEqual(sessionSteerFailure(new ApiError({ status: 409, detail: 'Not running', kind: 'http' })), { ok: false, state: 'unknown', message: 'Not running' })
+  assert.deepEqual(sessionSteerFailure(new ApiError({ status: 408, detail: 'Request timed out', kind: 'http' })), { ok: false, state: 'unknown', message: 'Request timed out' })
   assert.deepEqual(sessionSteerFailure(new ApiError({ status: 0, detail: 'Connection lost', kind: 'network' })), { ok: false, state: 'unknown', message: 'Connection lost' })
 })

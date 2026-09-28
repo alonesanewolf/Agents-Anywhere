@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom'
 import { registerSource } from './helpers/onboarding-source.mjs'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://app.example.test/', pretendToBeVisual: true })
-for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLTextAreaElement', 'HTMLFormElement', 'Element', 'Node', 'Event', 'CustomEvent', 'MutationObserver', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame']) {
+for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLFormElement', 'Element', 'Node', 'Event', 'CustomEvent', 'MutationObserver', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] })
 }
 globalThis.ResizeObserver = class { observe() {} disconnect() {} }
@@ -105,6 +105,67 @@ test('existing unobserved selections stay inherited on ordinary Send despite cat
   await act(async () => host.querySelector('button[aria-label="Send"]').click())
   assert.deepEqual(sends, [{ text: 'resume native chat', selections: {} }])
   assert.deepEqual(writes, [])
+})
+
+test('observed selections becoming unknown in the same session are not submitted as overrides', async t => {
+  const sends = []
+  let changes = 0
+  function Host() {
+    const [selections, setSelections] = useState({ model: 'model:astra', permission: 'permission:request' })
+    const [value, setValue] = useState('resume')
+    window.loseObservedSettings = () => setSelections({})
+    return h(SessionComposer, props({
+      runtimeState: { status: 'idle', selections, metadata: {} }, value, onValueChange: setValue,
+      effectiveCapabilities: capability('session.send_message', 'catalog.model', 'catalog.permission'),
+      modelCatalog, permissionCatalog,
+      onSelectionChange: async () => { changes++; return true },
+      onSend: async (_text, _files, selected) => { sends.push(selected); return true },
+    }))
+  }
+  const host = await mount(t, h(Host))
+  assert.match(host.textContent, /Astra/)
+  assert.match(host.textContent, /Request approval/)
+  await act(async () => window.loseObservedSettings())
+  assert.match(host.textContent, /Current setting unknown/)
+  await act(async () => host.querySelector('button[aria-label="Send"]').click())
+  assert.deepEqual(sends, [{}])
+  assert.equal(changes, 0)
+})
+
+test('deliberate model and permission changes remain selected when observation becomes unknown', async t => {
+  const writes = []
+  const sends = []
+  const models = { models: [...modelCatalog.models, { ...modelCatalog.models[0], id: 'nova', displayName: 'Nova', selectionId: 'model:nova', default: false }] }
+  const permissions = { permissions: [...permissionCatalog.permissions, { ...permissionCatalog.permissions[0], id: 'grant', displayName: 'Full access', selectionId: 'permission:grant', default: false }] }
+  function Host() {
+    const [selections, setSelections] = useState({ model: 'model:astra', permission: 'permission:request' })
+    const [value, setValue] = useState('resume')
+    window.loseObservedSettings = () => setSelections({})
+    return h(SessionComposer, props({
+      runtimeState: { status: 'idle', selections, metadata: {} }, value, onValueChange: setValue,
+      effectiveCapabilities: capability('session.send_message', 'catalog.model', 'catalog.permission'),
+      modelCatalog: models, permissionCatalog: permissions,
+      onSelectionChange: async selection => { writes.push(selection); return true },
+      onSend: async (_text, _files, selected) => { sends.push(selected); return true },
+    }))
+  }
+  const host = await mount(t, h(Host))
+  const choose = async label => {
+    const trigger = [...host.querySelectorAll('button[aria-haspopup="menu"]')].find(button => button.textContent.includes(label === 'Nova' ? 'Astra' : 'Request approval'))
+    assert.ok(trigger)
+    await act(async () => trigger.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 })))
+    const item = [...document.querySelectorAll('[role="menuitem"]')].find(element => element.textContent.includes(label))
+    assert.ok(item)
+    await act(async () => item.click())
+  }
+  await choose('Nova')
+  await choose('Full access')
+  assert.deepEqual(writes, [{ model: 'model:nova' }, { permission: 'permission:grant' }])
+  await act(async () => window.loseObservedSettings())
+  assert.match(host.textContent, /Nova/)
+  assert.match(host.textContent, /Full access/)
+  await act(async () => host.querySelector('button[aria-label="Send"]').click())
+  assert.deepEqual(sends, [{ model: 'model:nova', permission: 'permission:grant' }])
 })
 
 test('an explicit model choice writes settings while an untouched permission remains inherited', async t => {
@@ -291,6 +352,34 @@ test('a pending ordinary start blocks steer until its request settles', async t 
   await act(async () => acknowledge(true))
   await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
   assert.deepEqual(steers, ['add detail'])
+})
+
+test('pending steer cannot become an ordinary Send when the native turn becomes idle', async t => {
+  let finishSteer
+  const sends = []
+  function Host() {
+    const [status, setStatus] = useState('running')
+    const [value, setValue] = useState('in-flight steer')
+    window.finishNativeTurn = () => setStatus('idle')
+    return h(SessionComposer, props({
+      runtimeState: { status, selections: {}, metadata: {} }, value, onValueChange: setValue,
+      onSteer: () => new Promise(resolve => { finishSteer = resolve }),
+      onSend: async text => { sends.push(text); return true },
+    }))
+  }
+  const host = await mount(t, h(Host))
+  await act(async () => host.querySelector('button[aria-label="Send while running"]').click())
+  await act(async () => window.finishNativeTurn())
+  const ordinaryButton = host.querySelector('button[aria-label="Send"]')
+  assert.ok(ordinaryButton)
+  assert.equal(ordinaryButton.disabled, true)
+  await act(async () => ordinaryButton.click())
+  await act(async () => host.querySelector('textarea').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  assert.deepEqual(sends, [])
+  await act(async () => finishSteer({ ok: false, state: 'rejected', message: 'turn finished' }))
+  assert.equal(ordinaryButton.disabled, false)
+  await act(async () => ordinaryButton.click())
+  assert.deepEqual(sends, ['in-flight steer'])
 })
 
 test('running slash command uses its own route and leaves Stop independent', async t => {

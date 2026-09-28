@@ -15,6 +15,13 @@ export function sessionSteerResult(response: RpcResponse<SessionSteerResult>): S
 }
 
 export function sessionSteerFailure(error: unknown): SteerOutcome {
-  const known = isApiError(error) && error.status >= 400 && error.status < 500
+  const known = isApiError(error) &&
+    ([400, 401, 403, 404, 405, 413, 415, 422].includes(error.status) ||
+      (error.status === 409 && isKnownSteerPreflightConflict(error.detail)))
   return { ok: false, state: known ? "rejected" : "unknown", message: error instanceof Error ? error.message : null }
+}
+
+function isKnownSteerPreflightConflict(detail: string): boolean {
+  return detail === "session is not running" || detail === "connector is offline" ||
+    detail === "session is read-only until takeover is enabled"
 }

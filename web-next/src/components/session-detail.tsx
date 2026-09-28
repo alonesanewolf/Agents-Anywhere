@@ -1195,7 +1195,7 @@ export function SessionDetail({
   ): Promise<boolean> => {
     if (!session || (!content.trim() && attachments.length === 0)) return false
     const visit = sessionVisitRef.current
-    if (activeSendRequestRef.current?.visit === visit) return false
+    if (activeSendRequestRef.current?.visit === visit || activeSteerRequestRef.current?.visit === visit) return false
     const uploadedAttachments = attachments.flatMap((attachment) =>
       attachment.uploaded ? [attachment.uploaded] : [],
     )

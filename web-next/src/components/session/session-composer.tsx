@@ -213,6 +213,8 @@ export function SessionComposer({
     !creatingSession &&
     !sending &&
     !messagePending &&
+    !steerPending &&
+    !pendingSteerRef.current &&
     !interrupting &&
     acceptsUserInput
   const commandWritable = !creatingSession && !sending && !messagePending && !interrupting && !steerPending && !commandPending && session.takeover && !sourceUnavailable
@@ -237,8 +239,10 @@ export function SessionComposer({
   const [selectedPermissionMode, setSelectedPermissionMode] = React.useState("")
   const [selectedModel, setSelectedModel] = React.useState("")
   const [selectedReasoning, setSelectedReasoning] = React.useState("")
+  const explicitSelectionRef = React.useRef<{ model: string | null; permission: string | null }>({ model: null, permission: null })
   const selectionRequestRef = React.useRef({ model: 0, permission: 0 })
   React.useEffect(() => {
+    explicitSelectionRef.current = { model: null, permission: null }
     setSelectedPermissionMode("")
     setSelectedModel("")
     setSelectedReasoning("")
@@ -275,7 +279,9 @@ export function SessionComposer({
       selectionId: reasoning.selectionId,
     })),
   })) ?? []
-  const selectedModelItem = modelItems.find((item) => item.id === selectedModel)
+  const modelObservedOrChosen = dsh || Boolean(runtimeSelections.model || explicitSelectionRef.current.model)
+  const permissionObservedOrChosen = dsh || Boolean(runtimeSelections.permission || explicitSelectionRef.current.permission)
+  const selectedModelItem = modelObservedOrChosen ? modelItems.find((item) => item.id === selectedModel) : undefined
   const effortItems = selectedModelItem?.reasoningItems ?? []
   const modelSelectionValue = modelIdsForSelectionId(modelCatalog, runtimeSelections.model ?? null, dsh)
   const permissionSelectionValue = permissionIdForSelectionId(permissionCatalog, runtimeSelections.permission ?? null, dsh)
@@ -283,7 +289,7 @@ export function SessionComposer({
   const modelValue = modelSelectionValue?.modelId ?? ""
   const effortValue = modelSelectionValue?.reasoningId ?? ""
   const permissionLabel =
-    permissionItems.find((item) => item.id === selectedPermissionMode)?.label ?? (dsh ? actualPermission?.name : null) ?? tSession("currentSettingUnknown")
+    (permissionObservedOrChosen ? permissionItems.find((item) => item.id === selectedPermissionMode)?.label : null) ?? (dsh ? actualPermission?.name : null) ?? tSession("currentSettingUnknown")
   const modelLabel = selectedModelItem?.label ?? (dsh && actualModel?.model ? `${actualModel.model}（${actualModel.provider}）` : tSession("currentSettingUnknown"))
   const effortLabel = effortItems.find((item) => item.id === selectedReasoning)?.label ?? (dsh ? actualModel?.reasoningEffort : null) ?? tNew("reasoning")
   const hasSelectors = Boolean(permissionItems.length > 0 || modelItems.length > 0)
@@ -295,26 +301,35 @@ export function SessionComposer({
 
   React.useEffect(() => {
     if (dsh) { setSelectedPermissionMode(permissionValue); return }
+    const explicit = explicitSelectionRef.current.permission
+    if (explicit) {
+      setSelectedPermissionMode(permissionItems.find((item) => item.selectionId === explicit && item.enabled)?.id ?? "")
+      return
+    }
     const hasRuntimePermission = permissionItems.some((item) => item.id === permissionValue && item.enabled)
     const nextPermission = hasRuntimePermission ? permissionValue : ""
-    setSelectedPermissionMode((current) =>
-      hasRuntimePermission || !permissionItems.some((item) => item.id === current && item.enabled)
-        ? nextPermission
-        : current,
-    )
+    setSelectedPermissionMode(nextPermission)
   }, [dsh, permissionItems, permissionValue])
 
   React.useEffect(() => {
     if (dsh) { setSelectedModel(modelValue); return }
+    const explicit = explicitSelectionRef.current.model
+    if (explicit) {
+      setSelectedModel(modelIdsForSelectionId(modelCatalog, explicit)?.modelId ?? "")
+      return
+    }
     const hasRuntimeModel = modelItems.some((item) => item.id === modelValue && item.enabled)
-    const nextModel = hasRuntimeModel ? modelValue : ""
-    setSelectedModel((current) =>
-      hasRuntimeModel || !modelItems.some((item) => item.id === current && item.enabled) ? nextModel : current,
-    )
-  }, [dsh, modelItems, modelValue])
+    setSelectedModel(hasRuntimeModel ? modelValue : "")
+  }, [dsh, modelCatalog, modelItems, modelValue])
 
   React.useEffect(() => {
     if (dsh) { setSelectedReasoning(effortValue); return }
+    const explicit = explicitSelectionRef.current.model
+    if (explicit) {
+      setSelectedReasoning(modelIdsForSelectionId(modelCatalog, explicit)?.reasoningId ?? "")
+      return
+    }
+    if (!runtimeSelections.model) { setSelectedReasoning(""); return }
     const hasRuntimeEffort = effortItems.some((item) => item.id === effortValue && item.enabled)
     const nextEffort = hasRuntimeEffort
       ? effortValue
@@ -324,33 +339,45 @@ export function SessionComposer({
     setSelectedReasoning((current) =>
       hasRuntimeEffort || !current || !effortItems.some((item) => item.id === current && item.enabled) ? nextEffort : current,
     )
-  }, [dsh, effortItems, effortValue])
-  const selectedModelSelection = selectionIdForModelCatalog(modelCatalog, selectedModel, selectedReasoning) ?? (dsh ? runtimeSelections.model : null)
-  const selectedPermissionSelection = selectionIdForPermissionCatalog(permissionCatalog, selectedPermissionMode) ?? (dsh && actualPermission?.id !== 'custom' ? runtimeSelections.permission : null)
+  }, [dsh, effortItems, effortValue, modelCatalog, runtimeSelections.model])
+  const selectedModelSelection = modelObservedOrChosen
+    ? selectionIdForModelCatalog(modelCatalog, selectedModel, selectedReasoning) ?? (dsh ? runtimeSelections.model : null)
+    : null
+  const selectedPermissionSelection = permissionObservedOrChosen
+    ? selectionIdForPermissionCatalog(permissionCatalog, selectedPermissionMode) ?? (dsh && actualPermission?.id !== 'custom' ? runtimeSelections.permission : null)
+    : null
   const choosePermission = (permissionId: string) => {
-    if (permissionId === selectedPermissionMode) return
+    if (permissionId === selectedPermissionMode && permissionObservedOrChosen) return
     const previousPermission = selectedPermissionMode
+    const previousIntent = explicitSelectionRef.current.permission
     const nextSelection = selectionIdForPermissionCatalog(permissionCatalog, permissionId)
     if (!nextSelection) return
     const visit = sessionVisitRef.current
     const request = ++selectionRequestRef.current.permission
+    explicitSelectionRef.current.permission = nextSelection
     setSelectedPermissionMode(permissionId)
     void onSelectionChange({ permission: nextSelection }).then((ok) => {
-      if (!ok && !dsh && sessionVisitRef.current === visit && selectionRequestRef.current.permission === request) setSelectedPermissionMode(previousPermission)
+      if (!ok && !dsh && sessionVisitRef.current === visit && selectionRequestRef.current.permission === request) {
+        explicitSelectionRef.current.permission = previousIntent
+        setSelectedPermissionMode(previousPermission)
+      }
     })
   }
   const chooseModel = (modelId: string, reasoningId: string) => {
-    if (modelId === selectedModel && reasoningId === selectedReasoning) return
+    if (modelId === selectedModel && reasoningId === selectedReasoning && modelObservedOrChosen) return
     const previousModel = selectedModel
     const previousReasoning = selectedReasoning
+    const previousIntent = explicitSelectionRef.current.model
     const nextSelection = selectionIdForModelCatalog(modelCatalog, modelId, reasoningId)
     if (!nextSelection) return
     const visit = sessionVisitRef.current
     const request = ++selectionRequestRef.current.model
+    explicitSelectionRef.current.model = nextSelection
     setSelectedModel(modelId)
     setSelectedReasoning(reasoningId)
     void onSelectionChange({ model: nextSelection }).then((ok) => {
       if (!ok && !dsh && sessionVisitRef.current === visit && selectionRequestRef.current.model === request) {
+        explicitSelectionRef.current.model = previousIntent
         setSelectedModel(previousModel)
         setSelectedReasoning(previousReasoning)
       }
@@ -501,7 +528,7 @@ export function SessionComposer({
       await runSteer()
       return
     }
-    if (!canSubmitMessage || pendingMessageRef.current) return
+    if (!canSubmitMessage || pendingMessageRef.current || pendingSteerRef.current) return
     const text = value
     const files = attachments
     const visit = sessionVisitRef.current
