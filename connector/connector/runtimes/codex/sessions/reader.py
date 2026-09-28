@@ -541,6 +541,14 @@ class CodexSessionReader:
     async def read_coordinated_state(self, session_id, external_session_id):
         await self.ensure_started()
         result = await self.client.read_thread(external_session_id, include_turns=True)
+        return await self._coordinated_state(session_id, external_session_id, result)
+
+    async def prepare_coordinated_state(self, session_id, external_session_id):
+        result, token = await self.client.prepare_view(external_session_id)
+        state = await self._coordinated_state(session_id, external_session_id, result)
+        return state, token
+
+    async def _coordinated_state(self, session_id, external_session_id, result):
         thread = dict(result.thread)
         return SessionState(
             session_id=session_id,
@@ -550,7 +558,10 @@ class CodexSessionReader:
             selections=await self.selections_from_thread(thread),
             metadata={
                 "source": "codex.thread/read.state",
-                "codexCoordination": {"role": result.coordination_role or "unattached"},
+                "codexCoordination": {
+                    "role": result.coordination_role or "unattached",
+                    "available": True,
+                },
                 "codexPresentation": {
                     key: thread[key]
                     for key in ("threadGoal", "completedThreadGoal")

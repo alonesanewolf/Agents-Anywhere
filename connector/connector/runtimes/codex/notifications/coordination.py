@@ -12,6 +12,7 @@ from connector.runtimes.codex.coordination.projection import (
 )
 from connector.runtimes.codex.coordination.requests import REQUEST_ROUTES
 from connector.runtimes.codex.coordination.state import history_complete
+from connector.runtimes.codex.coordination.wire import IpcError
 from connector.runtimes.codex.domain import sessions as codex_sessions
 from connector.runtimes.codex.domain.approvals import (
     approval_notice_from_request,
@@ -82,6 +83,13 @@ class CoordinationSnapshotProjector:
             await self._handle(session_id, thread_id, params)
 
     async def _handle(self, session_id, thread_id, params):
+        # Only explicit passive preparations carry a local (never wire) guard.
+        def check_current():
+            guard = params.get("viewIsCurrent")
+            if guard is not None and not guard():
+                raise IpcError("codex_view_changed")
+
+        check_current()
         thread = params.get("thread")
         available = isinstance(thread, dict)
         coordination = params.get("coordination", {})
@@ -162,12 +170,14 @@ class CoordinationSnapshotProjector:
                     metadata={"close_reason": "request_resolved_or_authority_changed"},
                 )
                 await self.host.notice_upsert(closed)
+                check_current()
         for notice_id, notice in pending.items():
             existing = self.notices.get(notice_id)
             # Do not resurrect a consumed or currently dispatching response context.
             if existing is None:
                 self.notices.upsert(notice)
                 await self.host.notice_upsert(notice)
+                check_current()
         # Even intentional cleanup invalidates response contexts. Close notices
         # above, then keep last-known display/status instead of fabricating loss.
         if scoped_cleanup:
@@ -195,6 +205,7 @@ class CoordinationSnapshotProjector:
             ordering_time=codex_sessions.thread_ordering_time(thread),
             metadata={"source": "codex.coordination/state"},
         )
+        check_current()
         presentation = params.get("presentation")
         if isinstance(presentation, dict):
             cached = self.session_states.get(session_id)
@@ -257,6 +268,7 @@ class CoordinationSnapshotProjector:
             if self.read_selections is not None
             else {}
         )
+        check_current()
         await self.session_states.update(
             session_id,
             thread_id,
@@ -264,6 +276,7 @@ class CoordinationSnapshotProjector:
             selections=selections,
             metadata=metadata,
         )
+        check_current()
         await self._publish_timeline(
             session_id, thread_id, thread, params.get("canonicalComplete") is True
         )

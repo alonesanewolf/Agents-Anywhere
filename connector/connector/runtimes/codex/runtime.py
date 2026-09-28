@@ -121,6 +121,7 @@ class CodexRuntime(AgentRuntime):
             self._active_turn_ids,
             self.start,
             self._session_reader.read_coordinated_state,
+            self._session_reader.prepare_coordinated_state,
         )
         self._turns = CodexTurnController(
             host=self.host,
@@ -136,6 +137,7 @@ class CodexRuntime(AgentRuntime):
             timeline=self._timeline,
         )
 
+        self._observers.hydrate = self._turns.commands.hydrate
         self._turns.commands.publish_history = (
             self._notifications.coordination.publish_history
         )
@@ -152,8 +154,8 @@ class CodexRuntime(AgentRuntime):
         await self._lifecycle.start()
 
     async def stop(self) -> None:
+        await self._observers.close()
         await self._lifecycle.stop()
-        self._observers.clear()
         self._command_epoch = uuid4().hex
 
     async def get_config(self) -> RuntimeConfig:
@@ -232,7 +234,8 @@ class CodexRuntime(AgentRuntime):
         self, session_id: str, external_session_id: str | None = None
     ) -> None:
         await self._observers.prepare(session_id, external_session_id)
-        await self._turns.commands.hydrate(session_id, external_session_id)
+        if not callable(getattr(self.client, "attach_thread", None)):
+            await self._turns.commands.hydrate(session_id, external_session_id)
 
     async def get_session_state(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 
 from connector.logging import logger
 from connector.runtimes.codex.notifications import CodexNotificationProjector
@@ -18,7 +19,13 @@ class CodexRuntimeLifecycle:
     started: bool = False
     model_list_result: CodexModelListResult | None = None
 
+    _start_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
     async def start(self) -> None:
+        async with self._start_lock:
+            await self._start()
+
+    async def _start(self) -> None:
         if self.started:
             return
         if self.client is not None:

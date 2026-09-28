@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from collections import deque
 from collections.abc import Mapping
@@ -114,6 +113,7 @@ from agent_server.services.event_recovery import EventRecoveryService
 from agent_server.services.session_meta_projection import (
     project_session_meta_for_dashboard,
 )
+from agent_server.services.session_read_budget import session_read_timeout_seconds
 from agent_server.services.session_run import SessionRunError, SessionRunService
 from agent_server.services.session_runtime_state_cache import SessionRuntimeStateCache
 from agent_server.services.timeline_write_buffer import TimelineWriteBuffer
@@ -334,12 +334,9 @@ async def refresh_runtime_state_in_background(
         )
 
 
-def _session_rpc_timeout_seconds() -> float:
-    """Live session reads are best effort; tests shorten the wait for an absent runtime."""
-    try:
-        return float(os.environ.get("AGENT_SERVER_SESSION_RPC_TIMEOUT_SECONDS", "10"))
-    except ValueError:
-        return 10.0
+def _session_rpc_timeout_seconds(runtime: str | None = None) -> float:
+    """Live session reads are best effort and honor explicit configured bounds."""
+    return session_read_timeout_seconds(runtime)
 
 
 @router.post("")
@@ -1689,7 +1686,7 @@ async def read_runtime_state_from_connector(
             session.connectorId,
             "session.state",
             params,
-            timeout=_session_rpc_timeout_seconds(),
+            timeout=_session_rpc_timeout_seconds(session.runtime),
         )
     except (ConnectorOfflineError, ConnectorRpcError, TimeoutError):
         return None
@@ -1785,7 +1782,7 @@ async def read_session_notices_from_connector(
             session.connectorId,
             "session.notices",
             params,
-            timeout=_session_rpc_timeout_seconds(),
+            timeout=_session_rpc_timeout_seconds(session.runtime),
         )
     except ConnectorOfflineError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1854,7 +1851,7 @@ async def best_effort_runtime_notice_context(
             session.connectorId,
             "session.notices",
             params,
-            timeout=_session_rpc_timeout_seconds(),
+            timeout=_session_rpc_timeout_seconds(session.runtime),
         )
     except (ConnectorOfflineError, ConnectorRpcError):
         return {}

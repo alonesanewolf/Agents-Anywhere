@@ -24,6 +24,7 @@ from .queue import execute_head
 from .reducer import exact_id, reduce_event
 from .requests import REQUEST_ROUTES, ResponseContexts, validate_response
 from .state import enumerate_turns, history_complete
+from .wire import METHOD_VERSIONS, IpcError
 
 
 def _ack_target_terminal(state, turn_id):
@@ -59,9 +60,14 @@ class CoordinatedCodexClient:
         self.generation = 0
         self.closed = False
         self.remover = None
+        self.view_epochs = {}
+        self.view_connection_epoch = 0
 
     async def start(self, handler):
         self.handler = handler
+        self.closed = False
+        if self.remover is None:
+            self.remover = self.peer.client.add_broadcast_handler(self._view_signal)
         self.peer.on_state = self._on_state
         self.peer.on_event = self._on_event
         self.peer.owner_handler = self._owner_operation
@@ -79,6 +85,8 @@ class CoordinatedCodexClient:
         self.ack_activity.clear()
         if self.remover:
             self.remover()
+            self.remover = None
+        self.view_epochs.clear()
         for task in self.tasks | set(self.queue_tasks.values()):
             task.cancel()
         await asyncio.gather(
@@ -228,7 +236,7 @@ class CoordinatedCodexClient:
                 self.ack_activity.pop(thread_id, None)
         return state, owner, revision, role, source
 
-    async def refresh_state(self, thread_id, *, force=False):
+    async def refresh_state(self, thread_id, *, force=False, is_current=None):
         if self.closed or self.handler is None:
             return
         state, owner, revision, role, source = self._snapshot(thread_id)
@@ -270,6 +278,8 @@ class CoordinatedCodexClient:
                 "presentation": presentation(state),
                 "capabilities": self.capabilities(thread_id),
             }
+        if is_current is not None:
+            params["viewIsCurrent"] = is_current
         await self.handler({"method": "coordination/state", "params": params})
 
     def is_follower(self, thread_id):
@@ -324,6 +334,7 @@ class CoordinatedCodexClient:
         async with self.locks[thread_id]:
             self.ack_activity.pop(thread_id, None)
             self.attached.discard(thread_id)
+            self.view_epochs.pop(thread_id, None)
             self.contexts.clear(thread_id)
             self.last_emitted.pop(thread_id, None)
             if self.peer.is_follower(thread_id):
@@ -445,36 +456,107 @@ class CoordinatedCodexClient:
             limit=limit, cursor=cursor, archived=archived
         )
 
+    def _view_signal(self, envelope):
+        """Fence only signals relevant to a reserved passive view."""
+        method, params = envelope.get("method"), envelope.get("params")
+        if not isinstance(params, dict) or envelope.get(
+            "version", 0
+        ) != METHOD_VERSIONS.get(method, 0):
+            return
+        source = envelope.get("sourceClientId")
+        if method == "ipc-connection-reset":
+            if source == self.peer.client.client_id:
+                self.view_connection_epoch += 1
+            return
+        if params.get("hostId") != self.peer.host_id:
+            return
+        thread_id = params.get("conversationId")
+        if thread_id not in self.view_epochs:
+            return
+        if (
+            method == "thread-stream-following-status-requested"
+            and source != self.peer.client.client_id
+        ):
+            self.view_epochs[thread_id] += 1
+
+    def view_token(self, thread_id):
+        return (
+            self.peer.client.client_id,
+            self.sdk.native_generation,
+            self.view_connection_epoch,
+            self.view_epochs.get(thread_id),
+            self.peer.get_owner(thread_id),
+            self.peer.get_revision(thread_id),
+            self.peer.activity_revision(thread_id),
+            self.ack_activity.get(thread_id),
+        )
+
+    def view_is_current(self, thread_id, token):
+        return not self.closed and token == self.view_token(thread_id)
+
+    async def prepare_view(self, thread_id):
+        """One fresh passive follow/read. Its absence never authorizes mutation."""
+        async with self.locks[thread_id]:
+            self.attached.add(thread_id)
+            self.view_epochs.setdefault(thread_id, 0)
+            result, token = await self._read_thread_locked(thread_id, True)
+            return result, token
+
+    async def detach_view(self, thread_id, can_detach):
+        async with self.locks[thread_id]:
+            # Recheck after the lock wait, immediately before local unfollow.
+            if self.peer.is_owner(thread_id) or not can_detach():
+                return False
+            self.ack_activity.pop(thread_id, None)
+            self.attached.discard(thread_id)
+            self.view_epochs.pop(thread_id, None)
+            self.contexts.clear(thread_id)
+            self.last_emitted.pop(thread_id, None)
+            if self.peer.is_follower(thread_id):
+                await self.peer.unfollow(thread_id)
+            return True
+
+    async def _read_thread_locked(self, thread_id, include_turns):
+        initial = self.view_token(thread_id)
+        state = self.peer.get_state(thread_id)
+        if state is None:
+            state = await self.peer.follow(thread_id)
+        if state is not None:
+            # Preserve the reviewed target-specific ACK/activity overlay.
+            state = self._snapshot(thread_id)[0]
+            thread = state_to_native(state)
+            if not include_turns:
+                thread["turns"] = []
+            return CodexThreadReadResult(
+                thread=thread,
+                canonical_complete=history_complete(state),
+                coordination_role="owner"
+                if self.peer.is_owner(thread_id)
+                else "follower",
+            ), self.view_token(thread_id)
+        if initial != self.view_token(thread_id):
+            raise IpcError("codex_view_changed")
+        token = self.view_token(thread_id)
+        raw = await self.sdk.native_request(
+            "thread/read",
+            {"threadId": thread_id, "includeTurns": include_turns},
+        )
+        if not self.view_is_current(thread_id, token):
+            raise IpcError("codex_view_changed")
+        return CodexThreadReadResult(
+            thread=state_to_native(
+                native_response_to_state(raw, host_id=self.peer.host_id)
+            )
+        ), token
+
     async def read_thread(self, thread_id, include_turns=True):
         async with self.locks[thread_id]:
-            state = self.peer.get_state(thread_id)
             temporary = thread_id not in self.attached and not self.peer.is_owner(
                 thread_id
             )
             try:
-                if state is None:
-                    state = await self.peer.follow(thread_id)
-                if state is not None:
-                    state = self._snapshot(thread_id)[0]
-                    thread = state_to_native(state)
-                    if not include_turns:
-                        thread["turns"] = []
-                    return CodexThreadReadResult(
-                        thread=thread,
-                        canonical_complete=history_complete(state),
-                        coordination_role="owner"
-                        if self.peer.is_owner(thread_id)
-                        else "follower",
-                    )
-                raw = await self.sdk.native_request(
-                    "thread/read",
-                    {"threadId": thread_id, "includeTurns": include_turns},
-                )
-                return CodexThreadReadResult(
-                    thread=state_to_native(
-                        native_response_to_state(raw, host_id=self.peer.host_id)
-                    )
-                )
+                result, _ = await self._read_thread_locked(thread_id, include_turns)
+                return result
             finally:
                 if temporary and self.peer.is_follower(thread_id):
                     await self.peer.unfollow(thread_id)

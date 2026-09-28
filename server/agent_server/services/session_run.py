@@ -49,6 +49,7 @@ from agent_server.services.effective_capabilities import (
     read_session_capability_facts,
 )
 from agent_server.services.repository_ports import SessionRunRepository
+from agent_server.services.session_read_budget import session_read_timeout_seconds
 
 
 class SessionRunError(RuntimeError):
@@ -510,11 +511,24 @@ class SessionRunService:
                 session.connectorId,
                 "session.state",
                 params,
-                timeout=10,
+                timeout=(
+                    session_read_timeout_seconds("codex")
+                    if session.runtime == "codex" else 10
+                ),
             )
         except ConnectorOfflineError as exc:
             raise SessionRunConflictError(str(exc)) from exc
+        except TimeoutError as exc:
+            raise SessionRunTimeoutError({
+                "code": "runtime_state_timeout",
+                "message": "connector session state request timed out",
+            }) from exc
         except ConnectorRpcError as exc:
+            if exc.code == "codex_view_timeout":
+                raise SessionRunTimeoutError({
+                    "code": "runtime_state_timeout",
+                    "message": "connector session state preparation timed out",
+                }) from exc
             raise SessionRunUpstreamError(exc.message or exc.code) from exc
         if not isinstance(result, dict):
             return "idle"
