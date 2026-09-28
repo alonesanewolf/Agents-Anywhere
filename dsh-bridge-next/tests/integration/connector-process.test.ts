@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -55,8 +56,17 @@ async function fixture(mode = 'normal', settings: ConnectorSettings = DEFAULT_CO
     apiBaseUrl: 'https://api.example.test', dshHome: join(root, 'dsh-home'),
   }, (command, args, options) => {
     assert.equal(args[0], 'run')
-    assert.deepEqual(args.slice(1, 5), ['--directory', source, 'anywhere-cli', 'rpc'])
+    assert.equal(args[1], '--directory')
+    assert.equal(args[3], 'anywhere-cli')
+    assert.equal(args[4], 'rpc')
     assert.equal(args[5], '--config')
+    // 打包内的负载只是只读输入：uv 在插件数据目录里的副本上工作。
+    const projectDir = args[2]!
+    assert.equal(projectDir.startsWith(source), false)
+    assert.equal(projectDir.startsWith(join(root, 'data')), true)
+    assert.equal(existsSync(join(projectDir, 'pyproject.toml')), true)
+    assert.equal(existsSync(join(projectDir, 'connector', 'cli.py')), true)
+    assert.equal(options.cwd, projectDir)
     assert.doesNotMatch(JSON.stringify(args), /PRIVATE-DEVICE-TOKEN/)
     assert.equal(options.env?.UV_PROJECT_ENVIRONMENT, join(root, 'data', 'connector-venv'))
     assert.equal(options.env?.DSH_HOME, join(root, 'dsh-home'))
