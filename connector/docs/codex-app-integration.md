@@ -10,6 +10,12 @@ The endpoint is `<codexHome>/ipc/ipc.sock` on Unix. Endpoint directory and socke
 
 The read-only probe uses a narrower connection mode: `CoordinationClient(start_router=False)`. It connects only to the configured endpoint, never elects a router or starts the SDK/native child. Follow/unfollow changes ephemeral subscriber bookkeeping and may advance the owner's stream revision when the first follower subscribes. It does not claim ownership or write a conversation, goal, settings, queue, journal, approval or native turn.
 
+### Farfield Python boundary
+
+`farfield-python` is pinned to a Git commit in `connector/pyproject.toml`. The connector's local IPC transport validates incoming complete requests, broadcasts and modern router-discovery envelopes with its `parse_modern_ipc_frame`; shared follower method versions also come from the SDK. AA keeps its own initializer version for its elected router, as well as its extra coordination methods. A malformed response is validated by the existing per-request path so it cannot disconnect unrelated in-flight requests.
+
+This is a transport-level adoption, not a second connection or an alternative owner. `CoordinationPeer` still handles discovery, exact-owner requests, follow revisions, subscription and reconnect; `CoordinatedCodexClient` maps the canonical state and native operations into AA's runtime contract. The AA server and Web/mobile clients consume that contract and never open the machine-local IPC socket. The SDK's current `ModernCodexFollower` is outbound-only and has no owner request handlers, router election or reconnect journal. Replacing AA's peer with it now would lose App-to-AA takeover, live state and recovery. Extend the SDK to those capabilities, prove equivalence with the coordination suite, then replace the transport/peer in a separate change. Keep absent-owner reads within the existing one-second fast-discovery path and never interpret a timeout as permission to start another writer.
+
 ## Safe structural probe
 
 From `connector/`, with the installed App already running and owning the specified thread:

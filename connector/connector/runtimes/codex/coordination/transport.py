@@ -6,6 +6,7 @@ import os
 import uuid
 from pathlib import Path
 
+from farfield_python import ProtocolValidationError, parse_modern_ipc_frame
 from loguru import logger
 
 from .router import close_stream, elect_router, open_stream, validate_endpoint
@@ -204,6 +205,19 @@ class CoordinationClient:
                 initialize_task = asyncio.create_task(self._initialize())
                 while not self._closed:
                     message = await read_frame(reader)
+                    # The SDK validates complete Desktop coordination events at
+                    # the socket boundary. Responses retain AA's own validation
+                    # below so a malformed reply fails its request without
+                    # tearing down unrelated in-flight work.
+                    if message.get("type") in {
+                        "broadcast",
+                        "request",
+                        "client-discovery-request",
+                    }:
+                        try:
+                            parse_modern_ipc_frame(message)
+                        except ProtocolValidationError as exc:
+                            raise IpcError("invalid-envelope") from exc
                     if message.get("type") == "response":
                         if not isinstance(message.get("requestId"), str):
                             raise IpcError("invalid-envelope")

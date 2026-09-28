@@ -5,30 +5,24 @@ import json
 import struct
 from typing import Any
 
+from farfield_python import METHOD_VERSIONS as DESKTOP_METHOD_VERSIONS
+
 MAX_FRAME_BYTES = 256 * 1024 * 1024
 INITIALIZING_CLIENT = "initializing-client"
 METHOD_VERSIONS = {
-    "thread-stream-state-changed": 11,
-    "thread-stream-following-changed": 1,
+    # AA's local router negotiates initialize separately at version 0.
+    **{
+        name: version
+        for name, version in DESKTOP_METHOD_VERSIONS.items()
+        if name != "initialize"
+    },
     "thread-stream-following-status-requested": 1,
     "ipc-connection-reset": 1,
     "thread-read-state-changed": 3,
     "thread-archived": 2,
     "thread-unarchived": 1,
-    "thread-owner-discovery": 1,
-    "thread-follower-start-turn": 2,
-    "thread-follower-load-complete-history": 1,
-    "thread-follower-compact-thread": 1,
-    "thread-follower-steer-turn": 1,
-    "thread-follower-interrupt-turn": 4,
-    "thread-follower-update-thread-settings": 2,
     "thread-follower-update-daybreak": 1,
     "thread-follower-edit-last-user-turn": 2,
-    "thread-follower-command-approval-decision": 1,
-    "thread-follower-file-approval-decision": 1,
-    "thread-follower-permissions-request-approval-response": 1,
-    "thread-follower-submit-user-input": 1,
-    "thread-follower-submit-mcp-server-elicitation-response": 1,
     "thread-follower-set-queued-follow-ups-state": 1,
     "thread-queued-followups-changed": 2,
 }

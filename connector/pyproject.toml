@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncer>=0.0.18",
     "claude-agent-sdk",
+    "farfield-python",
     "httpx[socks]>=0.28.1",
     "jsonschema>=4.26.0",
     "loguru>=0.7.3",
@@ -39,6 +40,9 @@ dev = [
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[tool.uv.sources]
+farfield-python = { git = "https://github.com/t4wefan/farfield-python.git", rev = "add7a3e6bdf814767967c16c05de26589f80b3f1" }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
