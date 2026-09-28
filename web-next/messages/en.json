@@ -325,6 +325,15 @@
       "settings": "Settings",
       "team": "Team"
     },
+    "agentPresets": {
+      "label": "Agent preset",
+      "unavailable": "Agent presets unavailable",
+      "loading": "Loading presets...",
+      "standard": "Standard mode",
+      "minimal": "Minimal mode",
+      "ptc": "PTC mode",
+      "cordis": "Creator mode"
+    },
     "new": {
       "askApproval": "Ask approval",
       "attach": "Attach files",

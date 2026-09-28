@@ -325,6 +325,15 @@
       "needsAttention": "待处理",
       "clear": "清除筛选"
     },
+    "agentPresets": {
+      "label": "预设模式",
+      "unavailable": "预设模式不可用",
+      "loading": "正在加载模式...",
+      "standard": "标准模式",
+      "minimal": "极简模式",
+      "ptc": "PTC 模式",
+      "cordis": "创造模式"
+    },
     "new": {
       "askApproval": "请求确认",
       "attach": "添加附件",
