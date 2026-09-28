@@ -757,3 +757,122 @@ def test_repeated_failures_retain_only_bounded_unavailable_views_then_retry():
             assert c.router.discovery_count == before + 1
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("boundary", ["native-read", "catalog"])
+def test_real_native_disconnect_fences_ownerless_public_state(monkeypatch, boundary):
+    async def run():
+        async with runtime_network() as c:
+            entered, release = asyncio.Event(), asyncio.Event()
+            if boundary == "native-read":
+                c.native.read_gate = release
+                entered = c.native.reading
+            else:
+                reader_type = type(c.runtime._session_reader)
+                original = reader_type.selections_from_thread
+
+                async def selections(reader, thread):
+                    entered.set()
+                    await release.wait()
+                    return await original(reader, thread)
+
+                monkeypatch.setattr(reader_type, "selections_from_thread", selections)
+            task = asyncio.create_task(read_session_state(c.runtime, c.host, PARAMS))
+            await entered.wait()
+            native_generation = c.native.native_generation
+            facade_generation = c.facade.generation
+            await c.native.native_handler(
+                {"method": "native/disconnected", "params": {}}, native_generation
+            )
+            assert c.native.native_generation == native_generation
+            assert c.facade.generation == facade_generation + 1
+            release.set()
+            with pytest.raises(Exception) as error:
+                await task
+            assert error.value.code == "codex_view_changed"
+            assert not [
+                state
+                for state in c.host.state_updates
+                if state["metadata"].get("source") == "codex.thread/read.state"
+            ]
+            assert not c.runtime._observers.inflight
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("ending", ["repeated-timeout", "dispose"])
+def test_owned_goal_read_children_cancel_and_drain_before_sdk_stop(monkeypatch, ending):
+    from connector.runtimes.codex.sessions import observers
+
+    monkeypatch.setattr(observers, "PREPARE_TIMEOUT_SECONDS", 0.12)
+
+    async def run():
+        async with runtime_network() as c:
+            await c.caller.claim(THREAD, {"id": THREAD, "turns": [], "requests": []})
+            await c.caller._notifications.join()
+            children, cancelled, drained, stop_snapshots = [], [], [], []
+            entered, release = asyncio.Event(), asyncio.Event()
+            native_request, native_stop = c.native.native_request, c.native.stop
+
+            async def request(method, params):
+                if method != "thread/goal/get":
+                    return await native_request(method, params)
+                child = asyncio.current_task()
+                children.append(child)
+                entered.set()
+                try:
+                    await release.wait()
+                    return {"goal": None}
+                except asyncio.CancelledError:
+                    cancelled.append(child)
+                    # Cancellation must wait for cooperative native cleanup.
+                    await asyncio.sleep(0.01)
+                    drained.append(child)
+                    raise
+
+            async def stop():
+                stop_snapshots.append(
+                    [(child.done(), child.cancelled()) for child in children]
+                )
+                assert len(drained) == len(children), (
+                    "native read cleanup must precede SDK stop"
+                )
+                await native_stop()
+
+            c.native.native_request, c.native.stop = request, stop
+            task = None
+            try:
+                if ending == "repeated-timeout":
+                    pending_counts = []
+                    for _ in range(3):
+                        with pytest.raises(observers.CodexViewTimeout):
+                            await read_session_state(c.runtime, c.host, PARAMS)
+                        pending_counts.append(
+                            sum(not child.done() for child in children)
+                        )
+                        assert not c.runtime._observers.inflight
+                    assert pending_counts == [0, 0, 0]
+                    assert len(children) == 3
+                    await c.runtime.stop()
+                else:
+                    task = asyncio.create_task(
+                        read_session_state(c.runtime, c.host, PARAMS)
+                    )
+                    await entered.wait()
+                    await c.runtime.stop()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                assert len(cancelled) == len(drained) == len(children)
+                assert all(child.done() and child.cancelled() for child in children)
+                assert stop_snapshots == [[(True, True)] * len(children)]
+                assert not c.facade.operations.inflight
+                assert not c.runtime._observers.inflight
+            finally:
+                # Failure cleanup must not leak the exact children the RED proves.
+                release.set()
+                await asyncio.gather(*children, return_exceptions=True)
+                if task:
+                    await asyncio.gather(task, return_exceptions=True)
+                c.native.stop = native_stop
+
+    asyncio.run(run())

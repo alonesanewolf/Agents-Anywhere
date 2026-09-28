@@ -58,7 +58,13 @@ class OwnerOperations:
         self.inflight.add(task)
         task.add_done_callback(self.inflight.discard)
         task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
-        result = await asyncio.shield(task)
+        if method == "thread/goal/get":
+            # Passive hydration owns this read: timeout/disposal must propagate
+            # cancellation and await the child's cooperative cleanup. Mutations
+            # remain shielded because cancellation cannot resolve their outcome.
+            result = await task
+        else:
+            result = await asyncio.shield(task)
         self.state(thread_id)
         return result
 

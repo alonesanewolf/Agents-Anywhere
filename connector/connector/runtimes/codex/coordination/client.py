@@ -117,6 +117,9 @@ class CoordinatedCodexClient:
             return
         if message["method"] == "native/disconnected":
             self.generation += 1
+            # Native disconnect reports the current SDK generation. Fence passive
+            # reads now, without invalidating them for unrelated peer status.
+            self.view_connection_epoch += 1
             self.contexts.clear()
             for thread_id in tuple(self.owned):
                 await self.peer.release(thread_id)
