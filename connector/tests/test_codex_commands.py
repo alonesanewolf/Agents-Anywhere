@@ -52,6 +52,16 @@ class CommandsClient(FakeCodexClient):
         self.calls.append(("stop_session", thread_id))
         return {"ok": True, "interruptedTurnId": "physical"}
 
+    def has_canonical_authority(self, thread_id):
+        return True
+
+    async def refresh_state(self, thread_id, force=False):
+        self.calls.append(("refresh_state", {"threadId": thread_id, "force": force}))
+
+    async def load_complete_history(self, thread_id):
+        self.calls.append(("load_complete_history", {"threadId": thread_id}))
+        return {"threadId": thread_id, "items": []}
+
 
 async def setup(role="owner", status="idle"):
     host, client = FakeHost(), CommandsClient(role)
@@ -108,6 +118,53 @@ def test_compact_acceptance_and_selector_no_rpc():
         client.calls.clear()
         result = await runtime.execute_command("s", "model", "t")
         assert not result.ok and result.code == "command_requires_selector"
+        assert client.calls == []
+
+    run(scenario)
+
+
+def test_canonical_web_command_accepts_case_and_advertised_alias_raw():
+    async def scenario():
+        runtime, client = await setup(role="follower")
+        status = await runtime.execute_command("s", "status", "t", raw="  /STATUS  ")
+        assert status.ok and status.result["externalSessionId"] == "t"
+        assert client.calls == []
+
+        history = await runtime.execute_command("s", "history", "t", raw=" /REFRESH  ")
+        assert history.ok
+        assert client.calls == [
+            ("load_complete_history", {"threadId": "t"}),
+            ("refresh_state", {"threadId": "t", "force": True}),
+        ]
+
+        plan = await runtime.execute_command(
+            "s", "plan", "t", raw="  /PLAN-MODE  on  \n", args=("off",)
+        )
+        assert plan.ok
+        assert client.calls[-1] == (
+            "thread-follower-update-thread-settings",
+            {
+                "threadSettings": {
+                    "collaborationMode": {
+                        "mode": "plan",
+                        "settings": {
+                            "model": "gpt-test",
+                            "developer_instructions": None,
+                        },
+                    }
+                }
+            },
+        )
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("raw", ["", " /GOAL status", " /plan-mode off"])
+def test_canonical_web_command_rejects_empty_or_distinct_raw(raw):
+    async def scenario():
+        runtime, client = await setup()
+        result = await runtime.execute_command("s", "status", "t", raw=raw)
+        assert not result.ok and result.code == "invalid_command"
         assert client.calls == []
 
     run(scenario)

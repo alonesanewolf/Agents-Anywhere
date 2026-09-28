@@ -54,7 +54,7 @@ def timeline_item_type_from_raw_type(value: str) -> str:
         "toolResult",
     }:
         return "tool"
-    if value in {"fileChange", "file_change"}:
+    if value in {"fileChange", "file_change", "userInputResponse"}:
         return "artifact"
     return "system"
 

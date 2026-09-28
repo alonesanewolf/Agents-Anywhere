@@ -161,7 +161,10 @@ class CodexTimelineAccumulator:
             ).with_patch(f"{previous_patch}{self.event_delta(event)}")
         elif event.event_type == "item/started":
             merged = projection.with_status(projection.status or "inProgress")
-        elif event.event_type == "item/completed":
+        elif (
+            event.event_type == "item/completed"
+            and projection.raw_type != "userInputResponse"
+        ):
             merged = projection.with_status(projection.status or "completed")
         if state is not None and item_key is not None:
             state.projection_by_item_key[item_key] = merged

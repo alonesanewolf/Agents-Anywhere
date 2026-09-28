@@ -254,6 +254,11 @@ class CodexFileChangeItem(CodexArtifactTimelineItem):
 
 
 @dataclass(frozen=True, slots=True)
+class CodexUserInputResponseItem(CodexArtifactTimelineItem):
+    expected_native_item_types: ClassVar[tuple[str, ...]] = ("userInputResponse",)
+
+
+@dataclass(frozen=True, slots=True)
 class CodexUnknownItem(CodexSystemTimelineItem):
     pass
 
@@ -287,6 +292,7 @@ CODEX_TIMELINE_ITEM_CLASS_BY_NATIVE_TYPE: Mapping[str, type[CodexTimelineItem]] 
     "toolResult": CodexToolResultItem,
     "fileChange": CodexFileChangeItem,
     "file_change": CodexFileChangeItem,
+    "userInputResponse": CodexUserInputResponseItem,
 }
 
 

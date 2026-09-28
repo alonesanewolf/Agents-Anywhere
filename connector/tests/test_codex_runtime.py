@@ -1125,6 +1125,123 @@ def test_codex_compaction_snapshot_uses_item_level_identity() -> None:
     assert snapshot_items[0].content["state"] == "completed"
 
 
+def test_native_user_input_response_history_preserves_answer_and_turn_identity() -> (
+    None
+):
+    accumulator = CodexTimelineAccumulator()
+    question = {
+        "id": "fixture_label",
+        "header": "Fixture",
+        "question": "Which **fixture** label should I use?",
+        "options": [{"label": "Alpha", "description": "Use *Alpha*."}],
+        "nativeFutureField": {"detail": "retained"},
+    }
+    pending = {
+        "id": "user-input-response-0",
+        "type": "userInputResponse",
+        "requestId": 0,
+        "questions": [question],
+        "answers": {},
+        "completed": False,
+    }
+    answered = {**pending, "answers": {"fixture_label": ["Alpha"]}, "completed": True}
+    first = accumulator.items_from_thread_snapshot(
+        "sess_1", "thread_1", {"turns": [{"id": "turn_1", "items": [pending]}]}, None
+    )[0]
+    completed = accumulator.items_from_thread_snapshot(
+        "sess_1",
+        "thread_1",
+        {
+            "turns": [
+                {
+                    "id": "turn_1",
+                    "items": [
+                        {**pending, "id": "user-input-response-7", "requestId": 7},
+                        answered,
+                    ],
+                }
+            ]
+        },
+        None,
+    )[1]
+    later = accumulator.items_from_thread_snapshot(
+        "sess_1", "thread_1", {"turns": [{"id": "turn_2", "items": [pending]}]}, None
+    )[0]
+    unknown = accumulator.items_from_thread_snapshot(
+        "sess_1",
+        "thread_1",
+        {
+            "turns": [
+                {
+                    "id": "turn_1",
+                    "items": [
+                        {
+                            "id": "user-input-response-0",
+                            "type": "userInputResponse",
+                            "requestId": 0,
+                            "questions": [question],
+                            "answers": {"fixture_label": ["Alpha"]},
+                        }
+                    ],
+                }
+            ]
+        },
+        None,
+    )[0]
+    malformed = accumulator.items_from_thread_snapshot(
+        "sess_1",
+        "thread_1",
+        {
+            "turns": [
+                {
+                    "id": "turn_1",
+                    "items": [
+                        {
+                            **answered,
+                            "answers": {"fixture_label": [{"unobserved": True}]},
+                        }
+                    ],
+                }
+            ]
+        },
+        None,
+    )[0]
+    assert first.id == completed.id != later.id
+    assert first.source["rawType"] == "userInputResponse"
+    assert first.content["kind"] == "user_input_response"
+    assert first.content["state"] == "awaiting"
+    assert first.status == "pending"
+    assert first.content["questions"] == [question]
+    assert completed.content["state"] == "answered"
+    assert completed.status == "done"
+    assert completed.content["answers"] == {"fixture_label": ["Alpha"]}
+    assert completed.content["completed"] is True
+    assert completed.content["questions"] == [question]
+    assert unknown.content["state"] == "unknown"
+    assert unknown.status == "pending"
+    assert unknown.content["answers"] == {"fixture_label": ["Alpha"]}
+    assert malformed.content["state"] == "unknown"
+    assert malformed.content["answers"] == {"fixture_label": [{"unobserved": True}]}
+
+    accumulator.begin_turn("thread_1", "turn_1")
+    live_pending = accumulator.item_from_notification(
+        "sess_1",
+        "thread_1",
+        "item/completed",
+        {"threadId": "thread_1", "turnId": "turn_1", "item": pending},
+    )
+    live_answered = accumulator.item_from_notification(
+        "sess_1",
+        "thread_1",
+        "item/completed",
+        {"threadId": "thread_1", "turnId": "turn_1", "item": answered},
+    )
+    assert live_pending is not None and live_answered is not None
+    assert live_pending.id == live_answered.id == first.id
+    assert live_pending.status == "pending"
+    assert live_answered.content["answers"] == {"fixture_label": ["Alpha"]}
+
+
 def test_codex_compaction_snapshot_allows_multiple_compaction_items() -> None:
     accumulator = CodexTimelineAccumulator()
 

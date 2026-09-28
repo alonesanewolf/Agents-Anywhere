@@ -28,6 +28,7 @@ from connector.runtimes.codex.timeline.identity import (
     native_item_id,
     timeline_item_id_from_values,
     turn_item_lane,
+    user_input_response_item_id,
     uses_turn_position_identity,
 )
 from connector.runtimes.codex.timeline.items import (
@@ -81,6 +82,10 @@ class CodexTimelineProjection:
     explicit_derived_key: str | None = None
     attachments: tuple[Mapping[str, Any], ...] = ()
     revision: int = 1
+    request_id: Any = None
+    questions: Any = None
+    answers: Any = None
+    completed: Any = None
 
     def with_client_message_id(self, client_message_id: str) -> CodexTimelineProjection:
         return replace(
@@ -125,6 +130,16 @@ class CodexTimelineProjection:
         return timeline_item_role_from_values(raw_type=self.raw_type, role=self.role)
 
     def item_id(self, external_session_id: str, fallback_index: int) -> str:
+        if (
+            self.raw_type == "userInputResponse"
+            and self.turn_id
+            and (self.native_id or self.request_id is not None)
+        ):
+            return user_input_response_item_id(
+                external_session_id,
+                self.turn_id,
+                self.native_id or f"request-{self.request_id}",
+            )
         if self.platform_id is not None:
             return self.platform_id
         return timeline_item_id_from_values(
@@ -138,6 +153,12 @@ class CodexTimelineProjection:
         )
 
     def derived_key(self, fallback_index: int) -> str:
+        if (
+            self.raw_type == "userInputResponse"
+            and self.turn_id
+            and (self.native_id or self.request_id is not None)
+        ):
+            return f"user-input-response:{self.turn_id}:{self.native_id or self.request_id}"
         if self.explicit_derived_key is not None:
             return self.explicit_derived_key
         if (
@@ -200,6 +221,50 @@ class CodexTimelineProjection:
         )
 
     def content_mapping(self) -> Mapping[str, Any]:
+        if self.raw_type == "userInputResponse":
+            valid = (
+                isinstance(self.questions, list)
+                and bool(self.questions)
+                and isinstance(self.answers, Mapping)
+                and all(
+                    isinstance(question, Mapping)
+                    and isinstance(question.get("id"), str)
+                    and bool(question["id"])
+                    and isinstance(question.get("question"), str)
+                    for question in self.questions
+                )
+            )
+            has_answers = valid and all(
+                isinstance(self.answers.get(question["id"]), list)
+                and bool(self.answers[question["id"]])
+                and all(
+                    isinstance(answer, str) for answer in self.answers[question["id"]]
+                )
+                for question in self.questions
+            )
+            state = (
+                "awaiting"
+                if self.completed is False and valid
+                else "answered"
+                if self.completed is True and has_answers
+                else "unknown"
+            )
+            return {
+                "kind": "user_input_response",
+                "state": state,
+                **(
+                    {"requestId": self.request_id}
+                    if self.request_id is not None
+                    else {}
+                ),
+                **({"questions": self.questions} if self.questions is not None else {}),
+                **({"answers": self.answers} if self.answers is not None else {}),
+                **(
+                    {"completed": self.completed}
+                    if isinstance(self.completed, bool)
+                    else {}
+                ),
+            }
         if self.raw_type == "reasoning":
             if self.text:
                 return {
@@ -382,6 +447,10 @@ class CodexTimelineProjection:
     def raw_metadata(self) -> Mapping[str, Any]:
         raw: dict[str, Any] = {
             "type": self.raw_type,
+            **({"requestId": self.request_id} if self.request_id is not None else {}),
+            **({"questions": self.questions} if self.questions is not None else {}),
+            **({"answers": self.answers} if self.answers is not None else {}),
+            **({"completed": self.completed} if self.completed is not None else {}),
             **({"id": self.native_id} if self.native_id else {}),
             **({"status": self.status} if self.status else {}),
             **({"role": self.role} if self.role else {}),
@@ -434,7 +503,19 @@ def timeline_projection_from_raw(raw: Mapping[str, Any]) -> CodexTimelineProject
     return CodexTimelineProjection(
         native_id=native_item_id(raw_dict),
         raw_type=raw_type,
-        status=timeline_raw_status(raw_dict),
+        request_id=raw_dict.get("requestId")
+        if raw_type == "userInputResponse"
+        else None,
+        questions=raw_dict.get("questions")
+        if raw_type == "userInputResponse"
+        else None,
+        answers=raw_dict.get("answers") if raw_type == "userInputResponse" else None,
+        completed=raw_dict.get("completed")
+        if raw_type == "userInputResponse"
+        else None,
+        status=("completed" if raw_dict.get("completed") is True else "pending")
+        if raw_type == "userInputResponse"
+        else timeline_raw_status(raw_dict),
         role=timeline_item_role(raw_dict),
         turn_id=timeline_item_turn_id(raw_dict),
         text=pending_text_from_raw(raw_dict)

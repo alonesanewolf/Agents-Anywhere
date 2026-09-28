@@ -59,6 +59,16 @@ def turn_position_item_id(
     return f"codex_item_{digest}"
 
 
+def user_input_response_item_id(
+    external_session_id: str, turn_id: str, native_id: str
+) -> str:
+    identity = (
+        f"codex-user-input-response-v1\0{external_session_id}\0{turn_id}\0{native_id}"
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    return f"codex_item_{digest}"
+
+
 def turn_item_lane(raw_type: str, role: str | None) -> str:
     """Return the position lane shared by live events and thread history."""
 

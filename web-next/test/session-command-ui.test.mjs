@@ -18,6 +18,7 @@ const { SessionComposer } = await import('../src/components/session/session-comp
 const { SessionGoalPanel } = await import('../src/components/session/session-goal-panel.tsx')
 const { SessionPlanCard } = await import('../src/components/session/session-plan-card.tsx')
 const { InteractionCard } = await import('../src/components/session/session-approval-card.tsx')
+const { SessionInputResponseCard } = await import('../src/components/session/session-input-response-card.tsx')
 hook.deregister()
 const messages = JSON.parse(readFileSync(new URL('../messages/en.json',import.meta.url),'utf8'))
 const session = {id:'s1',runtime:'codex',runtimeId:'codex',connectorStatus:'online',status:'idle',archived:false,takeover:true}
@@ -32,6 +33,37 @@ async function mount(t, child) {
   return host
 }
 const textSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set
+
+test('native input response history shows actual answer without response authority', async t => {
+  const item = {id:'receipt',sessionId:'s1',type:'artifact',status:'done',role:null,orderSeq:3,revision:2,contentHash:'fixture',source:{runtime:'codex',rawType:'userInputResponse'},content:{kind:'user_input_response',state:'answered',completed:true,requestId:0,questions:[{id:'fixture_label',header:'Fixture',question:'Which **fixture** label?',options:[{label:'Alpha',description:'Use Alpha'}]}],answers:{fixture_label:['Alpha']}}}
+  const host = await mount(t,h(SessionInputResponseCard,{session,item}))
+  assert.match(host.textContent,/Which.*fixture.*label/)
+  assert.match(host.textContent,/Alpha/)
+  assert.match(host.textContent,/Answered/)
+  assert.ok(host.querySelector('strong'))
+  assert.doesNotMatch(host.textContent,/unknown: done/)
+  assert.equal(host.querySelectorAll('button[type="submit"]').length,0)
+})
+
+test('pending and malformed input receipts remain read only and never claim an answer', async t => {
+  for (const [state, expected] of [['awaiting','Awaiting answer'],['unknown','Answer status unknown']]) {
+    const item = {id:`receipt-${state}`,sessionId:'s1',type:'artifact',status:'done',source:{runtime:'codex',rawType:'userInputResponse'},content:{kind:'user_input_response',state,questions:[{id:'fixture_label',question:'Pick **Alpha**?',options:[{label:'Alpha'}]}],answers:{}}}
+    const host = await mount(t,h(SessionInputResponseCard,{session,item}))
+    assert.match(host.textContent,new RegExp(expected))
+    assert.match(host.textContent,/Pick Alpha/)
+    assert.doesNotMatch(host.textContent,/Answer ·/)
+    assert.equal(host.querySelectorAll('button[type="submit"]').length,0)
+  }
+})
+
+test('input response Markdown uses safe rendering for native question and answer text', async t => {
+  const item = {id:'receipt-safe',sessionId:'s1',type:'artifact',status:'done',source:{runtime:'codex',rawType:'userInputResponse'},content:{kind:'user_input_response',state:'answered',questions:[{id:'q',question:'Choose **one** <script>alert(1)</script>'}],answers:{q:['[unsafe](javascript:alert(1)) **Alpha**']}}}
+  const host = await mount(t,h(SessionInputResponseCard,{session,item}))
+  assert.match(host.textContent,/Choose one/)
+  assert.match(host.textContent,/Alpha/)
+  assert.equal(host.querySelector('script'),null)
+  assert.equal(host.querySelector('a[href^="javascript:"]'),null)
+})
 async function type(input,value) {await act(async()=>{textSetter.call(input,value);input.dispatchEvent(new window.Event('input',{bubbles:true}))})}
 
 test('composer inserts argument command, submits exact long raw once, preserves new typing after delayed accepted result', async t => {
