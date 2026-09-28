@@ -145,6 +145,7 @@ export class SourceConnector implements ConnectorProcess {
     signal.throwIfAborted()
     // 不依赖 prepare() 的调用顺序：start() 自己也要保证项目副本就位。
     const projectDir = this.projectDir ??= await materializeConnectorProject(this.config)
+    signal.throwIfAborted()
     const child = this.launch(command, [
       'run', '--directory', projectDir,
       'anywhere-cli', 'rpc', '--config', configPath,
@@ -187,6 +188,7 @@ export class SourceConnector implements ConnectorProcess {
     const abort = () => { void this.stop() }
     signal.addEventListener('abort', abort, { once: true })
     try {
+      signal.throwIfAborted()
       // Includes the first uv dependency installation, not just Python startup.
       this.updateState(await this.call('connector.getState', this.firstRequestTimeoutMs))
       signal.throwIfAborted()

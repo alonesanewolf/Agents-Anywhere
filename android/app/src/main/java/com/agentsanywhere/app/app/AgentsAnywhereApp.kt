@@ -865,6 +865,9 @@ fun AgentsAnywhereApp(
         onListNewSessionRuntimes = { connectorId ->
             sessionsController.listNewSessionRuntimes(connectorId)
         },
+        onDiscoverNewSessionRuntimes = { connectorId ->
+            devicesController.discoverDeviceRuntimes(connectorId)
+        },
         onLoadNewSessionRuntimeCapabilities = { connectorId, runtime ->
             sessionsController.loadNewSessionRuntimeCapabilities(connectorId, runtime)
         },
