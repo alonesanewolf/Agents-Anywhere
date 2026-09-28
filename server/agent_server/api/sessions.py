@@ -96,6 +96,7 @@ from agent_server.infra.repositories.facade import Store
 from agent_server.infra.timeline_broker import TimelineBroker
 from agent_server.infra.ws_tickets import ClientWsTicketManager
 from agent_server.services.catalogs import CatalogService
+from agent_server.services.connector_ingest import runtime_presentation_fingerprint
 from agent_server.services.connector_presence import (
     with_effective_session_connector_status,
     with_effective_session_connector_statuses,
@@ -236,6 +237,16 @@ def runtime_state_semantically_equal(
         and left.externalSessionId == right.externalSessionId
         and left.statusReason == right.statusReason
         and left.error == right.error
+        and (
+            runtime_presentation_fingerprint(left.metadata)
+            if left.runtime == "codex"
+            else {}
+        )
+        == (
+            runtime_presentation_fingerprint(right.metadata)
+            if right.runtime == "codex"
+            else {}
+        )
     )
 
 
@@ -249,23 +260,23 @@ async def _publish_session_runtime_state_update(
 ) -> None:
     """Publish one already-read runtime state to session subscribers."""
 
-    async with db.session_revision_fence(session_id):
-        next_seq = await db.get_session_seq(session_id)
-        session = await db.get_session(session_id)
-        # A live event may have arrived while the RPC was in flight. Publish the
-        # newest cached state together with the current session revision.
-        latest_state = await runtime_state_cache.get(session_id) or runtime_state
-        session = session_with_runtime_state(session, latest_state)
-        session = await with_effective_session_connector_status(manager, session)
-        await broker.publish(
-            session_id,
-            {
-                "sessionId": session_id,
-                "nextSeq": next_seq,
-                "session": session.model_dump(mode="json"),
-                "runtimeState": latest_state.model_dump(mode="json"),
-            },
-        )
+    # Caller owns the revision fence across status/cache publication.
+    next_seq = await db.get_session_seq(session_id)
+    session = await db.get_session(session_id)
+    # A live event may have arrived while the RPC was in flight. Publish the
+    # newest cached state together with the current session revision.
+    latest_state = await runtime_state_cache.get(session_id) or runtime_state
+    session = session_with_runtime_state(session, latest_state)
+    session = await with_effective_session_connector_status(manager, session)
+    await broker.publish(
+        session_id,
+        {
+            "sessionId": session_id,
+            "nextSeq": next_seq,
+            "session": session.model_dump(mode="json"),
+            "runtimeState": latest_state.model_dump(mode="json"),
+        },
+    )
 
 
 async def read_runtime_state_snapshot(
@@ -315,19 +326,20 @@ async def refresh_runtime_state_in_background(
             state = await read_runtime_state_from_connector(manager, session)
             if state is None:
                 return
-            persisted_session = await db.set_session_status(session.id, state.status)
-            state = state.model_copy(update={"updatedSeq": persisted_session.updatedSeq})
-            await runtime_state_cache.put(state)
-            if runtime_state_semantically_equal(previous_state, state):
-                return
-            await _publish_session_runtime_state_update(
-                db,
-                broker,
-                manager,
-                runtime_state_cache,
-                session_id,
-                state,
-            )
+            async with db.session_revision_fence(session_id):
+                persisted_session = await db.set_session_status(session.id, state.status)
+                state = state.model_copy(update={"updatedSeq": persisted_session.updatedSeq})
+                await runtime_state_cache.put(state)
+                if runtime_state_semantically_equal(previous_state, state):
+                    return
+                await _publish_session_runtime_state_update(
+                    db,
+                    broker,
+                    manager,
+                    runtime_state_cache,
+                    session_id,
+                    state,
+                )
     except Exception:
         logger.opt(exception=True).debug(
             "background runtime state refresh failed session_id={}", session_id
@@ -955,12 +967,18 @@ async def session_snapshot(
 
         stage_started_at = time.monotonic()
         async with timeline_write_buffer.session_fence(session_id):
-            session = await db.get_session(session_id, user_id=user_id)
-            items, has_more = await db.list_timeline_latest(
-                session_id=session_id,
-                limit=limit,
-            )
-            next_seq = await db.get_session_seq(session_id)
+            async with db.session_revision_fence(session_id):
+                session = await db.get_session(session_id, user_id=user_id)
+                items, has_more = await db.list_timeline_latest(
+                    session_id=session_id,
+                    limit=limit,
+                )
+                # Cached runtime state can change while notices/catalogs are
+                # read. Reconcile it at the same revision as the cursor.
+                runtime_state = await read_runtime_state_snapshot(
+                    db, runtime_state_cache, session, user_id,
+                )
+                next_seq = await db.get_session_seq(session_id)
         session = session_with_runtime_state(session, runtime_state)
         session = await with_effective_session_connector_status(manager, session)
         effective_capabilities = derive_session_effective_capabilities(
@@ -1636,9 +1654,10 @@ async def read_runtime_state_live(
     if await manager.is_online(session.connectorId):
         state = await read_runtime_state_from_connector(manager, session)
         if state is not None:
-            persisted_session = await db.set_session_status(session.id, state.status)
-            state = state.model_copy(update={"updatedSeq": persisted_session.updatedSeq})
-            await runtime_state_cache.put(state)
+            async with db.session_revision_fence(session.id):
+                persisted_session = await db.set_session_status(session.id, state.status)
+                state = state.model_copy(update={"updatedSeq": persisted_session.updatedSeq})
+                await runtime_state_cache.put(state)
             return state
     cached_state = await runtime_state_cache.get(session.id)
     if cached_state is not None:
