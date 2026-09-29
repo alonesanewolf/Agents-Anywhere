@@ -10,6 +10,7 @@ import { DesktopShellHeader } from "@/components/desktop/desktop-shell-header"
 import { DesktopSessionNotifications } from "@/components/desktop/desktop-session-notifications"
 import { TaskComposer } from "@/components/task-composer"
 import { SessionView } from "@/components/session-view"
+import { WorkspaceHeaderBackdrop } from "@/components/workspace-header"
 import { SessionToolSidebarsHost } from "@/components/session-tool-sidebar"
 import { SettingsPage } from "@/components/pages/settings-page"
 import { DashboardPage } from "@/components/pages/dashboard-page"
@@ -260,9 +261,13 @@ function DesktopResizableShell() {
             <SidebarInset data-page={page} className="aa-desktop-main h-full min-h-0 overflow-hidden overscroll-none bg-background">
               <div className="aa-desktop-drag-region" aria-hidden="true" />
               {page === "session" ? (
-                <header className="aa-desktop-session-header aa-window-drag flex h-11 shrink-0 items-center gap-2 px-3">
-                  <div data-slot="desktop-shell-header-session" className="flex min-w-0 flex-1 items-center overflow-hidden" />
-                  <div data-slot="desktop-shell-header-session-actions" className="aa-window-no-drag flex shrink-0 items-center" />
+                // Overlays the timeline like the web session header so content scrolls under the blur.
+                <header className="pointer-events-none absolute inset-x-0 top-0 z-10 h-14 overflow-hidden">
+                  <WorkspaceHeaderBackdrop />
+                  <div className="aa-desktop-session-header aa-window-drag pointer-events-auto relative flex h-11 items-center gap-2 px-3">
+                    <div data-slot="desktop-shell-header-session" className="flex min-w-0 flex-1 items-center overflow-hidden" />
+                    <div data-slot="desktop-shell-header-session-actions" className="aa-window-no-drag flex shrink-0 items-center" />
+                  </div>
                 </header>
               ) : null}
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
