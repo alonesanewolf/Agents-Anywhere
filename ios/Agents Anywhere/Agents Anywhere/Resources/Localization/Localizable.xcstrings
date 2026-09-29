@@ -11013,6 +11013,24 @@
         }
       }
     },
+    "所有盘符": {
+      "comment": "Shared with Web: dashboard.panels.files.allDrives. Sync with ios/scripts/web_copy.py.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All drives"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有盘符"
+          }
+        }
+      }
+    },
     "手机网络已断开": {
       "extractionState": "manual",
       "localizations": {
