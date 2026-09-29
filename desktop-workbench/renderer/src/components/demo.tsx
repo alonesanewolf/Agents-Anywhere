@@ -260,7 +260,7 @@ function DesktopResizableShell() {
             <SidebarInset data-page={page} className="aa-desktop-main h-full min-h-0 overflow-hidden overscroll-none bg-background">
               <div className="aa-desktop-drag-region" aria-hidden="true" />
               {page === "session" ? (
-                <header className="aa-window-drag flex h-11 shrink-0 items-center gap-2 px-3">
+                <header className="aa-desktop-session-header aa-window-drag flex h-11 shrink-0 items-center gap-2 px-3">
                   <div data-slot="desktop-shell-header-session" className="flex min-w-0 flex-1 items-center overflow-hidden" />
                   <div data-slot="desktop-shell-header-session-actions" className="aa-window-no-drag flex shrink-0 items-center" />
                 </header>
