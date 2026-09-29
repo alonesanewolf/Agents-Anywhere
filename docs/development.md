@@ -40,7 +40,7 @@ yarn dev
 ./desktop-local-up.sh down
 ```
 
-此启动器使用 Server `8000` 和 Desktop `5184`，会释放这两个应用端口的既有监听者；停止后数据库容器仍保留运行。更多环境变量与生命周期见 [Desktop README](../desktop-workbench/README.md)。
+此启动器使用 Server `8000` 和 Desktop `5184`，会释放这两个应用端口的既有监听者，然后像 `local-up.sh` 一样在前台运行 Server 和 Desktop，并带前缀输出日志（同时写入 `.local-dev/logs/`）。按 Ctrl-C 停止本次启动的服务和数据库容器；`down` 用于停止另一个终端里仍在运行的启动器。更多环境变量与生命周期见 [Desktop README](../desktop-workbench/README.md)。
 
 ## Headless 检查
 
