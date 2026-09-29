@@ -24,21 +24,16 @@ struct TextSelectionInteraction: ViewModifier {
   func body(content: Content) -> some View {
     #if TEXTUAL_ENABLE_TEXT_SELECTION
       if textSelection.allowsSelection {
-        Group {
-          if model.readsLayout {
-            content
-              .overlayTextLayoutCollection { layoutCollection in
-                Color.clear
-                  .onChange(of: AnyTextLayoutCollection(layoutCollection), initial: true) {
-                    model.setCoordinator(coordinator)
-                    model.setLayoutCollection(layoutCollection)
-                  }
+        // Keep the view structure fixed: swapping `content` for a dormant branch would recreate
+        // the UIKit overlay below and drop the touch that started reading the layout.
+        content
+          .overlayTextLayoutCollection(isEnabled: model.readsLayout) { layoutCollection in
+            Color.clear
+              .onChange(of: AnyTextLayoutCollection(layoutCollection), initial: true) {
+                model.setCoordinator(coordinator)
+                model.setLayoutCollection(layoutCollection)
               }
-          } else {
-            // A dormant fragment scrolls and translates without querying its text layout.
-            content
           }
-        }
         .modifier(PlatformTextSelectionInteraction(model: model))
       } else {
         content
