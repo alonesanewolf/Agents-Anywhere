@@ -3,6 +3,8 @@ import Textual
 
 extension EnvironmentValues {
     @Entry var chatLayoutTraceOwner = "markdown"
+    /// Two Dynamic Type steps below body; every block scales from this.
+    @Entry var chatMarkdownFont: Font = .subheadline
 }
 
 struct ChatMarkdownView: View {
@@ -71,6 +73,7 @@ private struct MarkdownBlockView: View, Equatable {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.layoutDirection) private var direction
     @Environment(\.chatLayoutTraceOwner) private var traceOwner
+    @Environment(\.chatMarkdownFont) private var font
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.block == rhs.block && lhs.isStreaming == rhs.isStreaming && lhs.isTail == rhs.isTail
@@ -87,8 +90,7 @@ private struct MarkdownBlockView: View, Equatable {
                 // the native code/table text areas install selection overlays.
                 .textual.textSelection(.disabled)
                 .environment(\.streamingGlyphAnimation, isStreaming && !hasSettled)
-                // Two Dynamic Type steps below body; every block scales from this.
-                .font(.subheadline)
+                .font(font)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)

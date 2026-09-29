@@ -6,17 +6,13 @@ struct ChatMarkdownTable: View {
     let columns: [PresentationIntent.TableColumn]
 
     var body: some View {
+        let columnCount = max(1, rows.map(\.count).max() ?? 0)
         ScrollView(.horizontal) {
-            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            TableGridLayout(columns: columnCount, minWidth: 76, maxWidth: 260) {
                 ForEach(rows.indices, id: \.self) { row in
-                    GridRow {
-                        ForEach(rows[row].indices, id: \.self) { column in
-                            cell(rows[row][column], header: row == 0, column: column)
-                                .gridColumnAlignment(alignment(column))
-                        }
-                    }
-                    if row != rows.indices.last {
-                        Divider().gridCellColumns(max(1, columns.count)).gridCellUnsizedAxes(.horizontal)
+                    ForEach(0..<columnCount, id: \.self) { column in
+                        cell(rows[row].indices.contains(column) ? rows[row][column] : AttributedString(),
+                             row: row, column: column, columnCount: columnCount)
                     }
                 }
             }
@@ -30,23 +26,25 @@ struct ChatMarkdownTable: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func cell(_ content: AttributedString, header: Bool, column: Int) -> some View {
-        TableCellWidth(min: 56, max: 240) {
-            InlineText(String(content.hashValue), parser: ParsedMarkdownText(content: content))
-                .textual.textSelection(.enabled)
-                .modifier(StreamingGlyphReveal())
-                .fontWeight(header ? .semibold : .regular)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment(column), vertical: .top))
-        }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(header ? Color.primary.opacity(0.04) : .clear)
-        .overlay(alignment: .trailing) {
-            if column < columns.count - 1 {
-                Rectangle().fill(.primary.opacity(0.12)).frame(width: 0.5).allowsHitTesting(false)
+    private func cell(_ content: AttributedString, row: Int, column: Int, columnCount: Int) -> some View {
+        InlineText(String(content.hashValue), parser: ParsedMarkdownText(content: content))
+            .textual.textSelection(.enabled)
+            .modifier(StreamingGlyphReveal())
+            .fontWeight(row == 0 ? .semibold : .regular)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: Alignment(horizontal: alignment(column), vertical: .top))
+            .background(row == 0 ? Color.primary.opacity(0.04) : .clear)
+            .overlay(alignment: .trailing) {
+                if column < columnCount - 1 {
+                    Rectangle().fill(.primary.opacity(0.12)).frame(width: 0.5).allowsHitTesting(false)
+                }
             }
-        }
+            .overlay(alignment: .bottom) {
+                if row < rows.count - 1 {
+                    Rectangle().fill(.primary.opacity(0.12)).frame(height: 0.5).allowsHitTesting(false)
+                }
+            }
     }
 
     private func alignment(_ column: Int) -> HorizontalAlignment {
@@ -60,22 +58,64 @@ struct ChatMarkdownTable: View {
     }
 }
 
-/// A horizontal scroll view proposes no width. A flexible frame then keeps a
-/// long cell on one line past its cap, overlapping the next column. Wrap the
-/// text at the capped width instead, and fill the column Grid assigns later.
-private struct TableCellWidth: Layout {
-    let min: CGFloat
-    let max: CGFloat
+/// Grid measured its rows under a different width than it placed them with
+/// inside the horizontal scroll view, so wrapped cells overflowed into the
+/// next row and the table was cut short. This layout sizes each column once
+/// (ideal width, capped so long cells wrap), gives every row its tallest
+/// cell's height and places cells with exactly that size.
+private struct TableGridLayout: Layout {
+    let columns: Int
+    let minWidth: CGFloat
+    let maxWidth: CGFloat
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let content = subviews.first else { return .zero }
-        let width = Swift.min(Swift.max(proposal.width.flatMap { $0.isFinite ? $0 : nil }
-            ?? content.sizeThatFits(.unspecified).width, min), max)
-        return CGSize(width: width, height: content.sizeThatFits(.init(width: width, height: nil)).height)
+    struct Metrics {
+        var widths: [CGFloat] = []
+        var heights: [CGFloat] = []
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: .init(width: bounds.width, height: nil))
+    func makeCache(subviews: Subviews) -> Metrics? { nil }
+
+    func updateCache(_ cache: inout Metrics?, subviews: Subviews) { cache = nil }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Metrics?) -> CGSize {
+        let metrics = measure(subviews, cache: &cache)
+        return CGSize(width: metrics.widths.reduce(0, +), height: metrics.heights.reduce(0, +))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Metrics?) {
+        let metrics = measure(subviews, cache: &cache)
+        var y = bounds.minY
+        for (row, height) in metrics.heights.enumerated() {
+            var x = bounds.minX
+            for (column, width) in metrics.widths.enumerated() {
+                let index = row * columns + column
+                guard subviews.indices.contains(index) else { break }
+                subviews[index].place(at: CGPoint(x: x, y: y), anchor: .topLeading,
+                                      proposal: ProposedViewSize(width: width, height: height))
+                x += width
+            }
+            y += height
+        }
+    }
+
+    private func measure(_ subviews: Subviews, cache: inout Metrics?) -> Metrics {
+        if let cache { return cache }
+        let rowCount = (subviews.count + columns - 1) / columns
+        var metrics = Metrics(widths: Array(repeating: minWidth, count: columns))
+        for (index, subview) in subviews.enumerated() {
+            let ideal = subview.sizeThatFits(.unspecified).width
+            metrics.widths[index % columns] = min(max(metrics.widths[index % columns], ideal), maxWidth)
+        }
+        metrics.heights = (0..<rowCount).map { row in
+            (0..<columns).reduce(0) { tallest, column in
+                let index = row * columns + column
+                guard subviews.indices.contains(index) else { return tallest }
+                let width = metrics.widths[column]
+                return max(tallest, subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+            }
+        }
+        cache = metrics
+        return metrics
     }
 }
 
