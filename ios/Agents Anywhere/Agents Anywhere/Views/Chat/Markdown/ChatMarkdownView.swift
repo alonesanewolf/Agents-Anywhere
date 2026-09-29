@@ -12,7 +12,7 @@ struct ChatMarkdownView: View {
     @State private var blocks: [MarkdownBlockSnapshot] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             ForEach(blocks) { block in
                 MarkdownBlockView(block: block, isStreaming: isStreaming, isTail: block.id == blocks.last?.id)
                     .equatable()
@@ -87,7 +87,8 @@ private struct MarkdownBlockView: View, Equatable {
                 // the native code/table text areas install selection overlays.
                 .textual.textSelection(.disabled)
                 .environment(\.streamingGlyphAnimation, isStreaming && !hasSettled)
-                .font(.body)
+                // Two Dynamic Type steps below body; every block scales from this.
+                .font(.subheadline)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -125,10 +126,13 @@ private struct ChatMarkdownStyle: StructuredText.Style {
     }
 
     var inlineStyle: InlineStyle { defaults.inlineStyle }
-    var blockQuoteStyle: StructuredText.DefaultBlockQuoteStyle { defaults.blockQuoteStyle }
-    var listItemStyle: StructuredText.DefaultListItemStyle { defaults.listItemStyle }
-    var unorderedListMarker: StructuredText.SymbolListMarker { defaults.unorderedListMarker }
-    var orderedListMarker: StructuredText.DecimalListMarker { defaults.orderedListMarker }
+    var blockQuoteStyle: ChatBlockQuoteStyle { ChatBlockQuoteStyle() }
+    // Textual's defaults indent each level by 2em; a phone column needs ~1.4em.
+    var listItemStyle: StructuredText.DefaultListItemStyle { .default(markerSpacing: .fontScaled(0.4)) }
+    var unorderedListMarker: StructuredText.SymbolListMarker {
+        .init(symbolName: "circle.fill", scale: 0.33, minWidth: .fontScaled(1))
+    }
+    var orderedListMarker: StructuredText.DecimalListMarker { .init(minWidth: .fontScaled(1)) }
     var tableStyle: ChatTableStyle { ChatTableStyle() }
     var tableCellStyle: StructuredText.DefaultTableCellStyle { defaults.tableCellStyle }
     var thematicBreakStyle: StructuredText.DividerThematicBreakStyle { defaults.thematicBreakStyle }
@@ -141,6 +145,19 @@ private struct ChatParagraphStyle: StructuredText.ParagraphStyle {
             .textual.blockSpacing(.fontScaled(top: 0.8))
             .modifier(StreamingGlyphReveal())
             .textual.textSelectionScope()
+    }
+}
+
+/// A thin leading rule, like Web, instead of Textual's padded aside box.
+private struct ChatBlockQuoteStyle: StructuredText.BlockQuoteStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textual.padding(.leading, .fontScaled(0.75))
+            .overlay(alignment: .leading) {
+                Capsule().fill(.primary.opacity(0.18)).frame(width: 3).allowsHitTesting(false)
+            }
     }
 }
 
