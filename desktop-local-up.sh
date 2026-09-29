@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="${ROOT_DIR}/server"
 DESKTOP_DIR="${ROOT_DIR}/desktop-workbench"
+WEB_DIR="${ROOT_DIR}/web-next"
 COMPOSE_FILE="${ROOT_DIR}/docker/docker-compose.local.yml"
 LOCAL_DIR="${ROOT_DIR}/.local-dev"
 LOG_DIR="${LOCAL_DIR}/logs"
@@ -24,36 +25,40 @@ INFRA_STARTED=false
 
 readonly SERVER_PORT=8000
 readonly DESKTOP_PORT=5184
+readonly WEB_PORT=5174
 readonly POSTGRES_PORT=55432
 readonly REDIS_PORT=56379
 readonly SERVER_URL="http://127.0.0.1:${SERVER_PORT}"
 readonly DESKTOP_URL="http://127.0.0.1:${DESKTOP_PORT}"
+# Desktop development login opens the Web sign-in page for a local API.
+readonly WEB_URL="http://127.0.0.1:${WEB_PORT}"
 # Sessions left behind by the old detached launcher.
 readonly LEGACY_SCREEN_SESSIONS=(aa-dev-server aa-desktop-workbench)
 
 usage() {
   cat <<'EOF'
-Start the local Agents Anywhere backend and Desktop Workbench.
+Start the local Agents Anywhere backend, Web sign-in, and Desktop Workbench.
 
 Usage:
   ./desktop-local-up.sh [--env-file PATH] [--skip-install]
   ./desktop-local-up.sh down
 
 The launcher starts Docker Desktop when needed, brings up PostgreSQL and Redis,
-releases fixed ports 8000 and 5184, then runs the backend and Desktop in the
-foreground. Desktop always sends API requests to the local backend at
-http://127.0.0.1:8000. Press Ctrl-C to stop everything it started.
+releases fixed ports 8000, 5174, and 5184, then runs the backend, Web, and
+Desktop in the foreground. Desktop always sends API requests to the local
+backend at http://127.0.0.1:8000 and signs in through the Web app at
+http://127.0.0.1:5174. Press Ctrl-C to stop everything it started.
 
 Options:
   --env-file PATH  Load additional application settings from PATH
-  --skip-install   Reuse existing Server, Connector, and Desktop dependencies
+  --skip-install   Reuse existing Server, Connector, Web, and Desktop dependencies
   -h, --help       Show this help
 
 Commands:
-  down             Stop a running launcher and release ports 8000 and 5184
+  down             Stop a running launcher and release ports 8000, 5174, and 5184
 
 Fixed ports:
-  Desktop 5184, Server 8000, PostgreSQL 55432, Redis 56379.
+  Desktop 5184, Web 5174, Server 8000, PostgreSQL 55432, Redis 56379.
 EOF
 }
 
@@ -232,6 +237,7 @@ stop_application_services() {
   stop_running_launcher
   stop_legacy_screen_sessions
   release_port "${DESKTOP_PORT}" "Desktop"
+  release_port "${WEB_PORT}" "Web"
   release_port "${SERVER_PORT}" "Server"
 }
 
@@ -240,7 +246,7 @@ if [[ "${ACTION}" == "down" ]]; then
     require_command "${required}"
   done
   stop_application_services
-  printf 'Local Server and Desktop stopped.\n'
+  printf 'Local Server, Web, and Desktop stopped.\n'
   exit 0
 fi
 
@@ -444,6 +450,8 @@ if [[ "${SKIP_INSTALL}" != true ]]; then
   (cd "${SERVER_DIR}" && UV_NO_PROGRESS=1 uv sync)
   printf '%s[setup]%s Syncing Connector dependencies...\n' "${CYAN}" "${RESET}"
   (cd "${ROOT_DIR}/connector" && UV_NO_PROGRESS=1 uv sync)
+  printf '%s[setup]%s Syncing Web dependencies...\n' "${CYAN}" "${RESET}"
+  (cd "${WEB_DIR}" && corepack yarn install)
   printf '%s[setup]%s Syncing Desktop dependencies...\n' "${CYAN}" "${RESET}"
   (cd "${DESKTOP_DIR}" && corepack yarn install)
 fi
@@ -454,6 +462,8 @@ fi
   fail "uvicorn is missing; rerun without --skip-install"
 [[ -d "${DESKTOP_DIR}/node_modules" ]] || \
   fail "Desktop dependencies are missing; rerun without --skip-install"
+[[ -d "${WEB_DIR}/node_modules" ]] || \
+  fail "Web dependencies are missing; rerun without --skip-install"
 
 mkdir -p "${LOG_DIR}" "${RUN_DIR}" "${LOCAL_DIR}/files"
 chmod 700 "${LOCAL_DIR}"
@@ -475,6 +485,7 @@ INFRA_STARTED=true
 
 readonly DB_URL="postgresql+asyncpg://agents_anywhere:agents_anywhere_dev_password@127.0.0.1:${POSTGRES_PORT}/agents_anywhere"
 readonly REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/0"
+readonly SERVER_CORS_ORIGINS="${DESKTOP_URL},http://localhost:${DESKTOP_PORT},${WEB_URL},http://localhost:${WEB_PORT}"
 
 printf '%s[setup]%s Applying database migrations...\n' "${CYAN}" "${RESET}"
 (
@@ -484,8 +495,8 @@ printf '%s[setup]%s Applying database migrations...\n' "${CYAN}" "${RESET}"
     AGENT_SERVER_DB_URL="${DB_URL}" \
     AGENT_SERVER_REDIS_URL="${REDIS_URL}" \
     AGENT_SERVER_FILES_LOCAL_ROOT="${LOCAL_DIR}/files" \
-    AGENT_SERVER_PUBLIC_ORIGIN="${DESKTOP_URL}" \
-    AGENT_SERVER_CORS_ORIGINS="${DESKTOP_URL},http://localhost:${DESKTOP_PORT}" \
+    AGENT_SERVER_PUBLIC_ORIGIN="${WEB_URL}" \
+    AGENT_SERVER_CORS_ORIGINS="${SERVER_CORS_ORIGINS}" \
     "${SERVER_DIR}/.venv/bin/python" -m agent_server.infra.db.migrations upgrade
 )
 
@@ -495,8 +506,8 @@ start_service server "${CYAN}" "${SERVER_DIR}" \
   AGENT_SERVER_DB_URL="${DB_URL}" \
   AGENT_SERVER_REDIS_URL="${REDIS_URL}" \
   AGENT_SERVER_FILES_LOCAL_ROOT="${LOCAL_DIR}/files" \
-  AGENT_SERVER_PUBLIC_ORIGIN="${DESKTOP_URL}" \
-  AGENT_SERVER_CORS_ORIGINS="${DESKTOP_URL},http://localhost:${DESKTOP_PORT}" \
+  AGENT_SERVER_PUBLIC_ORIGIN="${WEB_URL}" \
+  AGENT_SERVER_CORS_ORIGINS="${SERVER_CORS_ORIGINS}" \
   LOGURU_LEVEL="${LOGURU_LEVEL:-INFO}" \
   "${SERVER_DIR}/.venv/bin/uvicorn" \
   agent_server.app:create_app \
@@ -506,11 +517,17 @@ start_service server "${CYAN}" "${SERVER_DIR}" \
   --no-access-log
 wait_for_url server "${SERVER_URL}/api/v2/health" 60
 
+start_service web "${YELLOW}" "${WEB_DIR}" \
+  env AGENTS_ANYWHERE_API="${SERVER_URL}" \
+  corepack yarn exec next dev --hostname 127.0.0.1 --port "${WEB_PORT}"
+wait_for_url web "${WEB_URL}/" 120
+
 start_service desktop "${GREEN}" "${DESKTOP_DIR}" \
   env \
   WORKBENCH_WEB_PORT="${DESKTOP_PORT}" \
   WORKBENCH_API_ORIGIN="${SERVER_URL}" \
   WORKBENCH_API_NAMESPACE=/api/v2 \
+  WORKBENCH_OAUTH_WEB_ORIGIN="${WEB_URL}" \
   AGENTS_ANYWHERE_API="${SERVER_URL}" \
   AGENTS_ANYWHERE_API_NAMESPACE=/api/v2 \
   corepack yarn dev
@@ -524,6 +541,7 @@ proxy_server="$(curl --silent --show-error --max-time 5 --dump-header - --output
 
 printf '\n%s[local]%s Desktop stack is ready.\n' "${GREEN}" "${RESET}"
 printf '  Desktop:    %s\n' "${DESKTOP_URL}"
+printf '  Web login:  %s\n' "${WEB_URL}"
 printf '  Server:     %s\n' "${SERVER_URL}"
 printf '  API proxy:  %s/api/v2 -> %s/api/v2\n' "${DESKTOP_URL}" "${SERVER_URL}"
 printf '  PostgreSQL: 127.0.0.1:%s/agents_anywhere\n' "${POSTGRES_PORT}"

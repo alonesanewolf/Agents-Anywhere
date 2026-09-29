@@ -31,10 +31,11 @@ the local Connector; cancelling keeps the app running.
 ## Run
 
 From the repository root, the local Desktop launcher starts Docker-backed
-PostgreSQL and Redis, the Server on fixed port `8000`, and Desktop on fixed
-port `5184`. It releases existing listeners on those two application ports,
-always points Desktop at the local Server, and stays in the foreground like
-`./local-up.sh`, streaming prefixed Server and Desktop logs (also written to
+PostgreSQL and Redis, the Server on fixed port `8000`, the Web app on fixed port
+`5174` (Desktop's development sign-in page), and Desktop on fixed port `5184`.
+It releases existing listeners on those three application ports, always points
+Desktop at the local Server, and stays in the foreground like `./local-up.sh`,
+streaming prefixed Server, Web, and Desktop logs (also written to
 `.local-dev/logs/`). Press Ctrl-C to stop everything it started; `down` stops a
 launcher still running in another terminal:
 
