@@ -39,7 +39,11 @@ Semantic error and availability colors remain separate from the primary color.
 - `SessionTimelinePresentation` stages received projections separately from
   observable rows. It publishes at 5 Hz while work is pending; static history
   does not keep a polling clock awake. New glyphs use a 240 ms opacity, blur and
-  vertical reveal. Initial history and recovery snapshots do not replay reveals.
+  vertical reveal. Each flush's glyphs draw as one layer with one blur. A block's
+  drawing clock runs at up to 60 fps and only until its newest glyphs finish;
+  blocks compare by a digest hashed on the parse worker, not character by
+  character on the main actor. Initial history and recovery snapshots do not
+  replay reveals.
 - Pending user-message removal and authoritative echo insertion happen in the
   same presentation tick. `MarkdownBlockLayout` measures and places each stable
   block with the parent's proposed column width. Its layout-local height cache

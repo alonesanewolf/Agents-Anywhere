@@ -3,6 +3,9 @@ import Foundation
 
 extension EnvironmentValues {
     @Entry var streamingGlyphAnimation = false
+    /// The clock stops here even while the reply streams. Streamed Markdown
+    /// moves it forward whenever a block's text changes.
+    @Entry var streamingRevealDeadline = Date.distantFuture
 }
 
 /// Known copy can reserve its final centered layout while phrases become
@@ -25,7 +28,9 @@ nonisolated struct StreamingTextPhrase: TextAttribute {
 struct StreamingGlyphReveal: ViewModifier {
     @Environment(\.streamingGlyphAnimation) private var isStreaming
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.streamingRevealDeadline) private var deadline
     @State private var ledger: GlyphRevealLedger
+    @State private var stoppedDeadline: Date?
     private let revealedPhraseCount: Int?
 
     init(ledger: GlyphRevealLedger = GlyphRevealLedger(), revealedPhraseCount: Int? = nil) {
@@ -41,9 +46,19 @@ struct StreamingGlyphReveal: ViewModifier {
             // Settled history uses native Text drawing with no clock or glyph walk.
             content
         } else {
-            TimelineView(.animation(paused: !enabled)) { timeline in
+            // Every running clock re-evaluates its text each frame, so an idle
+            // block pauses and draws its glyphs settled. 60 fps is enough for a
+            // 0.24 s fade and halves the work on 120 Hz displays.
+            let running = enabled && stoppedDeadline != deadline && deadline > .now
+            TimelineView(.animation(minimumInterval: 1 / 60, paused: !running)) { timeline in
                 content.textRenderer(GlyphRevealRenderer(ledger: ledger, now: timeline.date.timeIntervalSinceReferenceDate,
-                    enabled: enabled, revealedPhraseCount: revealedPhraseCount))
+                    enabled: running, revealedPhraseCount: revealedPhraseCount))
+            }
+            .task(id: deadline) {
+                let delay = deadline.timeIntervalSinceNow
+                guard delay > 0, delay < 60 else { return }
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                stoppedDeadline = deadline
             }
         }
     }
@@ -76,8 +91,8 @@ nonisolated struct GlyphRevealRenderer: TextRenderer {
         guard let progress else { return }
         // Glyphs from one flush share a birth time and so share one effect.
         // Settled text keeps the system's line/run drawing; only the revealing
-        // suffix is split into per-batch slices. No blur: an offscreen blur per
-        // glyph every frame saturated the main thread while a reply streamed.
+        // suffix is split into per-batch slices. Each batch rasterizes into one
+        // layer with one blur, instead of an offscreen blur per glyph.
         let batches = progress.batches
         var slices = [[Text.Layout.RunSlice]](repeating: [], count: batches.count)
         var index = 0
@@ -108,7 +123,10 @@ nonisolated struct GlyphRevealRenderer: TextRenderer {
             let effect = GlyphRevealEffect(progress: batch.progress)
             copy.opacity *= effect.opacity
             copy.translateBy(x: 0, y: effect.offsetY)
-            for slice in batchSlices { copy.draw(slice, options: .disablesSubpixelQuantization) }
+            copy.addFilter(.blur(radius: effect.blurRadius))
+            copy.drawLayer { layer in
+                for slice in batchSlices { layer.draw(slice, options: .disablesSubpixelQuantization) }
+            }
         }
     }
 
