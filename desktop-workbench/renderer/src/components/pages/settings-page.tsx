@@ -142,6 +142,11 @@ const PYPI_MIRROR_OPTIONS = [
   { id: "huawei", url: "https://repo.huaweicloud.com/repository/pypi/simple", labelKey: "desktopPypiHuawei" },
 ] as const
 
+const PYTHON_MIRROR_OPTIONS = [
+  { id: "default", url: "", labelKey: "desktopPythonMirrorDefault" },
+  { id: "npmmirror", url: "https://registry.npmmirror.com/-/binary/python-build-standalone", labelKey: "desktopPythonMirrorNpmmirror" },
+] as const
+
 function AccountTab({
   me,
   token,
@@ -317,6 +322,7 @@ function DesktopTab() {
   const [advancedDraft, setAdvancedDraft] = React.useState({
     uvPath: "",
     uvPypiIndexUrl: "",
+    uvPythonInstallMirror: "",
   })
   const connectorId = binding?.connectorId ?? state?.connectorId ?? null
   const serverUrl = binding?.serverUrl || state?.serverUrl || null
@@ -328,6 +334,8 @@ function DesktopTab() {
   const connectorIsRunning = Boolean(!needsReconnect && (state?.running || state?.status === "running"))
   const selectedPypiMirror = PYPI_MIRROR_OPTIONS.find((option) => option.url === advancedDraft.uvPypiIndexUrl)
     ?? PYPI_MIRROR_OPTIONS[0]
+  const selectedPythonMirror = PYTHON_MIRROR_OPTIONS.find((option) => option.url === advancedDraft.uvPythonInstallMirror)
+    ?? PYTHON_MIRROR_OPTIONS[0]
   const statusKey = needsReconnect
     ? "desktopDisconnected"
     : provisionError || connectionStatus === "error"
@@ -346,8 +354,9 @@ function DesktopTab() {
     setAdvancedDraft({
       uvPath: state?.uvPath ?? "",
       uvPypiIndexUrl: state?.uvPypiIndexUrl ?? "",
+      uvPythonInstallMirror: state?.uvPythonInstallMirror ?? "",
     })
-  }, [state?.uvPath, state?.uvPypiIndexUrl])
+  }, [state?.uvPath, state?.uvPypiIndexUrl, state?.uvPythonInstallMirror])
 
   const loadConnectorConfig = React.useCallback(async () => {
     const bridge = getDesktopWorkbenchBridge()
@@ -534,6 +543,34 @@ function DesktopTab() {
               <SelectContent align="end">
                 <SelectGroup>
                   {PYPI_MIRROR_OPTIONS.map((option) => (
+                    <SelectItem key={option.id} value={option.url || "default"}>
+                      {t(option.labelKey)}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field orientation="horizontal" className="border-t border-border py-4">
+            <FieldContent>
+              <span className="text-sm font-medium">{t("desktopUvPythonInstallMirror")}</span>
+              <span className="text-xs text-muted-foreground">{t("desktopUvPythonInstallMirrorDescription")}</span>
+            </FieldContent>
+            <Select
+              value={selectedPythonMirror.url || "default"}
+              onValueChange={(value) => {
+                const uvPythonInstallMirror = value === "default" ? "" : value
+                setAdvancedDraft((current) => ({ ...current, uvPythonInstallMirror }))
+                void saveSettings({ uvPythonInstallMirror })
+              }}
+              disabled={busy}
+            >
+              <SelectTrigger className="min-w-44">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectGroup>
+                  {PYTHON_MIRROR_OPTIONS.map((option) => (
                     <SelectItem key={option.id} value={option.url || "default"}>
                       {t(option.labelKey)}
                     </SelectItem>

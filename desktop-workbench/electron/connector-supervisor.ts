@@ -33,6 +33,8 @@ type PendingRequest = {
  */
 const FIRST_RUN_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+const PYTHON_BUILDS_GITHUB = "https://github.com/astral-sh/python-build-standalone/releases/download";
+const UV_HTTP_TIMEOUT_SECONDS = "60";
 
 type ConnectorSupervisorOptions = {
   onOwnership?: (state: OwnershipState) => void;
@@ -106,7 +108,8 @@ export class ConnectorSupervisor {
     const current = this.options.settings.get();
     const launcherChanged =
       previous.uvPath !== current.uvPath ||
-      previous.uvPypiIndexUrl !== current.uvPypiIndexUrl;
+      previous.uvPypiIndexUrl !== current.uvPypiIndexUrl ||
+      previous.uvPythonInstallMirror !== current.uvPythonInstallMirror;
     this.refreshLocalState();
     if (!launcherChanged) return this.emitState();
     if (!this.resolveLauncher()) {
@@ -662,10 +665,14 @@ export class ConnectorSupervisor {
     }
     // Also make the official-index choice explicit: the bundled project or
     // inherited shell environment may declare a different default index.
-    const pypiIndexUrl = this.options.settings.get().uvPypiIndexUrl || "https://pypi.org/simple";
+    const settings = this.options.settings.get();
+    const pypiIndexUrl = settings.uvPypiIndexUrl || "https://pypi.org/simple";
     environment.UV_DEFAULT_INDEX = pypiIndexUrl;
     environment.UV_INDEX_URL = pypiIndexUrl;
     environment.PIP_INDEX_URL = pypiIndexUrl;
+    // uv downloads CPython itself on first run; the default is GitHub.
+    environment.UV_PYTHON_INSTALL_MIRROR = settings.uvPythonInstallMirror || PYTHON_BUILDS_GITHUB;
+    environment.UV_HTTP_TIMEOUT ||= UV_HTTP_TIMEOUT_SECONDS;
     if (process.platform === "win32") {
       delete environment.Path;
       delete environment.path;
@@ -735,6 +742,7 @@ export class ConnectorSupervisor {
     | "notificationsEnabled"
     | "uvPath"
     | "uvPypiIndexUrl"
+    | "uvPythonInstallMirror"
     | "logChunkSizeKb"
     | "logRetainChunks"
     | "logRetentionDays"
@@ -747,6 +755,7 @@ export class ConnectorSupervisor {
       notificationsEnabled: settings.notificationsEnabled,
       uvPath: settings.uvPath,
       uvPypiIndexUrl: settings.uvPypiIndexUrl,
+      uvPythonInstallMirror: settings.uvPythonInstallMirror,
       logChunkSizeKb: settings.logChunkSizeKb,
       logRetainChunks: settings.logRetainChunks,
       logRetentionDays: settings.logRetentionDays,

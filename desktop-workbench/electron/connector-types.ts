@@ -85,6 +85,7 @@ export type ConnectorState = {
   uvMissing: boolean;
   uvPath: string;
   uvPypiIndexUrl: string;
+  uvPythonInstallMirror: string;
   logChunkSizeKb: number;
   logRetainChunks: number;
   logRetentionDays: number;
@@ -101,6 +102,7 @@ export type DesktopSettings = {
   notificationsEnabled: boolean;
   uvPath: string;
   uvPypiIndexUrl: string;
+  uvPythonInstallMirror: string;
   logChunkSizeKb: number;
   logRetainChunks: number;
   logRetentionDays: number;

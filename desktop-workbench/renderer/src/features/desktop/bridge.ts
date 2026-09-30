@@ -40,6 +40,7 @@ export type DesktopConnectorState = {
   logRetainChunks?: number
   logRetentionDays?: number
   uvPypiIndexUrl?: string
+  uvPythonInstallMirror?: string
 }
 
 export type DesktopLocalBinding = {
@@ -92,6 +93,7 @@ export type DesktopConnectorSettings = Partial<Pick<
   | "logRetainChunks"
   | "logRetentionDays"
   | "uvPypiIndexUrl"
+  | "uvPythonInstallMirror"
 >>
 
 export type DesktopConnectorConfigPatch = Partial<Pick<

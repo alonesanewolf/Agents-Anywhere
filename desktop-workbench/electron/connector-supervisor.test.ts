@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DesktopBindingStore } from "./desktop-binding";
-import { DesktopSettingsStore } from "./desktop-settings";
+import { DesktopSettingsStore, NPMMIRROR_PYTHON_BUILDS } from "./desktop-settings";
 import { ConnectorSupervisor } from "./connector-supervisor";
 import { ConnectorLogStore } from "./log-store";
 import { ConnectorRpcError } from "./connector-rpc-error";
@@ -19,6 +19,7 @@ fs.writeFileSync(process.argv[2], JSON.stringify({
   defaultIndex: process.env.UV_DEFAULT_INDEX,
   indexUrl: process.env.UV_INDEX_URL,
   pipIndex: process.env.PIP_INDEX_URL,
+  pythonMirror: process.env.UV_PYTHON_INSTALL_MIRROR,
 }));
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const request = JSON.parse(line);
@@ -53,7 +54,11 @@ test("first pre-login provisioning receives the initialized mirror and honors sa
       configPath: path.join(root, "connector.json"), dataPath: root, connectorDir: root, resourcesPath: root,
       uvBundleDir: path.join(root, "build", "uv"),
       packaged: false, homePath: root, settings,
-      shellEnvironment: { UV_DEFAULT_INDEX: "https://inherited.example/simple", UV_INDEX_URL: "https://inherited.example/simple" },
+      shellEnvironment: {
+        UV_DEFAULT_INDEX: "https://inherited.example/simple",
+        UV_INDEX_URL: "https://inherited.example/simple",
+        UV_PYTHON_INSTALL_MIRROR: "https://inherited.example/python",
+      },
       binding: new DesktopBindingStore(path.join(root, "binding.json")),
       logs: new ConnectorLogStore(path.join(root, "logs"), () => settings.get()),
       onState: () => {}, onLog: () => {},
@@ -61,7 +66,7 @@ test("first pre-login provisioning receives the initialized mirror and honors sa
     try {
       await supervisor.preflightProvisioning();
       assert.deepEqual(JSON.parse(fs.readFileSync(captured, "utf8")), {
-        defaultIndex: expected, indexUrl: expected, pipIndex: expected,
+        defaultIndex: expected, indexUrl: expected, pipIndex: expected, pythonMirror: NPMMIRROR_PYTHON_BUILDS,
       });
     } finally { await supervisor.shutdown(); }
   }

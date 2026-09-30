@@ -145,9 +145,10 @@ The first launch after that also runs `uv sync`, which downloads Python and ever
 Connector dependency. The window shows a preparing screen while the ownership
 probe waits for it; that probe alone allows up to 15 minutes, while every later
 RPC keeps its 30-second deadline. The saved `uvPypiIndexUrl` mirror covers
-package downloads through `UV_DEFAULT_INDEX`, `UV_INDEX_URL` and `PIP_INDEX_URL`;
-the Python interpreter itself comes from GitHub, so a slow network needs
-`UV_PYTHON_INSTALL_MIRROR` in the environment (it is passed through unchanged).
+package downloads through `UV_DEFAULT_INDEX`, `UV_INDEX_URL` and `PIP_INDEX_URL`.
+The saved `uvPythonInstallMirror` sets `UV_PYTHON_INSTALL_MIRROR` for the Python
+interpreter download (GitHub python-build-standalone when empty), and
+`UV_HTTP_TIMEOUT` defaults to 60 seconds.
 
 Do not start a second Connector with the same Desktop config while the app is
 running. Standalone CLI devices remain supported and should use their own
@@ -171,7 +172,9 @@ checks run headlessly without starting Electron or a development server.
 
 ## Packaging
 
-The release build bundles the Connector source and a platform-specific `uv`:
+The release build bundles the Connector source (`pyproject.toml`, `README.md` and
+the `connector/` package only, like the DSH plugin; no `uv.lock`, tests or caches)
+and a platform-specific `uv`. Python and dependencies are installed on first run:
 
 ```bash
 yarn dist:mac               # universal macOS DMG (Apple Silicon + Intel)
@@ -309,10 +312,10 @@ Quit terminates it. The next start can replace records left by a crashed process
   background. Explicit Quit stops the runtime and terminates the full process
   tree.
 - Open-at-login, silent launch, automatic Connector start, `uv` path, PyPI
-  mirror, and log retention are Desktop settings.
+  mirror, Python download mirror, and log retention are Desktop settings.
 - On first initialization without a saved mirror choice, Main checks the OS
-  preferred languages and selects Aliyun for Chinese systems, or official PyPI
-  otherwise. It persists the choice before any `uv` provisioning process and
+  preferred languages and selects Aliyun PyPI and npmmirror Python builds for
+  Chinese systems, or the official sources otherwise. It persists the choice before any `uv` provisioning process and
   applies it through `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, and `PIP_INDEX_URL`,
   without a renderer prompt. Existing choices, including official PyPI, are
   preserved; factory reset reapplies the system default.

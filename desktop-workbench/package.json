@@ -56,9 +56,12 @@
         "from": "../connector",
         "to": "connector",
         "filter": [
-          "**/*",
+          "pyproject.toml",
+          "README.md",
+          "connector/**",
           "!**/__pycache__/**",
-          "!**/.venv/**",
+          "!**/_reference/**",
+          "!**/_deprecated/**",
           "!**/*.pyc"
         ]
       },

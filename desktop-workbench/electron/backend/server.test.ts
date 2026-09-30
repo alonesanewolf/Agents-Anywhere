@@ -13,6 +13,7 @@ const SETTINGS: DesktopSettings = {
   notificationsEnabled: true,
   uvPath: "",
   uvPypiIndexUrl: "",
+  uvPythonInstallMirror: "",
   logChunkSizeKb: 512,
   logRetainChunks: 20,
   logRetentionDays: 14,
