@@ -314,6 +314,7 @@
     "思考强度": "common.reasoningEffort",
     "思考过程": "dashboard.session.reasoning",
     "恢复会话": "pages.settings.archivedUnarchive",
+    "所有盘符": "dashboard.panels.files.allDrives",
     "打开侧栏": "dashboard.actions.expand",
     "按目录自动填写名称，重名时添加数字后缀。也可以自行修改。": "dashboard.projects.nameDescription",
     "接管": "dashboard.session.takeover",

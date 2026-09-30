@@ -322,6 +322,7 @@
       "team": "团队"
     },
     "filters": {
+      "deviceAgentAria": "按设备与 Agent 筛选项目",
       "active": "活跃",
       "all": "全部",
       "allActive": "活跃会话",
@@ -359,14 +360,17 @@
         "dsh": {
           "readOnly": { "label": "仅可查看" },
           "workspaceWrite": { "label": "工作区内修改" },
-          "fullAccess": { "label": "完全权限" }
+          "fullAccess": { "label": "完全权限" },
+          "auto": {
+            "label": "Auto review"
+          }
         },
         "requestApproval": {
           "label": "请求批准",
           "description": "编辑外部文件和使用互联网时始终询问"
         },
         "autoReview": {
-          "label": "替我审批",
+          "label": "Auto review",
           "description": "仅对检测到的风险操作请求批准"
         },
         "fullAccess": {
@@ -683,6 +687,7 @@
     },
     "panels": {
       "files": {
+        "allDrives": "所有盘符",
         "addToComposer": "添加到 Composer",
         "addToComposerNoSession": "需要在已开启接管的会话里才能添加到 Composer。",
         "title": "文件",
@@ -768,6 +773,7 @@
       "editDescription": "你可以修改项目名称；设备和工作区创建后不能更换。",
       "editTitle": "编辑项目",
       "empty": "还没有项目。",
+      "emptyFiltered": "没有符合当前设备或 Agent 筛选的项目。",
       "filterSessions": "筛选项目会话",
       "name": "项目名称",
       "nameConflict": "项目名称“{name}”已存在，请换一个名称。",
@@ -793,6 +799,8 @@
       "workspaceConflictDescription": "工作目录“{path}”已属于项目“{currentName}”。继续后不会创建新项目，而会把现有项目重命名为“{name}”；项目内的会话和设置都会保留。",
       "workspaceConflictTitle": "该工作目录已有项目",
       "workspaceImmutable": "项目创建后，工作区不能更换。",
+      "showMoreSessions": "显示更多（{count}）",
+      "showFewerSessions": "收起",
       "create": "创建项目",
       "nameDescription": "根据目录自动生成，可自行修改。",
       "nameAdjusted": "已自动调整名称，避免与已有项目重名。",
@@ -984,6 +992,7 @@
       "mermaidDiagram": "Mermaid 图表",
       "mermaidUpdateFailed": "当前显示上一次成功生成的图表，最新源码暂时无法渲染。",
       "mermaidSource": "查看源码",
+      "tableFullscreen": "全屏查看表格",
       "copyCode": "复制代码",
       "copyItemId": "复制 item ID",
       "copyItemJson": "复制 item JSON",
@@ -1436,6 +1445,8 @@
       "desktopSidebarDescription": "选择侧边栏中会话的组织方式。",
       "desktopSidebarShowSessions": "侧边栏显示会话",
       "desktopSidebarShowSessionsDescription": "直接显示会话，而不是按项目分组显示。",
+      "desktopSidebarCompactSessions": "单行显示会话",
+      "desktopSidebarCompactSessionsDescription": "只显示会话标题，不显示项目和设备那一行。仅在侧边栏显示会话时可用。",
       "desktopUnavailable": "当前环境没有提供 Desktop Connector 控制能力。",
       "desktopOnline": "在线",
       "desktopConnecting": "连接中",
@@ -1863,7 +1874,7 @@
     "title": "发现新版本",
     "description": "服务已升级，建议更新 Desktop 以保持兼容。继续使用旧版本可能导致部分功能无法使用。",
     "currentVersion": "当前版本 {version}",
-    "latestVersion": "新版本 {version}",
+    "latestVersion": "服务版本 {version}",
     "ignore": "忽略此版本",
     "updateNow": "立即更新",
     "entry": "有新版本，点击更新",
@@ -1878,6 +1889,30 @@
       "openFailed": "无法打开安装包，请点击“立即更新”重试。",
       "ignoreFailed": "无法保存忽略记录，请重试。",
       "actionFailed": "操作失败，请重试。"
+    }
+  },
+  "announcement": {
+    "title": "公告",
+    "publishedAt": "发布于 {time}",
+    "acknowledge": "我知道了",
+    "admin": {
+      "title": "公告",
+      "description": "在登录、注册和主界面向用户展示公告。",
+      "enabled": "显示公告",
+      "enabledHint": "关闭后不再展示，已填写的内容会保留。",
+      "content": "公告内容",
+      "placeholder": "## 服务公告\n\n填写需要告知用户的内容。",
+      "contentHint": "支持 Markdown，最多 20,000 个字符。启用后修改内容或重新启用，会再次提醒用户。",
+      "contentRequired": "请填写公告内容后再启用。",
+      "preview": "预览",
+      "save": "保存公告",
+      "saved": "公告已保存",
+      "saveFailed": "保存失败，请稍后重试。",
+      "loadFailed": "无法加载公告设置。",
+      "loading": "正在加载公告",
+      "retry": "重新加载",
+      "publishedAt": "上次发布：{time}",
+      "notPublished": "尚未发布"
     }
   }
 }

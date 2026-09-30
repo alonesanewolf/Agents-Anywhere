@@ -22,8 +22,6 @@ struct SessionChatView: View, Equatable {
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
-    @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32
 
@@ -45,7 +43,6 @@ struct SessionChatView: View, Equatable {
     }
     private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
     private var session: V2SessionModel { model.session }
-    private var defersOpening: Bool { sidebarIsTransitioning || sidebarObscuresDetail }
     private var requiresTakeover: Bool { session.metadata?.takeover == false }
     // Sidebar motion changes the containing card, not the session. Observable
     // model changes and real size/environment changes still update this subtree.
@@ -128,12 +125,12 @@ struct SessionChatView: View, Equatable {
             wasRunning && !isRunning && model.isOpeningReady && session.runtime.isFresh
                 && session.runtime.state?.status == .idle
         }
-        .task(id: defersOpening) {
-            guard !hasStartedLoading, !defersOpening else { return }
+        .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in
+            guard !hasStartedLoading, settled else { return }
             // Show feedback immediately, but let the drawer's completed
             // animation and the selection's final layout leave the main thread.
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
-            guard !Task.isCancelled, !defersOpening else { return }
+            guard !Task.isCancelled else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) { hasStartedLoading = true }

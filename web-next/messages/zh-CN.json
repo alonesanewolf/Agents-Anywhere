@@ -310,6 +310,7 @@
       "team": "团队"
     },
     "filters": {
+      "deviceAgentAria": "按设备与 Agent 筛选项目",
       "active": "活跃",
       "all": "全部",
       "allActive": "活跃会话",
@@ -345,14 +346,11 @@
       "permissionMode": "权限模式",
       "permissionModes": {
         "dsh": {
-          "readOnly": {
-            "label": "仅可查看"
-          },
-          "workspaceWrite": {
-            "label": "工作区内修改"
-          },
-          "fullAccess": {
-            "label": "完全权限"
+          "readOnly": { "label": "仅可查看" },
+          "workspaceWrite": { "label": "工作区内修改" },
+          "fullAccess": { "label": "完全权限" },
+          "auto": {
+            "label": "Auto review"
           }
         },
         "requestApproval": {
@@ -360,7 +358,7 @@
           "description": "编辑外部文件和使用互联网时始终询问"
         },
         "autoReview": {
-          "label": "替我审批",
+          "label": "Auto review",
           "description": "仅对检测到的风险操作请求批准"
         },
         "fullAccess": {
@@ -495,6 +493,7 @@
       "editDescription": "你可以修改项目名称；设备和工作区创建后不能更换。",
       "editTitle": "编辑项目",
       "empty": "还没有项目。",
+      "emptyFiltered": "没有符合当前设备或 Agent 筛选的项目。",
       "filterSessions": "筛选项目会话",
       "name": "项目名称",
       "nameConflict": "项目名称“{name}”已存在，请换一个名称。",
@@ -519,7 +518,9 @@
       "workspaceConflictConfirm": "继续并重命名",
       "workspaceConflictDescription": "工作目录“{path}”已属于项目“{currentName}”。继续后不会创建新项目，而会把现有项目重命名为“{name}”；项目内的会话和设置都会保留。",
       "workspaceConflictTitle": "该工作目录已有项目",
-      "workspaceImmutable": "项目创建后，工作区不能更换。"
+      "workspaceImmutable": "项目创建后，工作区不能更换。",
+      "showMoreSessions": "显示更多（{count}）",
+      "showFewerSessions": "收起"
     },
     "mobileConnections": {
       "accountUnavailable": "当前账号不可用，请重新登录后再试。",
@@ -1473,6 +1474,8 @@
       "desktopSidebarDescription": "选择侧边栏中会话的组织方式。",
       "desktopSidebarShowSessions": "侧边栏显示会话",
       "desktopSidebarShowSessionsDescription": "直接显示会话，而不是按项目分组显示。",
+      "desktopSidebarCompactSessions": "单行显示会话",
+      "desktopSidebarCompactSessionsDescription": "只显示会话标题，不显示项目和设备那一行。仅在侧边栏显示会话时可用。",
       "language": "语言",
       "languageDescription": "选择此浏览器的界面语言。",
       "english": "English",

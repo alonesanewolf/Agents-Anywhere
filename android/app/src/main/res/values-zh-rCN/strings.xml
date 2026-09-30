@@ -6,6 +6,13 @@
     <string name="home_project_filter_active">活跃会话</string>
     <string name="home_project_filter_archived">已归档</string>
     <string name="home_project_filter_all">全部</string>
+    <string name="home_project_filter_devices">设备</string>
+    <string name="home_project_filter_all_devices">所有设备</string>
+    <string name="home_project_filter_agents">Agent</string>
+    <string name="home_project_filter_all_agents">所有 Agent</string>
+    <string name="home_project_filter_clear">清除筛选</string>
+    <string name="home_project_filter_empty">没有符合所选设备或 Agent 的项目。</string>
+    <string name="home_project_filter_loading">正在查找此设备或 Agent 的项目...</string>
     <string name="home_project_load_retry">会话加载失败，点击重试。</string>
     <string name="app_name">Agents Anywhere</string>
     <string name="common_back">返回</string>
@@ -421,6 +428,9 @@
     <string name="session_command_failed">运行时命令执行失败。</string>
     <string name="session_command_unknown">请选择有效的运行时命令；斜杠输入已保留。</string>
     <string name="session_notice_submit">提交响应</string>
+    <string name="session_notice_pending_response">等待你处理</string>
+    <string name="session_notice_collapse">收起</string>
+    <string name="session_notice_expand">展开</string>
     <string name="session_notice_response_failed">无法发送运行时响应。</string>
     <string name="session_interrupt_failed">无法中断这个会话。</string>
     <string name="session_approval_resolve_failed">无法处理审批。</string>
@@ -451,6 +461,7 @@
     <string name="session_approval_always_allow">始终允许</string>
     <string name="session_approval_allow">允许</string>
     <string name="session_input_request_other">其他</string>
+    <string name="session_input_request_reply">回复</string>
     <string name="session_input_request_submit">提交</string>
     <string name="session_upload_file_read_failed">无法读取 %1$s。</string>
     <string name="session_upload_file_empty">%1$s 是空文件。</string>
@@ -552,7 +563,7 @@
     <string name="runtime_permission_dsh_workspace_write">工作区内修改</string>
     <string name="runtime_permission_dsh_full_access">完全权限</string>
     <string name="runtime_permission_request_approval">请求批准</string>
-    <string name="runtime_permission_auto_review">替我审批</string>
+    <string name="runtime_permission_auto_review">Auto review</string>
     <string name="runtime_permission_full_access">完全访问权限</string>
     <string name="runtime_permission_desc_request_approval">编辑外部文件和使用互联网时始终询问</string>
     <string name="runtime_permission_desc_auto_review">仅对检测到的风险操作请求批准</string>
@@ -707,4 +718,7 @@
     <string name="archived_loading_more">加载中…</string>
     <string name="archived_time_unavailable">暂无时间</string>
     <string name="archived_loaded_count">已加载 %1$d 个会话</string>
+    <string name="announcement_title">公告</string>
+    <string name="announcement_published_at">发布于 %1$s</string>
+    <string name="announcement_acknowledge">我知道了</string>
 </resources>

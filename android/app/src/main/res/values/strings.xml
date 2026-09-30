@@ -6,6 +6,13 @@
     <string name="home_project_filter_active">Active sessions</string>
     <string name="home_project_filter_archived">Archived</string>
     <string name="home_project_filter_all">All</string>
+    <string name="home_project_filter_devices">Devices</string>
+    <string name="home_project_filter_all_devices">All devices</string>
+    <string name="home_project_filter_agents">Agents</string>
+    <string name="home_project_filter_all_agents">All Agents</string>
+    <string name="home_project_filter_clear">Clear filters</string>
+    <string name="home_project_filter_empty">No projects match the selected device or Agent.</string>
+    <string name="home_project_filter_loading">Checking projects for this device or Agent...</string>
     <string name="home_project_load_retry">Could not load sessions. Tap to retry.</string>
     <string name="app_name">Agents Anywhere</string>
     <string name="common_back">Back</string>
@@ -422,6 +429,9 @@
     <string name="session_command_failed">The runtime command failed.</string>
     <string name="session_command_unknown">Choose a valid runtime command. The slash input was kept.</string>
     <string name="session_notice_submit">Submit response</string>
+    <string name="session_notice_pending_response">Response needed</string>
+    <string name="session_notice_collapse">Collapse</string>
+    <string name="session_notice_expand">Expand</string>
     <string name="session_notice_response_failed">Could not send the runtime response.</string>
     <string name="session_interrupt_failed">Could not interrupt this session.</string>
     <string name="session_approval_resolve_failed">Could not resolve approval.</string>
@@ -452,6 +462,7 @@
     <string name="session_approval_always_allow">Always allow</string>
     <string name="session_approval_allow">Allow</string>
     <string name="session_input_request_other">Other</string>
+    <string name="session_input_request_reply">Reply</string>
     <string name="session_input_request_submit">Submit</string>
     <string name="session_upload_file_read_failed">Could not read %1$s.</string>
     <string name="session_upload_file_empty">%1$s is empty.</string>
@@ -708,4 +719,7 @@
     <string name="archived_loading_more">Loading…</string>
     <string name="archived_time_unavailable">Time unavailable</string>
     <string name="archived_loaded_count">%1$d sessions loaded</string>
+    <string name="announcement_title">Announcement</string>
+    <string name="announcement_published_at">Published %1$s</string>
+    <string name="announcement_acknowledge">Got it</string>
 </resources>

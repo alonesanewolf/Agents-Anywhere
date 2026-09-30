@@ -31,9 +31,13 @@ the local Connector; cancelling keeps the app running.
 ## Run
 
 From the repository root, the local Desktop launcher starts Docker-backed
-PostgreSQL and Redis, the Server on fixed port `8000`, and Desktop on fixed
-port `5184`. It releases existing listeners on those two application ports and
-always points Desktop at the local Server:
+PostgreSQL and Redis, the Server on fixed port `8000`, the Web app on fixed port
+`5174` (Desktop's development sign-in page), and Desktop on fixed port `5184`.
+It releases existing listeners on those three application ports, always points
+Desktop at the local Server, and stays in the foreground like `./local-up.sh`,
+streaming prefixed Server, Web, and Desktop logs (also written to
+`.local-dev/logs/`). Press Ctrl-C to stop everything it started; `down` stops a
+launcher still running in another terminal:
 
 ```bash
 ./desktop-local-up.sh
@@ -213,15 +217,20 @@ After authentication finishes and the workbench opens, Main checks the saved
 server's `/api/v2/health`. The authenticated session must match the saved server;
 login screens, missing server records, and default configuration never trigger
 an update check. Signing out cancels pending work and clears the update dialog.
-The server's `version` is compared numerically with `app.getVersion()`, including
-four-part Server versions such as `0.1.7.2`. No dedicated release API is used.
+The server's `version` is compared numerically with the Server version recorded
+at build time, not with `app.getVersion()`. `yarn build:main` (and therefore
+`yarn dev`, `yarn build` and `yarn dist:*`) runs `scripts/write-build-info.mjs`,
+which copies `server/pyproject.toml`'s version into the generated
+`build-info.json`. A live Server newer than that baseline means a newer Desktop
+build exists; Desktop and Server PATCH versions may otherwise differ (see
+[versioning](../docs/versioning.md)). No dedicated release API is used.
 
-An older Desktop opens an update dialog with **Ignore this version** and
+A Desktop built against an older Server opens an update dialog with **Ignore this version** and
 **Update now**. Outside clicks and Escape do not dismiss it; there is no close
 icon. Ignoring persists the exact server version in
 `<Electron userData>/updates/state.json`, scoped to the server. A newer server
 version prompts again. The download icon beside the account avatar remains
-visible whenever Desktop is behind, including after ignoring a version.
+visible whenever the Server is ahead of the build baseline, including after ignoring a version.
 
 Set `updates.downloadUrl` in `config.json` to the fixed HTTPS installer address
 before distribution. The `.invalid` URL is an explicit placeholder and does not
