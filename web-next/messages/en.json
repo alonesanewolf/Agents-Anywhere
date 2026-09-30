@@ -345,9 +345,15 @@
       "permissionMode": "Permission mode",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "read-only" },
-          "workspaceWrite": { "label": "workspace-write" },
-          "fullAccess": { "label": "danger-full-access" }
+          "readOnly": {
+            "label": "read-only"
+          },
+          "workspaceWrite": {
+            "label": "workspace-write"
+          },
+          "fullAccess": {
+            "label": "danger-full-access"
+          }
         },
         "requestApproval": {
           "label": "Request approval",
@@ -1356,6 +1362,18 @@
       "retry": "Resend in {seconds}s",
       "sent": "Code sent. Check your inbox.",
       "failed": "Failed to send verification code."
+    },
+    "anywhereApiOAuth": {
+      "eyebrow": "Agent Anywhere",
+      "title": "Sign in to Anywhere API",
+      "description": "Share your name, email address and avatar with Anywhere API.",
+      "currentAccount": "Current account",
+      "unknownAccount": "Signed-in account",
+      "continue": "Continue to Anywhere API",
+      "switchAccount": "Use another account",
+      "cancel": "Cancel",
+      "opening": "Continuing to Anywhere API…",
+      "invalid": "This sign-in link is invalid. Return to Anywhere API and try again."
     }
   },
   "pages": {

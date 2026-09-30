@@ -21,6 +21,7 @@ export type AuthScreen =
   | "oauth-link-existing"
   | "mobile-oauth"
   | "desktop-oauth"
+  | "anywhere-api-oauth"
   | "plugin-oauth"
   | "onboarding"
   | "preview"
@@ -75,6 +76,7 @@ function hashToScreen(hash: string): AuthScreen {
     "oauth/link": "oauth-link-existing",
     "mobile-oauth": "mobile-oauth",
     "desktop-oauth": "desktop-oauth",
+    "anywhere-api-oauth": "anywhere-api-oauth",
     "plugin-oauth": "plugin-oauth",
     onboarding: "onboarding",
     preview: "preview",
@@ -109,6 +111,7 @@ function screenToHash(s: AuthScreen): string {
     "oauth-link-existing": "#/oauth/link",
     "mobile-oauth": "#/mobile-oauth",
     "desktop-oauth": "#/desktop-oauth",
+    "anywhere-api-oauth": "#/anywhere-api-oauth",
     "plugin-oauth": "#/plugin-oauth",
     onboarding: "#/onboarding",
     preview: "#/preview",

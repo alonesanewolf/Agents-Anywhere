@@ -345,9 +345,15 @@
       "permissionMode": "权限模式",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "仅可查看" },
-          "workspaceWrite": { "label": "工作区内修改" },
-          "fullAccess": { "label": "完全权限" }
+          "readOnly": {
+            "label": "仅可查看"
+          },
+          "workspaceWrite": {
+            "label": "工作区内修改"
+          },
+          "fullAccess": {
+            "label": "完全权限"
+          }
         },
         "requestApproval": {
           "label": "请求批准",
@@ -1356,6 +1362,18 @@
       "retry": "{seconds} 秒后重发",
       "sent": "验证码已发送，请查看邮箱。",
       "failed": "验证码发送失败。"
+    },
+    "anywhereApiOAuth": {
+      "eyebrow": "Agent Anywhere",
+      "title": "登录 Anywhere API",
+      "description": "向 Anywhere API 提供你的名称、邮箱和头像。",
+      "currentAccount": "当前账号",
+      "unknownAccount": "已登录账号",
+      "continue": "继续登录 Anywhere API",
+      "switchAccount": "使用其他账号",
+      "cancel": "取消",
+      "opening": "正在继续登录 Anywhere API…",
+      "invalid": "登录链接无效，请返回 Anywhere API 重新发起登录。"
     }
   },
   "pages": {
