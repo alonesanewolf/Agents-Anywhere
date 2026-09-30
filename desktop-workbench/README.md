@@ -174,7 +174,10 @@ checks run headlessly without starting Electron or a development server.
 
 The release build bundles the Connector source (`pyproject.toml`, `README.md` and
 the `connector/` package only, like the DSH plugin; no `uv.lock`, tests or caches)
-and a platform-specific `uv`. Python and dependencies are installed on first run:
+and a platform-specific `uv`. Python and dependencies are installed on first run.
+The packaged app never runs `uv` inside its own bundle: it first mirrors the
+bundled source to `userData/connector-source/<content-hash>/` (as the DSH plugin
+does), so `uv.lock` is written there and the signed bundle stays untouched:
 
 ```bash
 yarn dist:mac               # universal macOS DMG (Apple Silicon + Intel)
