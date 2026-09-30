@@ -1,5 +1,11 @@
 # DSH Bridge Next 验证记录
 
+## DSH 0.2.0-rc.2 与版本声明统一（2026-09-30）
+
+DSH 开发依赖统一升级到 `0.2.0-rc.2`；Typert peer 从精确的 `0.2.0-rc.1` 改为范围 `>=0.2.0-rc.1 <0.3.0-0`。DSH 0.2.0-rc.2 起在安装和 profile 启动时按 DSH peer 检查插件，精确版本会让后续 rc 拒绝加载插件。握手上报的 `runtimeVersion` 与 `bridgeVersion` 改为运行时读取，不再写死。兼容旧版 DSH 的代码分支不变。
+
+rc.2 实机可用由维护者实测确认。`corepack yarn check` 在 rc.2 依赖下完成类型检查、构建、产物检查和 **180 项插件测试**，全部通过；新增断言确认握手上报的版本与 Host 的 Typert 包及插件 `package.json` 一致。按 DSH 的规则（`semver.satisfies`，`includePrerelease: true`）核对范围：`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.x` 正式版及其 rc 满足，`0.1.x` 和 `0.3.0-rc.1` 起不满足。本次没有重新做 DSH Desktop、Windows 或手机实机验收。
+
 ## DSH 0.2.0-rc.1 适配（2026-09-28）
 
 插件源码版本保持 `2.0.1`，DSH 依赖和 Typert peer 锁定到 `0.2.0-rc.1`，运行时上报的 DSH 版本与技术说明同步更新。`corepack yarn check` 完成类型检查、Host/Client 构建、产物检查和 **174 项插件测试**，全部通过；测试使用新版官方 Gateway、SessionQuery、AgentLoop 和 Python Connector 链路。

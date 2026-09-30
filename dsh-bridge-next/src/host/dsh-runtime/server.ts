@@ -1,6 +1,7 @@
 import { PROJECTION_VERSION } from './history.js'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 import { acquireManagerLock } from '../storage/files.js'
@@ -10,6 +11,15 @@ import { record } from './types.js'
 import { quietDiagnostics, type RuntimeDiagnostics } from './diagnostics.js'
 
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024
+
+function packageVersion(specifier: string): string {
+  try { return String(createRequire(import.meta.url)(specifier).version) || 'unknown' }
+  catch { return 'unknown' }
+}
+
+/** DSH packages share one release version and the Host resolves this peer to its own copy. */
+const RUNTIME_VERSION = packageVersion('@deepseek-ai/dsh-typert-protocol/package.json')
+const BRIDGE_VERSION = packageVersion('@agents-anywhere/dsh-bridge-next/package.json')
 export interface Endpoint { version: 1, host: '127.0.0.1', port: number, token: string, pid: number }
 
 async function endpointAt(path: string): Promise<Record<string, unknown> | undefined> {
@@ -180,7 +190,7 @@ export class RuntimeServer {
           clearTimeout(authTimer)
           this.diagnostics.log('info', 'bridge.initialized', { connectionId, syncMode: this.reader.native ? 'events' : 'polling' })
           send({ jsonrpc: '2.0', id, result: {
-            identity: { runtime: 'dsh', runtimeVersion: '0.2.0-rc.1', bridgeVersion: '0.1.0-dev.0', protocolVersion: '1.0', displayName: 'DeepSeek Harness' },
+            identity: { runtime: 'dsh', runtimeVersion: RUNTIME_VERSION, bridgeVersion: BRIDGE_VERSION, protocolVersion: '1.0', displayName: 'DeepSeek Harness' },
             storage: { mode: 'dsh-native', sameSessionWriterLimit: 1, crossProcessWriterExclusion: false },
             features: { attachments: Boolean(this.reader.native?.ctx.get('sessionController') && this.reader.native.ctx.get('attachments')),
               sessionDiscovery: true, timelineSuffixRead: false, approval: this.reader.native?.approvals.available ?? false, userQuestions: this.reader.native?.questions.available ?? false,
