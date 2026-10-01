@@ -16,6 +16,7 @@ import { DashboardPage } from "@/components/pages/dashboard-page"
 import { TeamPage } from "@/components/pages/team-page"
 import { ServicePage } from "@/components/pages/service-page"
 import { DevicePage } from "@/components/pages/device-page"
+import { ModelGatewayPage } from "@/components/pages/model-gateway-page"
 import { MobileConnectionsPage } from "@/components/pages/mobile-connections-page"
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace-context"
 import { LoadingState } from "@/components/loading-state"
@@ -283,6 +284,7 @@ function WorkspaceMain() {
     effectivePage === "dashboard" ? <DashboardPage /> :
     effectivePage === "team" ? <TeamPage /> :
     effectivePage === "service" ? <ServicePage /> :
+    effectivePage === "model-gateway" ? <ModelGatewayPage /> :
     effectivePage === "mobile-connections" ? <MobileConnectionsPage /> :
     effectivePage === "session" ? <SessionView /> :
     effectivePage === "device" ? <DevicePage /> :

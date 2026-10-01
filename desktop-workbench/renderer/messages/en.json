@@ -292,7 +292,8 @@
       "unarchiveSuccess": "Session unarchived",
       "unpin": "Unpin",
       "unpinChat": "Unpin chat",
-      "viewNow": "View now"
+      "viewNow": "View now",
+      "modelGateway": "Model Gateway"
     },
     "account": {
       "menu": "Account menu"
@@ -358,9 +359,15 @@
       "permissionMode": "Permission mode",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "Read Only" },
-          "workspaceWrite": { "label": "Workspace Write" },
-          "fullAccess": { "label": "Full access" },
+          "readOnly": {
+            "label": "Read Only"
+          },
+          "workspaceWrite": {
+            "label": "Workspace Write"
+          },
+          "fullAccess": {
+            "label": "Full access"
+          },
           "auto": {
             "label": "Auto review"
           }
@@ -1221,6 +1228,17 @@
       "description": "Agents Anywhere needs a paired online device before you can choose a project or start sessions.",
       "later": "Maybe later",
       "addDevice": "Add device"
+    },
+    "modelGateway": {
+      "headline": "AI models.\nOne-click connection.",
+      "description": "Leading AI models, in one place.\nImport into Agents Anywhere in one click.\nLess setup. More creation.",
+      "openDashboard": "Try Now",
+      "imageAlt": "Model gateway Chat API request and response example",
+      "hideFromSidebar": "Hide in sidebar",
+      "showInSidebar": "Show in sidebar",
+      "hiddenToast": "Model Gateway hidden. Show it again in Settings → Appearance.",
+      "shownToast": "Model Gateway is now shown in the sidebar.",
+      "unavailable": "The model gateway is not configured yet."
     }
   },
   "desktopConnector": {
@@ -1637,7 +1655,9 @@
         "displayNameSaved": "Nickname updated.",
         "emailSaved": "Email updated.",
         "failed": "Failed to update account."
-      }
+      },
+      "modelGatewayShow": "Show Model Gateway",
+      "modelGatewayShowDescription": "Show Model Gateway below Mobile Connections in the sidebar."
     },
     "team": {
       "title": "Team",

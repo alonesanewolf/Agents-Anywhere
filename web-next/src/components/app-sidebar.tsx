@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Plus, Smartphone } from "lucide-react"
+import { Plus, Smartphone, Network } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth/auth-context"
@@ -46,6 +46,7 @@ import { useWorkspace, type WorkspaceSessionView } from "@/components/workspace-
 import { dashboardApi } from "@/features/dashboard/api"
 import { defaultFilter } from "@/lib/demo-api"
 import type { ProjectView } from "@/features/dashboard/types"
+import { useModelGatewaySidebarVisibility } from "@/features/model-gateway/sidebar-visibility"
 import { useMobileConnectionsSidebarVisibility } from "@/features/mobile-connections/sidebar-visibility"
 import { useTranslations } from "next-intl"
 
@@ -76,6 +77,7 @@ export function AppSidebar({ contained = false }: { contained?: boolean }) {
     refreshData,
   } = useWorkspace()
   const { signOut, me, session: authSession } = useAuth()
+  const [modelGatewaySidebarVisible] = useModelGatewaySidebarVisibility()
   const [mobileConnectionsSidebarVisible] = useMobileConnectionsSidebarVisibility()
   const t = useTranslations("dashboard")
   const [pairOpen, setPairOpen] = React.useState(false)
@@ -254,6 +256,15 @@ export function AppSidebar({ contained = false }: { contained?: boolean }) {
               >
                 <Smartphone />
                 <span>{t("actions.mobileConnections")}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ) : null}
+          {modelGatewaySidebarVisible ? (
+            <SidebarMenuItem>
+              <SidebarMenuButton className="h-10 font-medium"
+                isActive={page === "model-gateway"} onClick={() => navigate("model-gateway")}>
+                <Network />
+                <span>{t("actions.modelGateway")}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           ) : null}

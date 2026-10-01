@@ -94,6 +94,7 @@ function hashToScreen(hash: string): AuthScreen {
     path === "team" ||
     path === "service" ||
     path === "mobile-connections" ||
+    path === "model-gateway" ||
     path.startsWith("device")
 
   if (isAppRoute) return "app"

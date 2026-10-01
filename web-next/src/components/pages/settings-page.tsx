@@ -61,6 +61,7 @@ import { LoadingState } from "@/components/loading-state"
 import { useWorkspace } from "@/components/workspace-context"
 import { authApi } from "@/features/auth/api"
 import type { AuthMe } from "@/features/auth/types"
+import { useModelGatewaySidebarVisibility } from "@/features/model-gateway/sidebar-visibility"
 import { useMobileConnectionsSidebarVisibility } from "@/features/mobile-connections/sidebar-visibility"
 import { cn } from "@/lib/utils"
 
@@ -497,6 +498,7 @@ const themes: { id: AppearanceMode; labelKey: string; descKey: string }[] = [
 ]
 
 function AppearanceTab() {
+  const [modelGatewayVisible, setModelGatewayVisible] = useModelGatewaySidebarVisibility()
   const t = useTranslations("pages.settings")
   const { theme, setTheme } = useTheme()
   const { sidebarShowsSessions, setSidebarShowsSessions, sidebarCompactSessions, setSidebarCompactSessions } = useWorkspace()
@@ -532,6 +534,13 @@ function AppearanceTab() {
 
       <SettingsSection title={t("desktopSidebar")} description={t("desktopSidebarDescription")}>
         <FieldGroup>
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="settings-model-gateway-visible">{t("modelGatewayShow")}</FieldLabel>
+              <FieldDescription>{t("modelGatewayShowDescription")}</FieldDescription>
+            </FieldContent>
+            <Switch id="settings-model-gateway-visible" checked={modelGatewayVisible} onCheckedChange={setModelGatewayVisible} />
+          </Field>
           <Field orientation="horizontal">
             <FieldContent>
               <FieldLabel htmlFor="settings-sidebar-shows-sessions">

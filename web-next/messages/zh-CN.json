@@ -280,7 +280,8 @@
       "unarchiveSuccess": "会话已取消归档",
       "unpin": "取消置顶",
       "unpinChat": "取消置顶",
-      "viewNow": "立即查看"
+      "viewNow": "立即查看",
+      "modelGateway": "模型网关"
     },
     "account": {
       "menu": "账号菜单"
@@ -346,9 +347,15 @@
       "permissionMode": "权限模式",
       "permissionModes": {
         "dsh": {
-          "readOnly": { "label": "仅可查看" },
-          "workspaceWrite": { "label": "工作区内修改" },
-          "fullAccess": { "label": "完全权限" },
+          "readOnly": {
+            "label": "仅可查看"
+          },
+          "workspaceWrite": {
+            "label": "工作区内修改"
+          },
+          "fullAccess": {
+            "label": "完全权限"
+          },
           "auto": {
             "label": "Auto review"
           }
@@ -1186,6 +1193,17 @@
       "description": "Agents Anywhere 需要一台已配对且在线的设备，才能选择项目或开始会话。",
       "later": "稍后再说",
       "addDevice": "添加设备"
+    },
+    "modelGateway": {
+      "headline": "模型中转，\n一键连接。",
+      "description": "汇集多家主流 AI 模型。\n一键导入 Agents Anywhere。\n少一些配置，多一些创造。",
+      "openDashboard": "立即体验",
+      "imageAlt": "模型网关 Chat API 请求与响应示例",
+      "hideFromSidebar": "在侧边栏隐藏",
+      "showInSidebar": "在侧边栏显示",
+      "hiddenToast": "已在侧边栏隐藏“模型网关”，可在设置 → 外观中重新显示。",
+      "shownToast": "已在侧边栏显示“模型网关”。",
+      "unavailable": "模型网关暂未配置。"
     }
   },
   "privacy": {
@@ -1517,7 +1535,9 @@
         "displayNameSaved": "昵称已更新。",
         "emailSaved": "邮箱已更新。",
         "failed": "账号信息更新失败。"
-      }
+      },
+      "modelGatewayShow": "显示模型网关",
+      "modelGatewayShowDescription": "在侧边栏的手机连接下方显示模型网关入口。"
     },
     "team": {
       "title": "团队",

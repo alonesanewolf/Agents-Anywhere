@@ -53,7 +53,7 @@ export type PanelMode = "docked" | "floating" | "closed"
  *   home + project prefill       →  #/new-session/proj-1
  *   device/:id                   →  #/device/conn-3
  */
-export type AppPage = "home" | "session" | "settings" | "dashboard" | "team" | "service" | "mobile-connections" | "device"
+export type AppPage = "home" | "session" | "settings" | "dashboard" | "team" | "service" | "mobile-connections" | "model-gateway" | "device"
 
 export type WorkspaceSessionView = DemoSessionView & {
   projectId?: string | null
@@ -86,6 +86,7 @@ type ParsedRoute =
   | { page: "team" }
   | { page: "service" }
   | { page: "mobile-connections" }
+  | { page: "model-gateway" }
   | { page: "device"; connectorId: string }
 
 function parseHash(hash: string): ParsedRoute {
@@ -108,6 +109,8 @@ function parseHash(hash: string): ParsedRoute {
       return { page: "team" }
     case "service":
       return { page: "service" }
+    case "model-gateway":
+      return { page: "model-gateway" }
     case "mobile-connections":
       return { page: "mobile-connections" }
     case "device": {
@@ -128,6 +131,7 @@ function buildHash(route: ParsedRoute): string {
     case "dashboard": return "#/dashboard"
     case "team":      return "#/team"
     case "service":   return "#/service"
+    case "model-gateway": return "#/model-gateway"
     case "mobile-connections": return "#/mobile-connections"
     case "device":    return `#/device/${route.connectorId}`
   }
@@ -901,6 +905,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       else if (page === "dashboard") pushRoute({ page: "dashboard" })
       else if (page === "team") pushRoute({ page: "team" })
       else if (page === "service") pushRoute({ page: "service" })
+      else if (page === "model-gateway") pushRoute({ page: "model-gateway" })
       else if (page === "mobile-connections") pushRoute({ page: "mobile-connections" })
     },
     [pushRoute],
@@ -1349,7 +1354,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   // ── Derived route fields ──────────────────────────────────
 
-  const validPages: AppPage[] = ["home", "session", "settings", "dashboard", "team", "service", "mobile-connections", "device"]
+  const validPages: AppPage[] = ["home", "session", "settings", "dashboard", "team", "service", "mobile-connections", "model-gateway", "device"]
   const page: AppPage = validPages.includes(route.page as AppPage) ? (route.page as AppPage) : "home"
 
   const routeSessionId = route.page === "session" ? route.sessionId : null
