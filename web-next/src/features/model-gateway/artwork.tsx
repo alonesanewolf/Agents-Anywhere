@@ -21,6 +21,7 @@ import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 import './artwork.css'
+import { HeroMeshBackground } from './hero-mesh-background'
 
 type AccentTone = 'emerald' | 'amber' | 'blue' | 'violet'
 
@@ -108,10 +109,11 @@ export function ModelGatewayArtwork() {
 
   return (
     <div className={cn('mx-auto w-full max-w-2xl')}>
-      <div className='model-gateway-terminal-stage'>
+      <div className='hero-terminal-stage'>
+        <HeroMeshBackground />
         <div
           className={cn(
-            'model-gateway-terminal-window dark relative z-10 overflow-hidden rounded-2xl border border-white/15 bg-[#0a0a0a] shadow-[0_24px_70px_-15px_rgba(0,0,0,0.8)]'
+            'hero-terminal-window dark relative z-10 overflow-hidden rounded-2xl border border-white/15 bg-[#0a0a0a] shadow-[0_24px_70px_-15px_rgba(0,0,0,0.8)]'
           )}
         >
           <div className='flex h-12 items-center gap-1.5 border-b border-white/10 px-5'>

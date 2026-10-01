@@ -1,9 +1,8 @@
-/* Adapted from Anywhere API hero-terminal.css. */
-.model-gateway-terminal-stage {
+.hero-terminal-stage {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  padding: clamp(16px, 3vw, 32px);
+  padding: clamp(16px, 4vw, 42px);
   background: #303030;
   clip-path: polygon(
     12px 0,
@@ -21,7 +20,7 @@
   );
 }
 
-.model-gateway-terminal-stage::before {
+.hero-terminal-stage::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -34,9 +33,23 @@
   transform: scale(1.15613);
 }
 
-.model-gateway-terminal-window {
+.hero-mesh-background {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.hero-terminal-window {
   --foreground: #eeeeee;
   --border: #333333;
   --muted: #222222;
   color: var(--foreground);
+}
+
+/* The source site's global scrollbar rules, scoped to the copied component. */
+.hero-terminal-stage,
+.hero-terminal-stage * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
