@@ -1,0 +1,42 @@
+/* Adapted from Anywhere API hero-terminal.css. */
+.model-gateway-terminal-stage {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(16px, 3vw, 32px);
+  background: #303030;
+  clip-path: polygon(
+    12px 0,
+    calc(100% - 12px) 0,
+    calc(100% - 12px) 12px,
+    100% 12px,
+    100% calc(100% - 12px),
+    calc(100% - 12px) calc(100% - 12px),
+    calc(100% - 12px) 100%,
+    12px 100%,
+    12px calc(100% - 12px),
+    0 calc(100% - 12px),
+    0 12px,
+    12px 12px
+  );
+}
+
+.model-gateway-terminal-stage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(circle at 40.48% 59.89%, #383838 0%, transparent 36%),
+    radial-gradient(circle at 51.43% 67.74%, #4a4a4a 0%, transparent 34%),
+    radial-gradient(circle at 63.74% 40.67%, #a0a0a0 0%, transparent 38%),
+    linear-gradient(123.518deg, #101010, #202020);
+  transform: scale(1.15613);
+}
+
+.model-gateway-terminal-window {
+  --foreground: #eeeeee;
+  --border: #333333;
+  --muted: #222222;
+  color: var(--foreground);
+}

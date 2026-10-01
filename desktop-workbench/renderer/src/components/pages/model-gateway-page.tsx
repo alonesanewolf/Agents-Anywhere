@@ -9,6 +9,7 @@ import { OnboardingShell } from "@/components/onboarding/reference/components/on
 import { SlideFrame } from "@/components/onboarding/reference/components/slide-frame"
 import { Button as SlideButton } from "@/components/onboarding/reference/components/ui/button"
 import { Button } from "@/components/ui/button"
+import { ModelGatewayArtwork } from "@/features/model-gateway/artwork"
 import { useModelGatewaySidebarVisibility } from "@/features/model-gateway/sidebar-visibility"
 import { PRODUCT_LINKS } from "@/lib/product-links"
 import "@/components/onboarding/reference/styles/onboarding.css"
@@ -42,10 +43,7 @@ export function ModelGatewayPage() {
               id="model-gateway"
               title={t("headline")}
               description={t("description")}
-              artwork={
-                <img src="/images/model-gateway-chat.png" alt=""
-                  width={1426} height={1312} className="mx-auto block h-auto w-full max-w-[720px]" />
-              }
+              artwork={<div className="-mx-6"><ModelGatewayArtwork /></div>}
               actions={PRODUCT_LINKS.modelGatewayUrl ? (
                 <SlideButton asChild size="lg">
                   <a href={PRODUCT_LINKS.modelGatewayUrl} target="_blank" rel="noopener noreferrer">
