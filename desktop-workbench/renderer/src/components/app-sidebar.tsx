@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { DesktopConnectionStatus } from "@/components/desktop/desktop-shell-header"
-import { Plus, Smartphone, Waypoints } from "lucide-react"
+import { Plus, Smartphone, Link } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth/auth-context"
@@ -266,7 +266,7 @@ export function AppSidebar({ contained = false }: { contained?: boolean }) {
             <SidebarMenuItem>
               <SidebarMenuButton className="h-10 font-medium"
                 isActive={page === "model-gateway"} onClick={() => navigate("model-gateway")}>
-                <Waypoints />
+                <Link />
                 <span>{t("actions.modelGateway")}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
