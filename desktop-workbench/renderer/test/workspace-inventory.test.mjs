@@ -15,7 +15,7 @@ globalThis.DocumentFragment = window.DocumentFragment
 class Socket {
   static instances = []
   constructor() { Socket.instances.push(this) }
-  close() {}
+  close() { this.closed = true }
   emit(value) { this.onmessage?.({ data: JSON.stringify(value) }) }
 }
 globalThis.WebSocket = Socket
@@ -34,6 +34,8 @@ const authHooks = registerHooks({ load(url, context, nextLoad) {
 } })
 const { WorkspaceProvider, useWorkspace } = await import('../src/components/workspace-context.tsx')
 const { AppSidebar } = await import('../src/components/app-sidebar.tsx')
+const { AdminSidebar } = await import('../src/components/admin/admin-sidebar.tsx')
+const { SettingsSidebar } = await import('../src/components/settings/settings-sidebar.tsx')
 const { SidebarProvider } = await import('../src/components/ui/sidebar.tsx')
 const { dashboardApi } = await import('../src/features/dashboard/api.ts')
 const { ArchivedSessionsTab } = await import('../src/components/settings/archived-sessions-tab.tsx')
@@ -44,12 +46,13 @@ const connector = { id: 'conn', userId: 'user', name: 'Device', status: 'online'
 const project = (id = 'p1', name = 'Project One') => ({ id, name, connectorId: 'conn', workspacePath: `/${id}`, manuallyCreated: true, pinned: false, createdAt: time, updatedAt: time, lastActivityAt: time, activeSessionCount: 0, sidebarSessionCounts: { active: 0, archived: 0 } })
 const session = (id = 's1', projectId = 'p1', extra = {}) => ({ id, projectId, connectorId: 'conn', connectorStatus: 'online', runtime: 'dsh', runtimeType: 'dsh', runtimeId: 'rti', runtimeName: 'DSH', title: `Session ${id}`, cwd: `/${projectId}`, status: 'idle', archived: false, pinned: false, unread: false, lastReadSeq: 1, latestTurnEndSeq: 1, updatedSeq: 1, sortAt: time, lastActivityAt: time, ...extra })
 const snapshot = (projects = [project()], sessions = [session()]) => ({ type: 'dashboard.snapshot', projects, sessions, connectors: [connector], serverTime: time, sessionPages: { active: { hasMore: false, nextCursor: null }, archived: { hasMore: false, nextCursor: null } } })
-async function render(t, { sidebar = false, archives = false } = {}) {
+async function render(t, { sidebar = false, archives = false, hash = "#/", role = "admin", navigation = null } = {}) {
   window.localStorage.clear(); window.sessionStorage.clear()
-  globalThis.inventoryAuth = { session: { userId: 'user', accessToken: 'fixture-token' }, me: { displayName: 'User', role: 'admin' }, signOut() {} }
+  window.history.replaceState({}, "", hash)
+  globalThis.inventoryAuth = { session: { userId: 'user', accessToken: 'fixture-token' }, me: { displayName: 'User', role }, signOut() {} }
   Socket.instances = []
   const calls = { projects: 0, inventory: 0, connectors: 0, pages: 0 }
-  t.mock.method(dashboardApi, 'createDashboardWsTicket', async () => ({ ticket: 'fixture-ticket' }))
+  const tickets = t.mock.method(dashboardApi, 'createDashboardWsTicket', async () => ({ ticket: 'fixture-ticket' }))
   t.mock.method(dashboardApi, 'listProjects', async () => { calls.projects++; return { projects: [project()] } })
   t.mock.method(dashboardApi, 'listSessionInventory', async () => { calls.inventory++; return { sessions: [session()], serverTime: time } })
   t.mock.method(dashboardApi, 'listConnectors', async () => { calls.connectors++; return { connectors: [connector] } })
@@ -61,9 +64,9 @@ async function render(t, { sidebar = false, archives = false } = {}) {
   }
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
-  await act(async () => root.render(h(NextIntlClientProvider, { locale: 'zh-CN', messages, timeZone: 'Asia/Shanghai' }, h(WorkspaceProvider, null, h(Probe), sidebar ? h(SidebarProvider, null, h(AppSidebar)) : null))))
+  await act(async () => root.render(h(NextIntlClientProvider, { locale: 'zh-CN', messages, timeZone: 'Asia/Shanghai' }, h(WorkspaceProvider, null, h(Probe), sidebar || navigation ? h(SidebarProvider, null, h(navigation ?? AppSidebar)) : null))))
   t.after(async () => { await act(async () => root.unmount()); container.remove() })
-  return { calls, container, get state() { return state }, async emit(value) { await act(async () => { Socket.instances.at(-1).emit(value); await delay(30) }) } }
+  return { calls, container, tickets, get state() { return state }, async emit(value) { await act(async () => { Socket.instances.at(-1).emit(value); await delay(30) }) } }
 }
 function projectButton(container, name) {
   const button = [...container.querySelectorAll('button[aria-expanded]')].find(button => button.textContent.includes(name))
@@ -167,4 +170,81 @@ test('a late full inventory cannot undo a completed project edit', async (t) => 
   await act(async () => finish({ sessions: [session()], serverTime: time }))
   assert.equal(view.state.projects[0].name, 'Edited')
   assert.equal(view.state.isLoading, false)
+})
+
+test('administration routes preserve navigation without loading personal workspace data', async (t) => {
+  const view = await render(t, { hash: '#/admin/overview', navigation: AdminSidebar })
+  assert.equal(view.state.page, 'admin')
+  assert.equal(view.state.adminSection, 'overview')
+  const labels = ['总览', '使用统计', '设备', '用户', '公告', '服务配置', '管理记录']
+  assert.equal(view.container.querySelectorAll('[aria-current="page"]').length, 1)
+  for (const label of labels) {
+    const button = [...view.container.querySelectorAll('button')].find(button => button.textContent === label)
+    assert.ok(button, `Missing administration entry ${label}`)
+    await act(async () => { button.click(); await delay(10) })
+    assert.equal(view.container.querySelector('[aria-current="page"]').textContent, label)
+    await act(async () => view.state.refreshData())
+  }
+  assert.equal(view.state.adminSection, 'records')
+  assert.equal(window.location.hash, '#/admin/records')
+  assert.equal(view.tickets.mock.callCount(), 0)
+  assert.equal(Socket.instances.length, 0)
+  assert.deepEqual(view.calls, { projects: 0, inventory: 0, connectors: 0, pages: 0 })
+  const back = [...view.container.querySelectorAll('button')].find(button => button.textContent === '返回主页')
+  await act(async () => { back.click(); await delay(10) })
+  assert.equal(view.state.page, 'home')
+  assert.equal(view.tickets.mock.callCount(), 1)
+})
+
+test('entering administration closes the personal socket and returning reopens it', async (t) => {
+  const view = await render(t)
+  await view.emit(snapshot())
+  const first = Socket.instances[0]
+  await act(async () => view.state.navigate('admin', 'users'))
+  assert.equal(first.closed, true)
+  await act(async () => view.state.refreshData())
+  assert.equal(view.calls.inventory, 0)
+  await act(async () => { view.state.goHome(); await delay(10) })
+  assert.equal(Socket.instances.length, 2)
+  assert.equal(view.state.page, 'home')
+})
+
+test('legacy administration links open their corresponding new sections', async (t) => {
+  const view = await render(t, { hash: '#/team' })
+  assert.equal(view.state.page, 'admin')
+  assert.equal(view.state.adminSection, 'users')
+  await act(async () => view.state.navigate('service'))
+  assert.equal(view.state.adminSection, 'settings')
+  await act(async () => view.state.navigate('dashboard'))
+  assert.equal(view.state.adminSection, 'overview')
+  assert.equal(view.tickets.mock.callCount(), 0)
+})
+
+test('settings navigation works without workspace reads until opening archives', async (t) => {
+  const view = await render(t, { hash: '#/settings/appearance', navigation: SettingsSidebar })
+  assert.equal(view.state.page, 'settings')
+  assert.equal(view.state.settingsTab, 'appearance')
+  assert.equal(view.container.querySelector('[aria-current="page"]').textContent, '外观')
+  await act(async () => view.state.navigate('settings', 'account'))
+  assert.equal(view.tickets.mock.callCount(), 0)
+  assert.deepEqual(view.calls, { projects: 0, inventory: 0, connectors: 0, pages: 0 })
+  await act(async () => { view.state.navigate('settings', 'archived-sessions'); await delay(10) })
+  assert.equal(view.tickets.mock.callCount(), 1)
+  await view.emit(snapshot([project()], [session('archived', 'p1', { archived: true })]))
+  assert.equal(view.state.sessions[0].archived, true)
+  await act(async () => view.state.navigate('settings', 'appearance'))
+  assert.equal(Socket.instances.at(-1).closed, true)
+})
+
+test('an inventory requested before administration cannot overwrite state on completion', async (t) => {
+  const view = await render(t)
+  await view.emit(snapshot())
+  let finish
+  t.mock.method(dashboardApi, 'listSessionInventory', () => new Promise(resolve => { finish = resolve }))
+  let refresh
+  await act(async () => { refresh = view.state.refreshData() })
+  await act(async () => view.state.navigate('admin', 'records'))
+  await act(async () => { finish({ sessions: [session('late')], serverTime: time }); await refresh })
+  assert.equal(view.state.page, 'admin')
+  assert.deepEqual(view.state.sessions.map(row => row.id), ['s1'])
 })

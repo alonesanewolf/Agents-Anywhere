@@ -12,9 +12,9 @@ import { AppSidebar } from "@/components/app-sidebar"
 import { TaskComposer } from "@/components/task-composer"
 import { SessionView } from "@/components/session-view"
 import { SettingsPage } from "@/components/pages/settings-page"
-import { DashboardPage } from "@/components/pages/dashboard-page"
-import { TeamPage } from "@/components/pages/team-page"
-import { ServicePage } from "@/components/pages/service-page"
+import { AdminPage } from "@/components/admin/admin-page"
+import { AdminSidebar } from "@/components/admin/admin-sidebar"
+import { SettingsSidebar } from "@/components/settings/settings-sidebar"
 import { DevicePage } from "@/components/pages/device-page"
 import { MobileConnectionsPage } from "@/components/pages/mobile-connections-page"
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace-context"
@@ -65,13 +65,21 @@ export function Demo() {
   )
 }
 
+function WorkspaceNavigation({ contained = false }: { contained?: boolean }) {
+  const { page } = useWorkspace()
+  const { me } = useAuth()
+  if (page === "admin" && me?.role === "admin") return <AdminSidebar contained={contained} />
+  if (page === "settings") return <SettingsSidebar contained={contained} />
+  return <AppSidebar contained={contained} />
+}
+
 function DashboardShell() {
   const isMobile = useIsMobile()
 
   if (isMobile) {
     return (
       <>
-        <AppSidebar />
+        <WorkspaceNavigation />
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-none bg-background">
           <WorkspaceSidebarControl><WorkspaceMain /></WorkspaceSidebarControl>
         </SidebarInset>
@@ -229,7 +237,7 @@ function DesktopResizableShell() {
               className="h-full shrink-0 overflow-hidden"
               style={{ width: Math.max(sidebarWidth, DESKTOP_SIDEBAR_MIN_WIDTH) }}
             >
-              <AppSidebar contained />
+              <WorkspaceNavigation contained />
             </div>
           </ResizablePanel>
           <ResizableHandle
@@ -264,6 +272,8 @@ function WorkspaceMain() {
     page,
     isLoading,
     routeReady,
+    settingsTab,
+    goHome,
     firstDevicePromptOpen,
     pairDeviceDialogOpen,
     closeFirstDevicePrompt,
@@ -274,15 +284,17 @@ function WorkspaceMain() {
   const t = useTranslations("dashboard.firstDevice")
   const isNewSession = page === "home"
   const isAdmin = me?.role === "admin"
-  if (!routeReady || (!isNewSession && isLoading)) {
+  React.useEffect(() => {
+    if (routeReady && page === "admin" && me && !isAdmin) goHome()
+  }, [goHome, isAdmin, me, page, routeReady])
+  const independentPage = page === "admin" || (page === "settings" && settingsTab !== "archived-sessions")
+  if (!routeReady || (page === "admin" && !isAdmin) || (!independentPage && !isNewSession && isLoading)) {
     return <LoadingState className="h-full bg-background" />
   }
-  const effectivePage = !isAdmin && (page === "dashboard" || page === "team" || page === "service") ? "home" : page
+  const effectivePage = page
   const content =
     effectivePage === "settings" ? <SettingsPage /> :
-    effectivePage === "dashboard" ? <DashboardPage /> :
-    effectivePage === "team" ? <TeamPage /> :
-    effectivePage === "service" ? <ServicePage /> :
+    effectivePage === "admin" ? <AdminPage /> :
     effectivePage === "mobile-connections" ? <MobileConnectionsPage /> :
     effectivePage === "session" ? <SessionView /> :
     effectivePage === "device" ? <DevicePage /> :

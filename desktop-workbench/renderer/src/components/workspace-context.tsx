@@ -12,6 +12,7 @@ import {
 } from "@/lib/demo-api"
 import { useAuth } from "@/components/auth/auth-context"
 import { dashboardApi } from "@/features/dashboard/api"
+import { parseAdminSection, type AdminSection } from "@/features/admin/navigation"
 import { resolveWorkspaceProject } from "@/features/dashboard/project-workspaces"
 import type {
   ConnectorView as RealConnectorView,
@@ -47,14 +48,15 @@ export type PanelMode = "docked" | "floating" | "closed"
  *   home                         →  #/
  *   session/:id                  →  #/session/s1
  *   settings/:tab                →  #/settings/account
- *   dashboard                    →  #/dashboard
+ *   admin/:section               →  #/admin/overview
+ *   dashboard (legacy)           →  #/dashboard
  *   team                         →  #/team
  *   service                      →  #/service
  *   mobile-connections           →  #/mobile-connections
  *   home + project prefill       →  #/new-session/proj-1
  *   device/:id                   →  #/device/conn-3
  */
-export type AppPage = "home" | "session" | "settings" | "dashboard" | "team" | "service" | "mobile-connections" | "device"
+export type AppPage = "admin" | "home" | "session" | "settings" | "dashboard" | "team" | "service" | "mobile-connections" | "device"
 
 export type WorkspaceSessionView = DemoSessionView & {
   projectId?: string | null
@@ -80,6 +82,7 @@ export type OptimisticSessionMessage = {
 // ─── Hash routing helpers ─────────────────────────────────────
 
 type ParsedRoute =
+  | { page: "admin"; section: AdminSection }
   | { page: "home"; projectId?: string }
   | { page: "session"; sessionId: string }
   | { page: "settings"; tab: string }
@@ -110,12 +113,14 @@ function parseHash(hash: string): ParsedRoute {
       return parts[1] ? { page: "session", sessionId: parts[1] } : { page: "home" }
     case "settings":
       return { page: "settings", tab: parts[1] ?? "account" }
+    case "admin":
+      return { page: "admin", section: parseAdminSection(parts[1]) }
     case "dashboard":
-      return { page: "dashboard" }
+      return { page: "admin", section: "overview" }
     case "team":
-      return { page: "team" }
+      return { page: "admin", section: "users" }
     case "service":
-      return { page: "service" }
+      return { page: "admin", section: "settings" }
     case "mobile-connections":
       return { page: "mobile-connections" }
     case "device": {
@@ -130,6 +135,7 @@ function parseHash(hash: string): ParsedRoute {
 
 function buildHash(route: ParsedRoute): string {
   switch (route.page) {
+    case "admin":     return `#/admin/${route.section}`
     case "home":      return route.projectId ? `#/new-session/${encodeURIComponent(route.projectId)}` : "#/"
     case "session":   return `#/session/${route.sessionId}`
     case "settings":  return `#/settings/${route.tab}`
@@ -179,6 +185,8 @@ function isWorkspaceRouteHash(hash: string): boolean {
     path.startsWith("new-session/") ||
     path === "settings" ||
     path.startsWith("settings/") ||
+    path === "admin" ||
+    path.startsWith("admin/") ||
     path === "dashboard" ||
     path === "team" ||
     path === "service" ||
@@ -331,6 +339,7 @@ export type WorkspaceState = {
   canGoBack: boolean
   canGoForward: boolean
   page: AppPage
+  adminSection: AdminSection
   activeSessionId: string | null
   activeSession: SessionView | null
   activeSessionFallback: RealSessionView | null
@@ -492,7 +501,7 @@ export function useWorkspace() {
 // ─── Provider ─────────────────────────────────────────────────
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
-  const { session: authSession } = useAuth()
+  const { session: authSession, me } = useAuth()
   const currentAccessTokenRef = React.useRef(authSession?.accessToken ?? null)
   currentAccessTokenRef.current = authSession?.accessToken ?? null
   const [connectors, setConnectors] = React.useState<ConnectorView[]>([])
@@ -594,6 +603,13 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // Derive page state from hash — start at "home" for safe SSR, correct on mount.
   const [route, setRoute] = React.useState<ParsedRoute>({ page: "home" })
   const [routeReady, setRouteReady] = React.useState(false)
+  const workspaceDataEnabled = routeReady && (
+    (route.page !== "admin" && route.page !== "settings") ||
+    (route.page === "settings" && route.tab === "archived-sessions") ||
+    (route.page === "admin" && Boolean(me && me.role !== "admin"))
+  )
+  const workspaceDataEnabledRef = React.useRef(workspaceDataEnabled)
+  workspaceDataEnabledRef.current = workspaceDataEnabled
   const [canGoBack, setCanGoBack] = React.useState(false)
   const [canGoForward, setCanGoForward] = React.useState(false)
 
@@ -637,7 +653,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   const refreshProjects = React.useCallback((): Promise<void> => {
     const token = authSession?.accessToken
-    if (!token) return Promise.resolve()
+    if (!token || !workspaceDataEnabledRef.current) return Promise.resolve()
     const pending = projectRefreshInFlightRef.current
     const generation = projectDataGenerationRef.current
     if (pending?.token === token && pending.generation === generation) return pending.promise
@@ -655,7 +671,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, [authSession?.accessToken])
 
   React.useEffect(() => {
-    if (!authSession?.accessToken || isLoading) return
+    if (!workspaceDataEnabled || !authSession?.accessToken || isLoading) return
     const projectIds = new Set(projects.map((project) => project.id))
     const missing = new Set(sessions
       .filter((session) => !session.id.startsWith("local:") && (!session.projectId || !projectIds.has(session.projectId)))
@@ -670,7 +686,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       // Retry on a later data update, without repeatedly fetching an orphan's project list.
       unchecked.forEach((key) => checkedMissingProjectsRef.current.delete(key))
     })
-  }, [authSession?.accessToken, isLoading, projects, refreshProjects, sessions])
+  }, [authSession?.accessToken, isLoading, projects, refreshProjects, sessions, workspaceDataEnabled])
 
   const applyDashboardSnapshot = React.useCallback((message: DashboardSnapshotMessage) => {
     const snapshotKey = stableJson({
@@ -709,6 +725,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   const fetchDataInFlightRef = React.useRef<{ token: string | null; promise: Promise<boolean> } | null>(null)
   const fetchData = React.useCallback((): Promise<boolean> => {
+    if (!workspaceDataEnabledRef.current) return Promise.resolve(false)
     const token = authSession?.accessToken ?? null
     const pending = fetchDataInFlightRef.current
     if (pending?.token === token) return pending.promise
@@ -781,14 +798,23 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, [authSession?.accessToken])
 
   React.useEffect(() => {
-    if (authSession?.accessToken) return
-    void fetchData().catch(() => undefined)
-  }, [authSession?.accessToken, fetchData])
+    if (workspaceDataEnabled) return
+    // Invalidate reads that started before entering administration.
+    dashboardDataGenerationRef.current += 1
+    projectDataGenerationRef.current += 1
+    fetchDataInFlightRef.current = null
+    projectRefreshInFlightRef.current = null
+  }, [workspaceDataEnabled])
 
   React.useEffect(() => {
-    if (!authSession?.accessToken || !initialLoadDoneRef.current) return
+    if (!workspaceDataEnabled || authSession?.accessToken) return
     void fetchData().catch(() => undefined)
-  }, [authSession?.accessToken, fetchData])
+  }, [authSession?.accessToken, fetchData, workspaceDataEnabled])
+
+  React.useEffect(() => {
+    if (!workspaceDataEnabled || !authSession?.accessToken || !initialLoadDoneRef.current) return
+    void fetchData().catch(() => undefined)
+  }, [authSession?.accessToken, fetchData, workspaceDataEnabled])
 
   // ── Dashboard WebSocket ────────────────────────────────────
   const tokenRef = React.useRef(authSession?.accessToken ?? null)
@@ -798,7 +824,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const readRequestsRef = React.useRef(new Set<string>())
 
   React.useEffect(() => {
-    if (!authSession?.accessToken) return
+    if (!workspaceDataEnabled || !authSession?.accessToken) return
     let cancelled = false
     let socket: WebSocket | null = null
     let reconnectTimer: number | null = null
@@ -885,7 +911,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       if (snapshotFrame !== null) window.cancelAnimationFrame(snapshotFrame)
       pendingSnapshot = null
     }
-  }, [applyDashboardSnapshot, authSession?.accessToken, fetchData])
+  }, [applyDashboardSnapshot, authSession?.accessToken, fetchData, workspaceDataEnabled])
 
   const syncHistoryAvailability = React.useCallback(() => {
     const index = historyIndexRef.current
@@ -1043,9 +1069,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       if (page === "home") pushRoute({ page: "home" })
       else if (page === "session") pushRoute({ page: "session", sessionId: sub ?? "" })
       else if (page === "settings") pushRoute({ page: "settings", tab: sub ?? "account" })
-      else if (page === "dashboard") pushRoute({ page: "dashboard" })
-      else if (page === "team") pushRoute({ page: "team" })
-      else if (page === "service") pushRoute({ page: "service" })
+      else if (page === "admin") pushRoute({ page: "admin", section: parseAdminSection(sub) })
+      else if (page === "dashboard") pushRoute({ page: "admin", section: "overview" })
+      else if (page === "team") pushRoute({ page: "admin", section: "users" })
+      else if (page === "service") pushRoute({ page: "admin", section: "settings" })
       else if (page === "mobile-connections") pushRoute({ page: "mobile-connections" })
     },
     [pushRoute],
@@ -1498,7 +1525,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   // ── Derived route fields ──────────────────────────────────
 
-  const validPages: AppPage[] = ["home", "session", "settings", "dashboard", "team", "service", "mobile-connections", "device"]
+  const validPages: AppPage[] = ["admin", "home", "session", "settings", "dashboard", "team", "service", "mobile-connections", "device"]
   const page: AppPage = validPages.includes(route.page as AppPage) ? (route.page as AppPage) : "home"
 
   const routeSessionId = route.page === "session" ? route.sessionId : null
@@ -1528,6 +1555,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     isLoading,
     routeReady,
     page,
+    adminSection: route.page === "admin" ? route.section : "overview",
     activeSessionId,
     activeSession,
     activeSessionFallback: activeSessionOptimisticState?.session ?? null,

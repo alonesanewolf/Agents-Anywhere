@@ -106,10 +106,11 @@ function initialDraft(): UserDraft {
   }
 }
 
-export function TeamPage() {
+export function TeamPage({ admin = false }: { admin?: boolean }) {
   const { navigate } = useWorkspace()
   const { session, me } = useAuth()
   const t = useTranslations("pages.team")
+  const tAdmin = useTranslations("admin")
   const [users, setUsers] = React.useState<AdminUser[]>([])
   const [filterTab, setFilterTab] = React.useState<FilterTab>("all")
   const [search, setSearch] = React.useState("")
@@ -231,7 +232,7 @@ export function TeamPage() {
   return (
     <ScrollArea className="@container/page h-full w-full bg-background">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-8 pb-16 pt-14 @min-[68rem]/page:pt-8">
-        <PageHeader title={t("title")} description={t("description")} onBack={() => navigate("home")}>
+        <PageHeader title={admin ? tAdmin("nav.users") : t("title")} description={t("description")} onBack={admin ? undefined : () => navigate("home")}>
           <Button size="sm" disabled={!isAdmin} onClick={() => setCreateOpen(true)}>
             <Plus data-icon="inline-start" />
             {t("newUser")}

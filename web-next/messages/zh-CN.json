@@ -7,6 +7,7 @@
     "subtitle": "这个包是 Next.js、shadcn、Tailwind 和 i18n 的重写目标。必须和当前 web 包保持视觉完全一致。"
   },
   "common": {
+    "backHome": "返回主页",
     "cancel": "取消",
     "continue": "继续",
     "loading": "加载中...",
@@ -1814,5 +1815,48 @@
       "publishedAt": "上次发布：{time}",
       "notPublished": "尚未发布"
     }
+  },
+  "admin": {
+    "title": "管理",
+    "groups": {
+      "data": "数据",
+      "management": "管理"
+    },
+    "nav": {
+      "overview": "总览",
+      "usage": "使用统计",
+      "devices": "设备",
+      "users": "用户",
+      "announcements": "公告",
+      "settings": "服务配置",
+      "records": "管理记录"
+    },
+    "descriptions": {
+      "overview": "查看使用概况与主要趋势。",
+      "usage": "查看使用量、用户分布与操作统计。",
+      "devices": "查看 Connector 与 Runtime 的分布情况。",
+      "announcements": "编辑公告并管理发布状态。",
+      "records": "查看用户、权限、服务配置和公告的管理变更。"
+    },
+    "configuration": {
+      "general": "常规",
+      "authentication": "身份认证",
+      "email": "邮件",
+      "info": "服务信息"
+    },
+    "statisticsTabs": {
+      "usage": "使用量",
+      "users": "用户分布",
+      "devices": "Connector",
+      "agents": "Runtime"
+    },
+    "legacyStatistics": "当前展示原有统计口径。主动查看、操作执行结果和历史连接统计暂未提供。",
+    "usagePending": "会话查看、审批响应、执行结果和操作耗时统计暂未提供。",
+    "devicesPending": "当前展示设备与 Runtime 的配置分布。设备列表、连接记录和最近确认的运行状态暂未提供。",
+    "announcementStatsPending": "公告查看人数暂未提供。",
+    "recordsPendingTitle": "管理变更记录暂未提供",
+    "recordsPendingDescription": "后续将在这里展示操作者、变更对象、时间和实际结果。",
+    "invalidRange": "请选择有效的日期范围，开始日期不能晚于结束日期。",
+    "statisticsUpdated": "查询时间：{time}"
   }
 }

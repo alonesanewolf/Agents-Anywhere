@@ -14,14 +14,8 @@ import {
   YAxis,
 } from "recharts"
 import {
-  ChevronDown,
-  Gauge,
-  Laptop,
-  LineChart,
   RefreshCw,
   Save,
-  SlidersHorizontal,
-  Users,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -32,13 +26,6 @@ import { LoadingState } from "@/components/loading-state"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
-  Drawer,
-  DrawerContent,
-  DrawerHeader,
-  DrawerTitle,
-  DrawerTrigger,
-} from "@/components/ui/drawer"
-import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -48,14 +35,15 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useWorkspace } from "@/components/workspace-context"
 import { dashboardApi } from "@/features/dashboard/api"
 import type {
   AdminDashboardBreakdownItem,
   AdminDashboardOverviewResponse,
   AdminDashboardSettings,
 } from "@/features/dashboard/types"
-import { cn } from "@/lib/utils"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { readAdminDateRange, validAdminDateRange } from "@/features/admin/date-range"
 
 type DashboardTab = "overview" | "usage" | "users" | "devices" | "agents"
 
@@ -81,21 +69,37 @@ const distributionConfig = {
   count: { label: "Users", color: "var(--chart-1)" },
 } satisfies ChartConfig
 
-const navItems: { id: DashboardTab; icon: typeof LineChart; labelKey: string }[] = [
-  { id: "overview", icon: LineChart, labelKey: "overview" },
-  { id: "usage", icon: Gauge, labelKey: "usage" },
-  { id: "users", icon: Users, labelKey: "users" },
-  { id: "devices", icon: Laptop, labelKey: "devices" },
-  { id: "agents", icon: SlidersHorizontal, labelKey: "agents" },
-]
-
-export function DashboardPage() {
-  const { navigate } = useWorkspace()
+export function DashboardPage({ view = "overview" }: { view?: "overview" | "usage" | "devices" }) {
   const { session } = useAuth()
   const t = useTranslations("pages.opsDashboard")
-  const [tab, setTab] = React.useState<DashboardTab>("overview")
-  const [toDate, setToDate] = React.useState(todayDate)
-  const [fromDate, setFromDate] = React.useState(() => shiftDate(todayDate(), -29))
+  const tAdmin = useTranslations("admin")
+  const rangeKey = `agents-anywhere-admin-range:${session?.userId ?? "anonymous"}`
+  const [range, setRange] = React.useState(() => readAdminDateRange(rangeKey))
+  const fromDate = range.from
+  const toDate = range.to
+  const setFromDate = (from: string) => setRange((current) => ({ ...current, from }))
+  const setToDate = (to: string) => setRange((current) => ({ ...current, to }))
+  const [usageTab, setUsageTab] = React.useState<"usage" | "users">("usage")
+  const [deviceTab, setDeviceTab] = React.useState<"devices" | "agents">("devices")
+  const tab: DashboardTab = view === "usage" ? usageTab : view === "devices" ? deviceTab : "overview"
+  const loadGeneration = React.useRef(0)
+  React.useEffect(
+    () => () => {
+      loadGeneration.current += 1
+    },
+    []
+  )
+  React.useEffect(() => {
+    setRange(readAdminDateRange(rangeKey))
+  }, [rangeKey])
+  React.useEffect(() => {
+    if (!validAdminDateRange(range)) return
+    try {
+      window.sessionStorage.setItem(rangeKey, JSON.stringify(range))
+    } catch {
+      /* Optional persistence. */
+    }
+  }, [range, rangeKey])
   const [overview, setOverview] = React.useState<AdminDashboardOverviewResponse | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [refreshing, setRefreshing] = React.useState(false)
@@ -105,7 +109,11 @@ export function DashboardPage() {
   const token = session?.accessToken
 
   const load = React.useCallback(async () => {
-    if (!token) return
+    const generation = ++loadGeneration.current
+    if (!token || !validAdminDateRange({ from: fromDate, to: toDate })) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -114,13 +122,17 @@ export function DashboardPage() {
         to: toDate,
         tz: DEFAULT_TZ,
       })
+      if (generation !== loadGeneration.current) return
       setOverview(data)
       setSettingsDraft(data.settings)
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("loadFailed"))
+      if (generation === loadGeneration.current)
+        setError(err instanceof Error ? err.message : t("loadFailed"))
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (generation === loadGeneration.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [fromDate, t, toDate, token])
 
@@ -158,131 +170,87 @@ export function DashboardPage() {
     }
   }
 
-  const activeNavItem = navItems.find((item) => item.id === tab) ?? navItems[0]!
-  const ActiveNavIcon = activeNavItem.icon
-
+  const validRange = validAdminDateRange(range)
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="px-5 pb-0 pt-14 sm:px-8">
-        <PageHeader title={t("title")} description={t("description")} onBack={() => navigate("home")}>
+      <div className="flex flex-col gap-4 px-5 pb-0 pt-14 sm:px-8">
+        <PageHeader title={tAdmin(`nav.${view}`)} description={tAdmin(`descriptions.${view}`)}>
           <DateField label={t("from")} value={fromDate} onChange={setFromDate} />
           <DateField label={t("to")} value={toDate} onChange={setToDate} />
-          <Button type="button" variant="outline" onClick={() => void load()}>
+          <Button variant="outline" disabled={loading || !validRange} onClick={() => void load()}>
             <RefreshCw data-icon="inline-start" />
             {t("load")}
           </Button>
-          <Button type="button" onClick={() => void refreshToday()} disabled={refreshing}>
+          <Button disabled={refreshing || loading || !validRange} onClick={() => void refreshToday()}>
             {refreshing ? <Spinner /> : <RefreshCw data-icon="inline-start" />}
             {t("refreshToday")}
           </Button>
         </PageHeader>
-        <DashboardCategoryDrawer
-          tab={tab}
-          activeIcon={ActiveNavIcon}
-          activeLabel={t(`tabs.${activeNavItem.labelKey}`)}
-          onTabChange={setTab}
-        />
+        <Alert>
+          <AlertDescription>{tAdmin("legacyStatistics")}</AlertDescription>
+        </Alert>
+        {view !== "overview" && (
+          <div className="overflow-x-auto">
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              value={tab}
+              aria-label={tAdmin(`nav.${view}`)}
+              onValueChange={(value) => {
+                if (view === "usage" && (value === "usage" || value === "users")) setUsageTab(value)
+                if (view === "devices" && (value === "devices" || value === "agents")) setDeviceTab(value)
+              }}
+            >
+              {(view === "usage" ? ["usage", "users"] : ["devices", "agents"]).map((id) => (
+                <ToggleGroupItem key={id} value={id}>
+                  {tAdmin(`statisticsTabs.${id}`)}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
+        )}
       </div>
-
-      <div className="flex min-h-0 flex-1 gap-8 overflow-hidden px-5 py-5 sm:px-8 sm:py-8">
-        <nav className="hidden w-52 shrink-0 flex-col gap-0.5 lg:flex">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setTab(item.id)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors",
-                  tab === item.id
-                    ? "bg-sidebar-accent text-foreground"
-                    : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground",
-                )}
-              >
-                <Icon className="size-4" />
-                {t(`tabs.${item.labelKey}`)}
-              </button>
-            )
-          })}
-        </nav>
-
-        <main className="min-w-0 flex-1 overflow-y-auto pr-2">
-          {loading ? (
-            <LoadingState className="min-h-96 rounded-xl border border-border bg-card" />
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-5 py-5 sm:px-8 sm:py-8">
+        <div className="flex flex-col gap-4">
+          {!validRange ? (
+            <Alert variant="destructive">
+              <AlertDescription>{tAdmin("invalidRange")}</AlertDescription>
+            </Alert>
+          ) : loading ? (
+            <LoadingState className="min-h-96" />
           ) : error ? (
-            <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-5 py-4 text-sm text-destructive">
-              {error}
-            </div>
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           ) : overview ? (
-            <DashboardContent
-              tab={tab}
-              overview={overview}
-              settingsDraft={settingsDraft}
-              savingSettings={savingSettings}
-              onSettingsChange={setSettingsDraft}
-              onSaveSettings={saveSettings}
-            />
+            <>
+              <p className="text-sm text-muted-foreground">
+                {tAdmin("statisticsUpdated", { time: overview.serverTime })}
+              </p>
+              <DashboardContent
+                tab={tab}
+                overview={overview}
+                settingsDraft={settingsDraft}
+                savingSettings={savingSettings}
+                onSettingsChange={setSettingsDraft}
+                onSaveSettings={saveSettings}
+              />
+            </>
           ) : null}
-        </main>
-      </div>
-    </div>
-  )
-}
-
-function DashboardCategoryDrawer({
-  tab,
-  activeIcon: ActiveIcon,
-  activeLabel,
-  onTabChange,
-}: {
-  tab: DashboardTab
-  activeIcon: typeof LineChart
-  activeLabel: string
-  onTabChange: (tab: DashboardTab) => void
-}) {
-  const t = useTranslations("pages.opsDashboard")
-  const [open, setOpen] = React.useState(false)
-
-  return (
-    <Drawer open={open} onOpenChange={setOpen} direction="bottom">
-      <DrawerTrigger asChild>
-        <Button type="button" variant="outline" size="sm" className="mt-4 gap-2 lg:hidden">
-          <ActiveIcon className="size-4" />
-          {activeLabel}
-          <ChevronDown className="size-3.5 text-muted-foreground" />
-        </Button>
-      </DrawerTrigger>
-      <DrawerContent>
-        <DrawerHeader>
-          <DrawerTitle>{t("title")}</DrawerTitle>
-        </DrawerHeader>
-        <div className="flex flex-col gap-1 px-4 pb-4">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  onTabChange(item.id)
-                  setOpen(false)
-                }}
-                className={cn(
-                  "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors",
-                  tab === item.id
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                )}
-              >
-                <Icon className="size-4 shrink-0" />
-                <span className="font-medium">{t(`tabs.${item.labelKey}`)}</span>
-              </button>
-            )
-          })}
+          {view === "usage" && (
+            <Alert>
+              <AlertDescription>{tAdmin("usagePending")}</AlertDescription>
+            </Alert>
+          )}
+          {view === "devices" && (
+            <Alert>
+              <AlertDescription>{tAdmin("devicesPending")}</AlertDescription>
+            </Alert>
+          )}
         </div>
-      </DrawerContent>
-    </Drawer>
+      </main>
+    </div>
   )
 }
 
@@ -735,16 +703,6 @@ function ListField({
       />
     </label>
   )
-}
-
-function todayDate() {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function shiftDate(value: string, days: number) {
-  const date = new Date(`${value}T00:00:00Z`)
-  date.setUTCDate(date.getUTCDate() + days)
-  return date.toISOString().slice(0, 10)
 }
 
 function parseNumberList(value: string) {

@@ -17,6 +17,7 @@
     "subtitle": "This package is the Next.js, shadcn, Tailwind, and i18n rewrite target. Visual parity with the current web package is mandatory."
   },
   "common": {
+    "backHome": "Back to home",
     "cancel": "Cancel",
     "continue": "Continue",
     "loading": "Loading...",
@@ -1959,5 +1960,48 @@
       "publishedAt": "Last published: {time}",
       "notPublished": "Not published yet"
     }
+  },
+  "admin": {
+    "title": "Administration",
+    "groups": {
+      "data": "Data",
+      "management": "Management"
+    },
+    "nav": {
+      "overview": "Overview",
+      "usage": "Usage",
+      "devices": "Devices",
+      "users": "Users",
+      "announcements": "Announcements",
+      "settings": "Service settings",
+      "records": "Admin history"
+    },
+    "descriptions": {
+      "overview": "View usage and key trends.",
+      "usage": "View usage, user distribution and operations.",
+      "devices": "View Connector and Runtime distributions.",
+      "announcements": "Edit announcements and manage publication.",
+      "records": "Review changes to users, permissions, service settings and announcements."
+    },
+    "configuration": {
+      "general": "General",
+      "authentication": "Authentication",
+      "email": "Email",
+      "info": "Service information"
+    },
+    "statisticsTabs": {
+      "usage": "Usage",
+      "users": "User distribution",
+      "devices": "Connectors",
+      "agents": "Runtimes"
+    },
+    "legacyStatistics": "These figures use the existing definitions. Intentional session views, operation outcomes and connection history are not available yet.",
+    "usagePending": "Session views, approval responses, execution outcomes and operation durations are not available yet.",
+    "devicesPending": "These figures show device and Runtime configuration distributions. Device inventory, connection history and last confirmed runtime states are not available yet.",
+    "announcementStatsPending": "Announcement viewer counts are not available yet.",
+    "recordsPendingTitle": "Admin change history is not available yet",
+    "recordsPendingDescription": "This page will show the administrator, affected object, time and confirmed outcome.",
+    "invalidRange": "Choose a valid date range. The start date must not follow the end date.",
+    "statisticsUpdated": "Queried at: {time}"
   }
 }

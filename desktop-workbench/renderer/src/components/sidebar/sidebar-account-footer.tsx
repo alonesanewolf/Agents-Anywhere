@@ -4,9 +4,7 @@ import * as React from "react"
 import {
   LayoutDashboard,
   LogOut,
-  Server,
   Settings,
-  Users,
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -25,7 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { SidebarFooter } from "@/components/ui/sidebar"
+import { SidebarFooter, useSidebar } from "@/components/ui/sidebar"
 import type { WorkspaceState } from "@/components/workspace-context"
 import { accountDisplayName } from "@/features/auth/account-profile"
 import type { AuthMe } from "@/features/auth/types"
@@ -45,6 +43,8 @@ export function SidebarAccountFooter({
 }: SidebarAccountFooterProps) {
   const t = useTranslations("dashboard")
   const tCommon = useTranslations("common")
+  const tAdmin = useTranslations("admin")
+  const { setOpenMobile } = useSidebar()
   const [signOutOpen, setSignOutOpen] = React.useState(false)
   const userId = me ? accountDisplayName(me) : "Unknown"
   const userRole = me?.role ? me.role.replace(/^\w/, (char) => char.toUpperCase()) : ""
@@ -82,26 +82,16 @@ export function SidebarAccountFooter({
               </div>
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="gap-3 py-2.5" onClick={() => navigate("settings", "account")}>
+            <DropdownMenuItem className="gap-3 py-2.5" onClick={() => { navigate("settings", "account"); setOpenMobile(false) }}>
               <Settings className="size-4 text-muted-foreground" />
               {t("nav.settings")}
             </DropdownMenuItem>
-            {isAdmin ? (
-              <>
-                <DropdownMenuItem className="gap-3 py-2.5" onClick={() => navigate("dashboard")}>
-                  <LayoutDashboard className="size-4 text-muted-foreground" />
-                  {t("nav.dashboard")}
-                </DropdownMenuItem>
-                <DropdownMenuItem className="gap-3 py-2.5" onClick={() => navigate("team")}>
-                  <Users className="size-4 text-muted-foreground" />
-                  {t("nav.team")}
-                </DropdownMenuItem>
-                <DropdownMenuItem className="gap-3 py-2.5" onClick={() => navigate("service")}>
-                  <Server className="size-4 text-muted-foreground" />
-                  {t("nav.service")}
-                </DropdownMenuItem>
-              </>
-            ) : null}
+            {isAdmin && (
+              <DropdownMenuItem className="gap-3 py-2.5" onClick={() => { navigate("admin", "overview"); setOpenMobile(false) }}>
+                <LayoutDashboard data-icon="inline-start" />
+                {tAdmin("title")}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem className="gap-3 py-2.5" onClick={() => setSignOutOpen(true)}>
               <LogOut className="size-4 text-muted-foreground" />

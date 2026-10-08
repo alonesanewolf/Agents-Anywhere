@@ -13,9 +13,10 @@ import { SessionView } from "@/components/session-view"
 import { WorkspaceHeaderBackdrop } from "@/components/workspace-header"
 import { SessionToolSidebarsHost } from "@/components/session-tool-sidebar"
 import { SettingsPage } from "@/components/pages/settings-page"
-import { DashboardPage } from "@/components/pages/dashboard-page"
-import { TeamPage } from "@/components/pages/team-page"
-import { ServicePage } from "@/components/pages/service-page"
+import { DashboardSidebarToggle } from "@/components/dashboard-sidebar-toggle"
+import { AdminPage } from "@/components/admin/admin-page"
+import { AdminSidebar } from "@/components/admin/admin-sidebar"
+import { SettingsSidebar } from "@/components/settings/settings-sidebar"
 import { DevicePage } from "@/components/pages/device-page"
 import { MobileConnectionsPage } from "@/components/pages/mobile-connections-page"
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace-context"
@@ -65,15 +66,27 @@ export function Demo() {
   )
 }
 
+function WorkspaceNavigation({ contained = false }: { contained?: boolean }) {
+  const { page } = useWorkspace()
+  const { me } = useAuth()
+  if (page === "admin" && me?.role === "admin") return <AdminSidebar contained={contained} />
+  if (page === "settings") return <SettingsSidebar contained={contained} />
+  return <AppSidebar contained={contained} />
+}
+
 function DashboardShell() {
+  const { page } = useWorkspace()
   const isMobile = useIsMobile()
 
   if (isMobile) {
     return (
       <>
-        <AppSidebar />
+        <WorkspaceNavigation />
         <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-none bg-background">
-          <WorkspaceMain />
+          <div className="relative flex h-full min-h-0 flex-col">
+            <WorkspaceMain />
+            {(page === "admin" || page === "settings") && <div className="absolute left-3 top-3.5"><DashboardSidebarToggle /></div>}
+          </div>
         </SidebarInset>
       </>
     )
@@ -238,7 +251,7 @@ function DesktopResizableShell() {
               className="aa-desktop-sidebar h-full shrink-0 overflow-hidden"
               style={{ width: Math.max(sidebarWidth, DESKTOP_SIDEBAR_MIN_WIDTH) }}
             >
-              <AppSidebar contained />
+              <WorkspaceNavigation contained />
             </div>
           </ResizablePanel>
           <ResizableHandle
@@ -293,6 +306,8 @@ function WorkspaceMain() {
     page,
     isLoading,
     routeReady,
+    settingsTab,
+    goHome,
     newSessionProjectId,
     firstDevicePromptOpen,
     pairDeviceDialogOpen,
@@ -304,15 +319,17 @@ function WorkspaceMain() {
   const t = useTranslations("dashboard.firstDevice")
   const canRenderBeforeDataLoad = page === "home" && newSessionProjectId === null
   const isAdmin = me?.role === "admin"
-  if (!routeReady || (!canRenderBeforeDataLoad && isLoading)) {
+  React.useEffect(() => {
+    if (routeReady && page === "admin" && me && !isAdmin) goHome()
+  }, [goHome, isAdmin, me, page, routeReady])
+  const independentPage = page === "admin" || (page === "settings" && settingsTab !== "archived-sessions")
+  if (!routeReady || (page === "admin" && !isAdmin) || (!independentPage && !canRenderBeforeDataLoad && isLoading)) {
     return <LoadingState className="h-full bg-background" />
   }
-  const effectivePage = !isAdmin && (page === "dashboard" || page === "team" || page === "service") ? "home" : page
+  const effectivePage = page
   const content =
     effectivePage === "settings" ? <SettingsPage /> :
-    effectivePage === "dashboard" ? <DashboardPage /> :
-    effectivePage === "team" ? <TeamPage /> :
-    effectivePage === "service" ? <ServicePage /> :
+    effectivePage === "admin" ? <AdminPage /> :
     effectivePage === "mobile-connections" ? <MobileConnectionsPage /> :
     effectivePage === "session" ? <SessionView /> :
     effectivePage === "device" ? <DevicePage /> :
