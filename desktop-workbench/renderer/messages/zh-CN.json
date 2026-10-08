@@ -897,7 +897,7 @@
         "消息可能不会立即同步到 {agent} 客户端，通常重启它们后即可刷新同步。",
         "如果你同时在 Agents Anywhere 和 {agent} 客户端中操作此会话，可能导致意料外的结果。"
       ],
-      "takeoverEnableDshDescription": "DSH 现可实时同步 <beta>Beta</beta> Agents Anywhere。启用接管即可发送消息。",
+      "takeoverEnableDshDescription": "DSH 现可<sync>实时同步<beta>Beta</beta></sync> Agents Anywhere。启用接管即可发送消息。",
       "takeoverDisableTitle": "关闭接管？",
       "takeoverDisableDescription": [
         "关闭后会话将回到只读模式，无法继续发送消息。",
