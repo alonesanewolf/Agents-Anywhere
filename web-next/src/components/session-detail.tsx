@@ -1814,7 +1814,7 @@ export function SessionDetail({
             {takeoverIsDsh && takeoverTarget ? (
               <DialogDescription>
                 {tSession.rich("takeoverEnableDshDescription", {
-                  sync: (chunks) => <span className="whitespace-nowrap">{chunks}</span>,
+                  sync: (chunks) => <span className="whitespace-nowrap font-medium text-foreground">{chunks}</span>,
                   beta: (chunks) => (
                     <Badge variant="secondary" className="ml-0.5 h-3.5 px-1 py-0 align-super text-[9px] leading-none">
                       {chunks}
