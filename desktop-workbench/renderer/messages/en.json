@@ -897,7 +897,7 @@
         "Messages may not sync to the {agent} client immediately. Restarting it usually refreshes the sync.",
         "If you operate this session in both Agents Anywhere and the {agent} client at the same time, unexpected results may occur."
       ],
-      "takeoverEnableDshDescription": "DSH now syncs in <sync>real time<beta>Beta</beta></sync> with Agents Anywhere. Enable Takeover to send messages.",
+      "takeoverEnableDshDescription": "DSH now syncs in <sync>real time<beta>Beta</beta></sync>. Enable Takeover to send messages.",
       "takeoverDisableTitle": "Disable Takeover?",
       "takeoverDisableDescription": [
         "After disabling Takeover, the session returns to read-only mode and you cannot send more messages.",
