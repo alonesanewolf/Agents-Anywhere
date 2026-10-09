@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from connector.runtime_protocol import RuntimeProvider
-from connector.runtimes.cli_headless import CodeBuddyProvider, MiniMaxProvider
 from connector.runtimes.claude.provider import ClaudeProvider
+from connector.runtimes.cli_headless import CodeBuddyProvider, MiniMaxProvider
 from connector.runtimes.codex.provider import CodexProvider
 from connector.runtimes.dsh.provider import DshProvider
 

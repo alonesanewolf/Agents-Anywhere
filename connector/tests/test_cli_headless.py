@@ -10,8 +10,10 @@ from typing import Any
 from connector.core.json_kv import JsonKeyValueStore
 from connector.runtime_protocol import RuntimeConfig
 from connector.runtime_protocol.host import RuntimeHostClient
+from connector.runtimes import default_runtime_providers
 from connector.runtimes.cli_headless import HeadlessCliRuntime, HeadlessCliSpec
 from connector.runtimes.cli_headless.provider_config import codebuddy_argv
+from connector.server.capabilities import protocol_capabilities_from_runtime_types
 
 # --------------------------------------------------------------------------
 # Fixtures
@@ -302,3 +304,46 @@ def test_session_registry_survives_restart(tmp_path: Any) -> None:
     sessions = asyncio.run(runtime2.list_sessions())
     assert [s.session_id for s in sessions] == ["s1"]
     assert runtime2._sessions["s1"].cli_session_id == native_id
+
+
+# --------------------------------------------------------------------------
+# Registration and protocol capability projection
+# --------------------------------------------------------------------------
+
+
+def test_default_providers_include_headless_cli_runtimes() -> None:
+    runtimes = [provider.runtime for provider in default_runtime_providers()]
+
+    assert "minimax" in runtimes
+    assert "codebuddy" in runtimes
+
+
+def test_capability_projection_keeps_headless_cli_runtimes() -> None:
+    """Regression guard for connector.server.capabilities.
+
+    A runtime missing from ``KNOWN_RUNTIME_CAPABILITY_IDS`` is projected to zero
+    capabilities even though it is discovered, so the Server rejects every turn
+    with "runtime capability is unavailable: session.send_message" while the
+    runtime itself still answers when driven directly.
+    """
+
+    payload = protocol_capabilities_from_runtime_types(
+        {
+            "runtimeTypes": [
+                {
+                    "runtimeType": runtime,
+                    "available": True,
+                    "configSchema": {"schema": {"type": "object"}},
+                    "capabilities": {"startTurn": True, "attachments": True},
+                }
+                for runtime in ("minimax", "codebuddy")
+            ]
+        }
+    )
+    projected = {(item["runtime"], item["capabilityId"]) for item in payload["capabilities"]}
+
+    assert ("minimax", "session.send_message") in projected
+    assert ("codebuddy", "session.send_message") in projected
+    assert ("minimax", "runtime.attachment") in projected
+    assert ("codebuddy", "runtime.attachment") in projected
+    assert all(item["available"] is True for item in payload["capabilities"])
