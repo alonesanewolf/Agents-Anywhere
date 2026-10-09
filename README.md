@@ -80,6 +80,11 @@
 
 **Agents Anywhere** 是跨设备的开源 Agent 工作台。连接运行 **Codex、Claude Code 或 DeepSeek Harness** 的工作设备，在桌面、手机和 Web 查看会话、回复请求、管理文件与终端。Agent 在连接的工作设备上执行任务。
 
+> **本 fork 补充（非上游内容）**：这个分支在以上三个 Runtime 之外，额外接入了
+> **MiniMax Code**（`mcode`）与 **CodeBuddy**（`codebuddy`）。上游原文的 Runtime 列表不含这两个，
+> 因此下面凡是列举 Runtime 的位置，都以此注记为准。详见[顶部说明](#-这是-alonesanewolf-的-forkminimax-code--codebuddy-接入)
+> 与 [PR #285](https://github.com/anywhere-labs/Agents-Anywhere/pull/285)。
+
 ## 下载与入口
 
 在工作设备上安装桌面客户端，再通过手机、平板或 Web 访问。Linux 和无图形界面的服务器可使用 Connector CLI 接入。各客户端均可连接 Cloud 或自托管服务。
@@ -136,6 +141,13 @@ macOS、Windows 和 Android 的下载文件均为 **Agents Anywhere** 安装包�
 | **审批操作与回复请求** | 响应工具审批和输入请求；按 Runtime 能力打断或继续任务。 |
 | **查看文件与使用终端** | 浏览与预览文件、上传下载附件，打开远程 shell 和交互式终端。 |
 | **配置 Agent** | 配置 Codex、Claude Code 和 DSH；根据对应 Runtime 支持的能力选择模型、权限与操作。 |
+
+> **本 fork 补充**：上表「配置 Agent」一行在上游只列出 Codex、Claude Code 和 DSH。本 fork 另加
+> **MiniMax Code** 与 **CodeBuddy** 两个 Runtime，它们**支持**：流式输出、思考过程可见、工具调用进入
+> 时间线、多轮上下文（连接器重启后可续聊）、附件、模型选择（CodeBuddy 10 项，含来自
+> `~/.codebuddy/models.json` 的自定义模型；MiniMax 由 CLI 自身决定）。它们**不支持**：权限审批与
+> 输入请求应答、斜杠命令、会话发现、插话（steer）——两者以全自动模式运行，且 MiniMax Code 的打断走
+> ACP `session/cancel`（报「已取消」），CodeBuddy 的打断是结束进程（该轮记为失败）。
 
 Runtime 是工作设备上运行和连接 Agent 的组件。模型账号和调用费用遵循所使用 Agent 的规则。各 Runtime 的能力存在差异，具体操作以客户端显示为准。[DSH 接入说明 →](dsh-bridge-next/README.md)
 

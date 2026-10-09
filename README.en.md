@@ -1,3 +1,28 @@
+> **Fork note (not upstream content).** This fork adds two more connector runtimes
+> alongside Codex, Claude Code and DSH: **MiniMax Code** (`mcode`) and **CodeBuddy**
+> (`codebuddy`). Upstream `main` is untouched; the proposed work lives on the
+> `feat/headless-cli-runtimes` branch →
+> [PR #285](https://github.com/anywhere-labs/Agents-Anywhere/pull/285).
+>
+> - Streaming output for both CLIs, thinking surfaced as reasoning items, tool calls
+>   in the timeline, multi-turn context persisted across connector restarts, and
+>   staged attachments.
+> - Model selection: 10 entries for CodeBuddy (6 built-in plus `custom-local:` models
+>   from `~/.codebuddy/models.json`); MiniMax Code uses the model its CLI is configured
+>   with.
+> - MiniMax Code runs on a **persistent `mcode acp` session**, so the CLI's setup cost
+>   is paid once: measured turn 2 **5.03 s** instead of **20.80 s**.
+> - Three real defects found by wiring this to a Server are fixed with regression
+>   tests: a missing session-capability override (every follow-up message 409'd), a
+>   snapshot that claimed to be complete (would wipe stored history on reconnect), and
+>   a missing capability-whitelist entry (published zero capabilities).
+> - Not supported: approvals and input requests, slash commands, session discovery and
+>   steering — both kernels run full-auto.
+>
+> Full write-up: [`connector/docs/headless-cli-runtimes.md`](https://github.com/alonesanewolf/Agents-Anywhere/blob/feat/headless-cli-runtimes/connector/docs/headless-cli-runtimes.md) ·
+> [diff](https://github.com/alonesanewolf/Agents-Anywhere/compare/main...feat/headless-cli-runtimes) ·
+> Chinese overview on the repository home page.
+
 <p align="center">
   <a href="https://www.agents-anywhere.com/en"><img src="docs/images/readme-hero-en.webp" alt="Agents Anywhere: an agent workbench across your devices. Supports Codex, Claude Code and DeepSeek Harness, with more agents coming soon." width="100%"></a>
 </p>
@@ -22,6 +47,11 @@
 </p>
 
 **Agents Anywhere** is an open-source agent workbench across your devices. Connect a work machine running **Codex, Claude Code or DeepSeek Harness**, then view sessions, respond to requests, manage files and use terminals from desktop, mobile and Web. Agents execute tasks on the connected work machine.
+
+> **Fork note:** this branch additionally ships **MiniMax Code** (`mcode`) and
+> **CodeBuddy** (`codebuddy`) runtimes; the upstream list above does not include them.
+> See the note at the top of this page and
+> [PR #285](https://github.com/anywhere-labs/Agents-Anywhere/pull/285).
 
 ## Downloads and access
 
