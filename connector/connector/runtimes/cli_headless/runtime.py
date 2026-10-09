@@ -5,7 +5,7 @@ import json
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -108,6 +108,9 @@ class _HeadlessSession:
     active_turn_id: str | None = None
     # Native CLI session id captured from stream events; enables multi-turn resume.
     cli_session_id: str | None = None
+    # Model chosen for this session through session.selections.update. The CLI
+    # is per-turn, so the selection is remembered here and passed with --model.
+    model: str | None = None
 
 
 class HeadlessCliRuntime(AgentRuntime):
@@ -374,14 +377,71 @@ class HeadlessCliRuntime(AgentRuntime):
         staged = await materialize_headless_attachments(self.host, session_id, attachments)
         return self._launch_turn(rec, content, client_message_id, selections, staged)
 
-    def _resolve_model(self, selections=None) -> str | None:
-        """Session selection wins; fall back to the configured default model."""
+    async def update_session_selections(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        selections: Mapping[str, str | None],
+    ) -> RuntimeOperationResult:
+        """Remember the model chosen for this session.
+
+        The Server calls this when the user picks a model, and it is the only way
+        a selection reaches a runtime whose process is created per turn. Without
+        it the app's model picker silently does nothing and every session keeps
+        using the configured default.
+        """
+
+        rec = self._sessions.get(session_id)
+        if rec is None:
+            raise RuntimeInvalidRequestError(
+                f"{self.spec.display_name} runtime has no session {session_id!r}"
+            )
+        if "model" not in selections:
+            return RuntimeOperationResult(
+                ok=True,
+                result={
+                    "sessionId": session_id,
+                    "externalSessionId": rec.external_session_id,
+                    "selections": {"model": rec.model},
+                },
+            )
+        requested = selections.get("model")
+        model_ids = {model_id for model_id, _title in self.spec.models}
+        if requested is None:
+            rec.model = None
+        elif isinstance(requested, str) and requested in model_ids:
+            rec.model = requested
+        else:
+            return RuntimeOperationResult(
+                ok=False,
+                code="model_unknown",
+                message=f"{self.spec.key} does not offer model {requested!r}",
+                result={"sessionId": session_id},
+            )
+        self._persist_sessions()
+        return RuntimeOperationResult(
+            ok=True,
+            result={
+                "sessionId": session_id,
+                "externalSessionId": rec.external_session_id,
+                "selections": {"model": rec.model},
+            },
+        )
+
+    def _resolve_model(
+        self,
+        selections=None,
+        session_model: str | None = None,
+    ) -> str | None:
+        """Turn selection wins, then the session selection, then the configured default."""
         model_ids = {model_id for model_id, _title in self.spec.models}
         selected = None
         if isinstance(selections, dict):
             candidate = selections.get("model")
             if isinstance(candidate, str) and candidate in model_ids:
                 selected = candidate
+        if selected is None and session_model in model_ids:
+            selected = session_model
         if selected is None:
             configured = self.config.values.get("defaultModel")
             if isinstance(configured, str) and configured in model_ids:
@@ -403,7 +463,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 message="This session already has a running turn",
                 result={"sessionId": rec.session_id},
             )
-        model = self._resolve_model(selections)
+        model = self._resolve_model(selections, rec.model)
         rec.turn_task = asyncio.create_task(
             self._run_turn(rec, content, client_message_id, model, attachments),
             name=f"{self.spec.key}-turn-{rec.session_id}",
@@ -869,6 +929,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 title=record.get("title"),
                 cwd=record.get("cwd"),
                 cli_session_id=record.get("cli_session_id"),
+                model=record.get("model"),
             )
 
     def _persist_sessions(self) -> None:
@@ -879,6 +940,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 "title": rec.title,
                 "cwd": rec.cwd,
                 "cli_session_id": rec.cli_session_id,
+                "model": rec.model,
             }
             for rec in self._sessions.values()
         ]

@@ -13,6 +13,7 @@ from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes import default_runtime_providers
 from connector.runtimes.cli_headless import HeadlessCliRuntime, HeadlessCliSpec
 from connector.runtimes.cli_headless.provider_config import codebuddy_argv
+from connector.runtimes.cli_headless.runtime import _HeadlessSession
 from connector.server.capabilities import protocol_capabilities_from_runtime_types
 
 # --------------------------------------------------------------------------
@@ -393,3 +394,53 @@ def test_snapshot_never_claims_to_replace_the_stored_timeline(tmp_path: Any) -> 
     )
 
     assert snapshot.complete is False
+
+
+def test_session_model_selection_persists_and_reaches_argv(tmp_path: Any) -> None:
+    """The app's model picker only works through session.selections.update.
+
+    Without it the Server gets runtime_unsupported, the picker silently does
+    nothing, and every turn keeps using the configured default model.
+    """
+
+    kv_path = os.path.join(str(tmp_path), "kv.json")
+    spec = make_spec(MCODE_STREAM)  # models: m-fast, m-full
+    runtime = HeadlessCliRuntime(
+        config=RuntimeConfig(
+            runtime="fakecli", revision=1, values={"defaultModel": "m-full"}
+        ),
+        host=FakeHost(JsonKeyValueStore(kv_path)),
+        spec=spec,
+    )
+    runtime._sessions["s1"] = _HeadlessSession(
+        session_id="s1", external_session_id="ext-s1", title=None, cwd=None
+    )
+
+    async def scenario() -> None:
+        accepted = await runtime.update_session_selections(
+            "s1", None, {"model": "m-fast"}
+        )
+        assert accepted.ok
+        assert runtime._sessions["s1"].model == "m-fast"
+
+        # An unknown id is rejected instead of silently stored.
+        rejected = await runtime.update_session_selections(
+            "s1", None, {"model": "nope"}
+        )
+        assert rejected.ok is False
+        assert rejected.code == "model_unknown"
+        assert runtime._sessions["s1"].model == "m-fast"
+
+    asyncio.run(scenario())
+    # The stored selection outranks the configured default on the next turn.
+    assert runtime._resolve_model(None, runtime._sessions["s1"].model) == "m-fast"
+    # A restored registry keeps the selection, so it survives a connector restart.
+    runtime._persist_sessions()
+    restored = HeadlessCliRuntime(
+        config=RuntimeConfig(
+            runtime="fakecli", revision=1, values={"defaultModel": "m-full"}
+        ),
+        host=FakeHost(JsonKeyValueStore(kv_path)),
+        spec=spec,
+    )
+    assert restored._sessions["s1"].model == "m-fast"
