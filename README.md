@@ -1,3 +1,60 @@
+> ## 🔧 这是 alonesanewolf 的 fork：MiniMax Code + CodeBuddy 接入
+>
+> **上游 `main` 原样未改。** 全部工作在工作分支
+> [`feat/headless-cli-runtimes`](https://github.com/alonesanewolf/Agents-Anywhere/tree/feat/headless-cli-runtimes)，
+> 已向上游提交 PR **[anywhere-labs/Agents-Anywhere#285](https://github.com/anywhere-labs/Agents-Anywhere/pull/285)**。
+> 本分支只是为了让你打开仓库首页就能读到这份说明，不参与 PR。
+>
+> ### 加了什么
+>
+> - 两个原生 runtime：**MiniMax Code**（`mcode`）与 **CodeBuddy**（`codebuddy`），代码在
+>   `connector/connector/runtimes/cli_headless/`，注册进默认 provider registry。
+> - **流式出字**（CodeBuddy 与 mcode 两套 NDJSON schema + 纯文本回退，首个增量立即上屏）、
+>   **thinking 上屏**、**工具调用入 timeline**（按 id upsert 保序）、
+>   **多轮上下文**（原生会话 id 落 KV，连接器重启后仍可续聊）、
+>   **附件**（`mcode --file`；CodeBuddy 走提示词注记）。
+> - **模型选择**：CodeBuddy 10 项（6 个内置 + 4 个来自 `~/.codebuddy/models.json` 的 `custom-local:`）；
+>   MiniMax 为合成 `default` 项。`defaultModel` 配置项 + 会话级选择持久化。
+> - **MiniMax 常驻 ACP 会话**（`mcode acp`）：CLI 的启动/鉴权成本由每轮一次变为只付一次；
+>   `session/load` 支持重启续聊、`session/cancel` 优雅打断（报 `cancelled` 而非 failed）、
+>   ACP 不可用时自动回退到一次性模式。
+>
+> ### 修掉三个真实缺陷
+>
+> 三个都只有「真机 + 真服务器」才会暴露，连接器自己的测试全过：
+>
+> 1. `get_session_capabilities` 未重写 → 会话级能力为空 → 服务器对**后续每条消息**返回 409
+>    `session capability is unavailable`（只有第一条能发出去）。
+> 2. 时间线快照 `complete=True`（所有 runtime 里只有它这么干）→ 重连时服务器会删除快照中不存在的历史，
+>    而该内核时间线仅存在内存里，等于清空会话记录。
+> 3. 缺 `KNOWN_RUNTIME_CAPABILITY_IDS` 白名单项 → 该 runtime 对外发布**零能力**，服务器拒绝所有回合。
+>
+> ### 实测性能
+>
+> 同一提示、真实 CLI、经本内核自己的代码路径：
+>
+> | | 一次性（每轮起进程） | 常驻 ACP |
+> | --- | --- | --- |
+> | 第一轮（含建立会话） | 35.23s | 17.29s |
+> | **第二轮（启动成本已付）** | **20.80s** | **5.03s** |
+>
+> 试过但**无效**的提速手段也一并记录了：`--verbose`、`--strict-mcp-config`、`--setting-sources`、
+> CodeBuddy `--effort` 各档、`mcode --prompt-mode coding` 均为噪声；只有 `mcode --mode lightweight`
+> 稳定快 2–4 秒，但代价是上下文变小，故未默认启用。
+>
+> ### 验证
+>
+> `connector/tests/test_cli_headless.py` **16 passed**；整套 `pytest` 与上游 `main` 同为
+> 25 条环境性失败（1059 passed），本分支未引入新失败；改动文件 `ruff` 全过。
+>
+> **详细文档** → [`connector/docs/headless-cli-runtimes.md`](https://github.com/alonesanewolf/Agents-Anywhere/blob/feat/headless-cli-runtimes/connector/docs/headless-cli-runtimes.md)
+> · **逐行对照** → [compare `main...feat/headless-cli-runtimes`](https://github.com/alonesanewolf/Agents-Anywhere/compare/main...feat/headless-cli-runtimes)
+> · **提交列表** → [commits](https://github.com/alonesanewolf/Agents-Anywhere/commits/feat/headless-cli-runtimes)
+>
+> ---
+>
+> *以上为本 fork 附加说明，不属于上游内容，不会随 PR 提交。以下为上游 README 原文。*
+
 <p align="center">
   <a href="https://www.agents-anywhere.com"><img src="docs/images/readme-hero-zh.webp" alt="Agents Anywhere：跨设备的开源 Agent 工作台。支持 Codex、Claude Code 和 DeepSeek Harness，更多 Agent 即将支持。" width="100%"></a>
 </p>
