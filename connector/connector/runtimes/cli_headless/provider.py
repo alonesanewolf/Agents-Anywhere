@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import shutil
 import sys
 from typing import Any
 
@@ -12,26 +10,20 @@ from connector.runtime_protocol import (
     RuntimeTypeDescriptor,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
+from connector.runtimes.cli_headless import catalogs
+from connector.runtimes.cli_headless.discovery import (
+    codebuddy_available,
+    minimax_available,
+)
+from connector.runtimes.cli_headless.provider_config import (
+    CAPABILITIES,
+    CONFIG_SCHEMA_REVISION,
+    codebuddy_argv,
+    minimax_argv,
+    shared_config_schema,
+    with_default_model,
+)
 from connector.runtimes.cli_headless.runtime import HeadlessCliRuntime, HeadlessCliSpec
-
-CONFIG_SCHEMA_REVISION = 2
-
-_CAPABILITIES: dict[str, bool] = {
-    "modelCatalog": True,
-    "permissionCatalog": False,
-    "sessionDiscovery": False,
-    "sessionSnapshot": True,
-    "sessionState": True,
-    "sessionNotices": False,
-    "createAndStartSession": True,
-    "startTurn": True,
-    "steerTurn": False,
-    "interruptTurn": True,
-    "commands": False,
-    "interactions": False,
-    "attachments": False,
-    "ipc": False,
-}
 
 
 class HeadlessCliProvider(RuntimeProvider):
@@ -69,7 +61,7 @@ class HeadlessCliProvider(RuntimeProvider):
             available=available,
             recommended=False,
             recommendation_rank=5,
-            capabilities=dict(_CAPABILITIES),
+            capabilities=dict(CAPABILITIES),
             reason=None if available else f"{self._spec.display_name} CLI not found",
             config_schema=await self.get_config_schema(),
             instance_policy="single",
@@ -78,39 +70,14 @@ class HeadlessCliProvider(RuntimeProvider):
         )
 
     async def get_config_schema(self) -> RuntimeConfigSchema:
-        properties: dict[str, Any] = {
-            "workspaceDir": {
-                "type": "string",
-                "description": "Default working directory for new sessions",
-            },
-        }
-        ui_schema: dict[str, Any] = {
-            "order": ["defaultModel", "workspaceDir"],
-            "workspaceDir": {"component": "path"},
-        }
-        defaults: dict[str, Any] = {}
-        if self._spec.models:
-            properties["defaultModel"] = {
-                "type": "string",
-                "enum": [model_id for model_id, _title in self._spec.models],
-                "description": "新会话默认使用的模型",
-            }
-            ui_schema["defaultModel"] = {
-                "component": "select",
-                "options": [
-                    {"value": model_id, "label": title}
-                    for model_id, title in self._spec.models
-                ],
-            }
-            defaults["defaultModel"] = self._spec.models[0][0]
+        schema, ui_schema, defaults = shared_config_schema()
+        schema, ui_schema, defaults = with_default_model(
+            schema, ui_schema, defaults, self._spec.models
+        )
         return RuntimeConfigSchema(
             runtime=self._spec.key,
             revision=CONFIG_SCHEMA_REVISION,
-            schema={
-                "type": "object",
-                "additionalProperties": False,
-                "properties": properties,
-            },
+            schema=schema,
             ui_schema=ui_schema,
             defaults=defaults,
         )
@@ -119,6 +86,8 @@ class HeadlessCliProvider(RuntimeProvider):
         self,
         values: dict[str, Any],
     ) -> RuntimeConfig:
+        import os
+
         raw = dict(values or {})
         workspace = raw.get("workspaceDir")
         if isinstance(workspace, str) and workspace.strip():
@@ -149,58 +118,6 @@ class HeadlessCliProvider(RuntimeProvider):
         return HeadlessCliRuntime(config=config, host=host, spec=self._spec)
 
 
-# ---------------------------------------------------------------------- MiniMax
-
-
-def _minimax_cli() -> str | None:
-    """Locate the MiniMax Code CLI (`mcode`), npm-global install or PATH.
-
-    Set MINIMAX_CLI_JS to point at a specific cli.js entrypoint.
-    """
-    override = os.environ.get("MINIMAX_CLI_JS")
-    if override and os.path.isfile(override):
-        return override
-    return shutil.which("mcode")
-
-
-def _minimax_available() -> bool:
-    cli = _minimax_cli()
-    if cli is None:
-        return False
-    if cli.lower().endswith(".js"):
-        return shutil.which("node") is not None
-    return True
-
-
-def _minimax_argv(
-    prompt: str, workspace: str | None, model: str | None, cli_session: str | None
-) -> list[str] | None:
-    cli = _minimax_cli()
-    if cli is None:
-        return None
-    head: list[str]
-    if cli.lower().endswith(".js"):
-        node = shutil.which("node")
-        if node is None:
-            return None
-        head = [node, cli]
-    elif cli.lower().endswith((".cmd", ".bat")):
-        head = ["cmd", "/d", "/c", cli]
-    else:
-        head = [cli]
-    argv = head + [
-        "exec",
-        "--prompt-mode",
-        "work",
-        "--output-format",
-        "stream-json",
-    ]
-    if cli_session:
-        argv += ["--session", cli_session]
-    argv.append(prompt)
-    return argv
-
-
 class MiniMaxProvider(HeadlessCliProvider):
     def __init__(self) -> None:
         super().__init__(
@@ -208,58 +125,10 @@ class MiniMaxProvider(HeadlessCliProvider):
                 key="minimax",
                 display_name="MiniMax",
                 description="MiniMax Code (mcode exec --prompt-mode work)",
-                available=_minimax_available,
-                build_argv=_minimax_argv,
+                available=minimax_available,
+                build_argv=minimax_argv,
             )
         )
-
-
-# -------------------------------------------------------------------- CodeBuddy
-
-
-def _codebuddy_cli() -> str | None:
-    return shutil.which("codebuddy")
-
-
-def _codebuddy_available() -> bool:
-    return _codebuddy_cli() is not None
-
-
-def _codebuddy_argv(
-    prompt: str, workspace: str | None, model: str | None, cli_session: str | None
-) -> list[str] | None:
-    cli = _codebuddy_cli()
-    if cli is None:
-        return None
-    argv = [
-        cli,
-        "-p",
-        "-y",
-        "--output-format",
-        "stream-json",
-        "--include-partial-messages",
-        "--verbose",
-    ]
-    if model:
-        argv += ["--model", model]
-    if cli_session:
-        # First turn: session does not exist yet -> created with the same id
-        # thanks to --resume-create-missing. Later turns resume it.
-        argv += ["--resume", cli_session, "--resume-create-missing"]
-    argv.append(prompt)
-    if cli.lower().endswith((".cmd", ".bat")):
-        return ["cmd", "/d", "/c"] + argv
-    return argv
-
-
-_CODEBUDDY_MODELS: tuple[tuple[str, str], ...] = (
-    ("hy4-preview", "Hy4 Preview（默认·推理档·最强但慢）"),
-    ("glm-5.3-flashx", "GLM-5.3 FlashX（最快）"),
-    ("glm-5.3-flash", "GLM-5.3 Flash（快）"),
-    ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash（快）"),
-    ("glm-5.2", "GLM-5.2（均衡）"),
-    ("kimi-k2.8-preview", "Kimi K2.8 Preview"),
-)
 
 
 class CodeBuddyProvider(HeadlessCliProvider):
@@ -269,8 +138,8 @@ class CodeBuddyProvider(HeadlessCliProvider):
                 key="codebuddy",
                 display_name="CodeBuddy",
                 description="CodeBuddy CLI (codebuddy -p -y; run `codebuddy /login` once first)",
-                available=_codebuddy_available,
-                build_argv=_codebuddy_argv,
-                models=_CODEBUDDY_MODELS,
+                available=codebuddy_available,
+                build_argv=codebuddy_argv,
+                models=catalogs.codebuddy_models(),
             )
         )

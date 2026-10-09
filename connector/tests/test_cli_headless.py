@@ -11,7 +11,7 @@ from connector.core.json_kv import JsonKeyValueStore
 from connector.runtime_protocol import RuntimeConfig
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.cli_headless import HeadlessCliRuntime, HeadlessCliSpec
-from connector.runtimes.cli_headless.provider import _codebuddy_argv
+from connector.runtimes.cli_headless.provider_config import codebuddy_argv
 
 # --------------------------------------------------------------------------
 # Fixtures
@@ -19,27 +19,15 @@ from connector.runtimes.cli_headless.provider import _codebuddy_argv
 
 CODEBUDDY_STREAM = [
     '{"type":"system","subtype":"init","session_id":"cb-123"}',
-    (
-        '{"type":"stream_event","event":{"type":"content_block_start","index":0,'
-        '"content_block":{"type":"text","text":""}}}'
-    ),
-    (
-        '{"type":"stream_event","event":{"type":"content_block_delta","index":0,'
-        '"delta":{"type":"text_delta","text":"hello"}}}'
-    ),
-    (
-        '{"type":"stream_event","event":{"type":"content_block_delta","index":0,'
-        '"delta":{"type":"text_delta","text":" world"}}}'
-    ),
-    (
-        '{"type":"stream_event","event":{"type":"content_block_start","index":1,'
-        '"content_block":{"type":"tool_use","id":"t1","name":"Read"}}}'
-    ),
-    (
-        '{"type":"stream_event","event":{"type":"content_block_delta","index":1,'
-        '"delta":{"type":"input_json_delta","partial_json":"{\\"file_path\\": \\"a.txt\\"}"}}}'
-    ),
-    '{"type":"stream_event","event":{"type":"content_block_stop","index":1}}',
+    '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}',
+    '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}}',
+    '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}',
+    '{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}',
+    '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"hello"}}}',
+    '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" world"}}}',
+    '{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"t1","name":"Read"}}}',
+    '{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"file_path\\": \\"a.txt\\"}"}}}',
+    '{"type":"stream_event","event":{"type":"content_block_stop","index":2}}',
     '{"type":"assistant","message":{"content":[{"type":"text","text":"hello world done"}]}}',
     '{"type":"result","subtype":"success","is_error":false,"result":"hello world done"}',
 ]
@@ -47,18 +35,9 @@ CODEBUDDY_STREAM = [
 MCODE_STREAM = [
     '{"schemaVersion":1,"sequence":1,"type":"session.started","sessionId":"mvs_abc"}',
     '{"schemaVersion":1,"sequence":2,"type":"turn.started"}',
-    (
-        '{"schemaVersion":1,"sequence":3,"type":"item.started",'
-        '"item":{"id":"i1","type":"agent_message","contentDelta":"this is "}}'
-    ),
-    (
-        '{"schemaVersion":1,"sequence":4,"type":"item.updated",'
-        '"item":{"id":"i1","type":"agent_message","contentDelta":"a delta"}}'
-    ),
-    (
-        '{"schemaVersion":1,"sequence":5,"type":"item.completed",'
-        '"item":{"id":"i1","type":"agent_message","content":"this is the full answer."}}'
-    ),
+    '{"schemaVersion":1,"sequence":3,"type":"item.started","item":{"id":"i1","type":"agent_message","contentDelta":"this is "}}',
+    '{"schemaVersion":1,"sequence":4,"type":"item.updated","item":{"id":"i1","type":"agent_message","contentDelta":"a delta"}}',
+    '{"schemaVersion":1,"sequence":5,"type":"item.completed","item":{"id":"i1","type":"agent_message","content":"this is the full answer."}}',
     '{"schemaVersion":1,"sequence":6,"type":"turn.completed","usage":{}}',
 ]
 
@@ -104,6 +83,7 @@ def make_spec(lines: list[str]) -> HeadlessCliSpec:
         workspace: str | None,
         model: str | None,
         cli_session: str | None,
+        attachments: tuple = (),
     ) -> list[str] | None:
         return [sys.executable, "-c", inner]
 
@@ -158,6 +138,12 @@ def test_codebuddy_stream_json_turn(tmp_path: Any) -> None:
     # The final assistant event carries the authoritative full text.
     assert assistants[-1].content["text"] == "hello world done"
     assert assistants[-1].status == "done"
+    reasoning = [
+        i
+        for i in snapshot.items
+        if i.type == "system" and i.content.get("kind") == "reasoning"
+    ]
+    assert reasoning and "pondering" in reasoning[-1].content["text"]
     tools = [i for i in snapshot.items if i.type == "tool"]
     assert len(tools) == 1
     assert tools[0].content["title"] == "Read"
@@ -193,7 +179,11 @@ def test_nonzero_exit_fails_turn(tmp_path: Any) -> None:
         display_name="Fake",
         description="t",
         available=lambda: True,
-        build_argv=lambda prompt, workspace, model, cli_session: [sys.executable, "-c", inner],
+        build_argv=lambda prompt, workspace, model, cli_session, attachments: [
+            sys.executable,
+            "-c",
+            inner,
+        ],
     )
     kv_path = os.path.join(str(tmp_path), "kv.json")
     host = FakeHost(JsonKeyValueStore(kv_path))
@@ -229,6 +219,7 @@ def test_model_selection_prefers_session_selection(tmp_path: Any) -> None:
         workspace: str | None,
         model: str | None,
         cli_session: str | None,
+        attachments: tuple = (),
     ) -> list[str] | None:
         seen.append(model)
         return [sys.executable, "-c", "pass"]
@@ -257,7 +248,7 @@ def test_model_selection_prefers_session_selection(tmp_path: Any) -> None:
 
 
 def test_codebuddy_argv_streaming_and_resume() -> None:
-    fresh = _codebuddy_argv("hi", None, "m-fast", None)
+    fresh = codebuddy_argv("hi", None, "m-fast", None)
     assert fresh is not None
     joined = " ".join(fresh)
     assert "--output-format stream-json" in joined
@@ -265,7 +256,7 @@ def test_codebuddy_argv_streaming_and_resume() -> None:
     assert "--model m-fast" in joined
     assert "--resume" not in joined
 
-    resumed = _codebuddy_argv("hi", None, None, "sess-1")
+    resumed = codebuddy_argv("hi", None, None, "sess-1")
     assert resumed is not None
     joined = " ".join(resumed)
     assert "--resume sess-1" in joined

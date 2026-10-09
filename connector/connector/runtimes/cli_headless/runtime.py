@@ -15,6 +15,8 @@ from connector.runtime_protocol import (
     ErrorSystemContent,
     MarkdownMessageContent,
     MessageTimelineItem,
+    ReasoningSystemContent,
+    RuntimeAttachment,
     RuntimeCapability,
     RuntimeCapabilitySet,
     RuntimeConfig,
@@ -38,6 +40,10 @@ from connector.runtime_protocol import (
     TurnStartTimelineItem,
 )
 from connector.runtime_protocol.host import RuntimeHostClient, runtime_kv_store
+from connector.runtimes.cli_headless.attachments import (
+    HeadlessTurnAttachment,
+    materialize_headless_attachments,
+)
 
 MAX_OUTPUT_CHARS = 200_000
 TURN_TIMEOUT_SECONDS = 1800
@@ -59,6 +65,10 @@ class _StreamState:
     last_flush: float = 0.0
     legacy: bool = False
     error: str | None = None
+    thinking: str = ""
+    thinking_published: int = 0
+    thinking_revision: int = 0
+    thinking_order_seq: int | None = None
     tool_blocks: dict[Any, dict[str, Any]] = field(default_factory=dict)
     tool_orders: dict[str, int] = field(default_factory=dict)
 
@@ -179,6 +189,12 @@ class HeadlessCliRuntime(AgentRuntime):
                     runtime=self.spec.key,
                     connector_id=self.host.connector_id,
                 ),
+                RuntimeCapability(
+                    capability_id="runtime.attachment",
+                    scope="runtime",
+                    runtime=self.spec.key,
+                    connector_id=self.host.connector_id,
+                ),
             ),
             metadata={"source": "cli_headless.static"},
         )
@@ -290,7 +306,8 @@ class HeadlessCliRuntime(AgentRuntime):
                 metadata={"source": f"{self.spec.key}.session/create"},
             )
             self._persist_sessions()
-        return self._launch_turn(rec, content, client_message_id, selections)
+        staged = await materialize_headless_attachments(self.host, session_id, attachments)
+        return self._launch_turn(rec, content, client_message_id, selections, staged)
 
     async def start_turn(
         self,
@@ -298,7 +315,7 @@ class HeadlessCliRuntime(AgentRuntime):
         external_session_id: str | None,
         content: str,
         selections=None,
-        attachments: tuple = (),
+        attachments: tuple[RuntimeAttachment, ...] = (),
         client_message_id: str | None = None,
         cwd: str | None = None,
     ) -> RuntimeOperationResult:
@@ -308,7 +325,8 @@ class HeadlessCliRuntime(AgentRuntime):
             raise RuntimeInvalidRequestError(
                 f"{self.spec.display_name} runtime has no session {session_id!r}"
             )
-        return self._launch_turn(rec, content, client_message_id, selections)
+        staged = await materialize_headless_attachments(self.host, session_id, attachments)
+        return self._launch_turn(rec, content, client_message_id, selections, staged)
 
     def _resolve_model(self, selections=None) -> str | None:
         """Session selection wins; fall back to the configured default model."""
@@ -330,6 +348,7 @@ class HeadlessCliRuntime(AgentRuntime):
         content: str,
         client_message_id: str | None,
         selections=None,
+        attachments: tuple[HeadlessTurnAttachment, ...] = (),
     ) -> RuntimeOperationResult:
         if rec.turn_task is not None and not rec.turn_task.done():
             return RuntimeOperationResult(
@@ -340,7 +359,7 @@ class HeadlessCliRuntime(AgentRuntime):
             )
         model = self._resolve_model(selections)
         rec.turn_task = asyncio.create_task(
-            self._run_turn(rec, content, client_message_id, model),
+            self._run_turn(rec, content, client_message_id, model, attachments),
             name=f"{self.spec.key}-turn-{rec.session_id}",
         )
         return RuntimeOperationResult(
@@ -376,6 +395,7 @@ class HeadlessCliRuntime(AgentRuntime):
         content: str,
         client_message_id: str | None,
         model: str | None = None,
+        attachments: tuple[HeadlessTurnAttachment, ...] = (),
     ) -> None:
         session_id = rec.session_id
         turn_id = uuid.uuid4().hex
@@ -389,7 +409,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 status="running",
                 metadata={"source": f"{self.spec.key}.turn/started"},
             )
-            argv = self.spec.build_argv(content, rec.cwd, model, rec.cli_session_id)
+            argv = self.spec.build_argv(content, rec.cwd, model, rec.cli_session_id, attachments)
             if argv is None:
                 raise RuntimeUnavailableError(
                     f"{self.spec.display_name} CLI was not found on this machine"
@@ -443,7 +463,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 raw = await asyncio.wait_for(
                     proc.stdout.readline(), timeout=min(remaining, READ_SLICE_SECONDS)
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             if not raw:
                 break
@@ -578,6 +598,11 @@ class HeadlessCliRuntime(AgentRuntime):
             if delta_type == "text_delta":
                 state.text = _append_bounded(state.text, delta.get("text", ""))
                 await self._flush_assistant(rec, turn_id, state)
+            elif delta_type == "thinking_delta":
+                # Surface the model's reasoning the way the Claude runtime does,
+                # so the waiting phase of a reasoning model is visible.
+                state.thinking = _append_bounded(state.thinking, delta.get("thinking", ""))
+                await self._flush_reasoning(rec, turn_id, state)
             elif delta_type == "input_json_delta":
                 block = state.tool_blocks.get(index)
                 if block is not None:
@@ -620,6 +645,43 @@ class HeadlessCliRuntime(AgentRuntime):
         )
         state.published = len(state.text)
         state.last_flush = now
+
+    async def _flush_reasoning(
+        self,
+        rec: _HeadlessSession,
+        turn_id: str,
+        state: _StreamState,
+    ) -> None:
+        now = time.monotonic()
+        grown = len(state.thinking) - state.thinking_published
+        due = now - state.last_flush >= STREAM_FLUSH_SECONDS
+        if grown < STREAM_FLUSH_CHARS and not due:
+            return
+        state.thinking_revision += 1
+        item_id = f"{rec.session_id}:{turn_id}:reasoning"
+        if state.thinking_order_seq is None:
+            state.thinking_order_seq = rec.next_order
+            rec.next_order += 1
+        reasoning = SystemTimelineItem(
+            id=item_id,
+            type="system",
+            status="inProgress",
+            content=ReasoningSystemContent(text=state.thinking),
+            source=TimelineSource(
+                runtime=self.spec.key,
+                external_session_id=rec.external_session_id,
+                turn_id=turn_id,
+                event="thinking",
+            ),
+            turn_id=turn_id,
+            revision=state.thinking_revision,
+        )
+        platform_item = reasoning.to_platform_item(rec.session_id, state.thinking_order_seq)
+        rec.items = [existing for existing in rec.items if existing.id != item_id]
+        rec.items.append(platform_item)
+        state.thinking_published = len(state.thinking)
+        state.last_flush = now
+        await self.host.timeline_item_upsert(platform_item)
 
     async def _publish_cli_tool_item(
         self,
