@@ -13,7 +13,7 @@ from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes import default_runtime_providers
 from connector.runtimes.cli_headless import HeadlessCliRuntime, HeadlessCliSpec
 from connector.runtimes.cli_headless.provider_config import codebuddy_argv
-from connector.runtimes.cli_headless.runtime import _HeadlessSession
+from connector.runtimes.cli_headless.runtime import DEFAULT_MODEL_ID, _HeadlessSession
 from connector.server.capabilities import protocol_capabilities_from_runtime_types
 
 # --------------------------------------------------------------------------
@@ -627,3 +627,35 @@ def test_acp_unavailable_falls_back_to_one_process_per_turn(tmp_path: Any) -> No
         item for item in snapshot.items if item.type == "message" and item.role == "assistant"
     ]
     assert assistants[-1].content["text"] == "this is the full answer."
+
+
+def test_cli_owned_model_choice_accepts_the_synthetic_default(tmp_path: Any) -> None:
+    """The app echoes the catalog's synthetic entry back on every turn.
+
+    Rejecting it fails the whole message, not just the selection: the Server
+    turns an ``ok=false`` selection result into an upstream error.
+    """
+
+    spec = acp_spec()
+    assert spec.models == (), "this kernel lets the CLI own model choice"
+    _host, runtime = make_acp_runtime(tmp_path, spec)
+    runtime._sessions["s1"] = _HeadlessSession(
+        session_id="s1", external_session_id="ext-s1", title=None, cwd=None
+    )
+
+    catalog = asyncio.run(runtime.list_model_catalog())
+    assert [item.id for item in catalog.models] == [DEFAULT_MODEL_ID]
+
+    async def scenario() -> None:
+        accepted = await runtime.update_session_selections(
+            "s1", None, {"model": DEFAULT_MODEL_ID}
+        )
+        assert accepted.ok, accepted.message
+        # Accepted, but it means "the CLI decides", not a model to pass through.
+        assert runtime._sessions["s1"].model is None
+
+        unknown = await runtime.update_session_selections("s1", None, {"model": "nope"})
+        assert unknown.ok is False
+        assert unknown.code == "model_unknown"
+
+    asyncio.run(scenario())

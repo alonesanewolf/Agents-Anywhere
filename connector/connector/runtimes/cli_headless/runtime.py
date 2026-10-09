@@ -56,6 +56,10 @@ TURN_TIMEOUT_SECONDS = 1800
 STREAM_FLUSH_CHARS = 200
 STREAM_FLUSH_SECONDS = 0.5
 READ_SLICE_SECONDS = 30.0
+# Single synthetic catalog entry reported when the CLI owns model choice. The
+# app sends it back on every turn, so it must be accepted as "let the CLI
+# decide" instead of being rejected as an unknown model id.
+DEFAULT_MODEL_ID = "default"
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
@@ -283,9 +287,9 @@ class HeadlessCliRuntime(AgentRuntime):
             # so the app's model picker is not empty.
             items = (
                 RuntimeModelItem(
-                    id="default",
+                    id=DEFAULT_MODEL_ID,
                     title=f"默认（{self.spec.display_name} CLI 配置的模型）",
-                    selection_id="default",
+                    selection_id=DEFAULT_MODEL_ID,
                     description="模型由本机 CLI 自己的配置决定，此处选择不改变行为",
                 ),
             )
@@ -428,7 +432,8 @@ class HeadlessCliRuntime(AgentRuntime):
             )
         requested = selections.get("model")
         model_ids = {model_id for model_id, _title in self.spec.models}
-        if requested is None:
+        cli_owns_model_choice = not self.spec.models and requested == DEFAULT_MODEL_ID
+        if requested is None or cli_owns_model_choice:
             rec.model = None
         elif isinstance(requested, str) and requested in model_ids:
             rec.model = requested
