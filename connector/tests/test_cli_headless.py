@@ -347,3 +347,49 @@ def test_capability_projection_keeps_headless_cli_runtimes() -> None:
     assert ("minimax", "runtime.attachment") in projected
     assert ("codebuddy", "runtime.attachment") in projected
     assert all(item["available"] is True for item in payload["capabilities"])
+
+
+def test_session_capabilities_are_reported_for_existing_sessions(tmp_path: Any) -> None:
+    """Regression guard for the session-scoped capability set.
+
+    The Server fetches these facts before every reply, interrupt or catalog read
+    on an existing session. Inheriting the base implementation's empty set marks
+    all ten inherited ids unsupported, so a session could be created but never
+    replied to ("session capability is unavailable: session.send_message").
+    """
+
+    kv_path = os.path.join(str(tmp_path), "kv.json")
+    host = FakeHost(JsonKeyValueStore(kv_path))
+    runtime = HeadlessCliRuntime(
+        config=RuntimeConfig(runtime="fakecli", revision=1, values={}),
+        host=host,
+        spec=make_spec(MCODE_STREAM),
+    )
+
+    capabilities = asyncio.run(runtime.get_session_capabilities("s1"))
+
+    assert capabilities.session_id == "s1"
+    assert {c.capability_id for c in capabilities.capabilities} == {
+        "session.send_message",
+        "session.interrupt",
+        "catalog.model",
+        "runtime.attachment",
+    }
+    assert all(c.scope == "session" for c in capabilities.capabilities)
+    assert all(
+        c.supported and c.available and c.allowed for c in capabilities.capabilities
+    )
+
+
+def test_snapshot_never_claims_to_replace_the_stored_timeline(tmp_path: Any) -> None:
+    """A complete snapshot makes the Server delete history missing from it.
+
+    This kernel keeps its timeline in memory only, so claiming completeness would
+    wipe the session's stored items on the first reconnect after a restart.
+    """
+
+    _host, _runtime, snapshot = asyncio.run(
+        run_turn(str(tmp_path), make_spec(MCODE_STREAM))
+    )
+
+    assert snapshot.complete is False

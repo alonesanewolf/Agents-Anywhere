@@ -199,6 +199,47 @@ class HeadlessCliRuntime(AgentRuntime):
             metadata={"source": "cli_headless.static"},
         )
 
+    async def get_session_capabilities(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+    ) -> RuntimeCapabilitySet:
+        """Report the capabilities this kernel offers for one session.
+
+        The Server fetches this set for every action that targets an existing
+        session (reply, interrupt, catalog read) and inherits session-scoped
+        entries only from what this method returns. The base implementation
+        returns an empty set, which marks every inherited id unsupported and
+        makes the Server reject those actions with "session capability is
+        unavailable" — a session could be started but never replied to.
+        """
+
+        return RuntimeCapabilitySet(
+            runtime=self.spec.key,
+            revision=1,
+            connector_id=self.host.connector_id,
+            session_id=session_id,
+            capabilities=tuple(
+                RuntimeCapability(
+                    capability_id=capability_id,
+                    scope="session",
+                    runtime=self.spec.key,
+                    connector_id=self.host.connector_id,
+                    session_id=session_id,
+                )
+                for capability_id in (
+                    "session.send_message",
+                    "session.interrupt",
+                    "catalog.model",
+                    "runtime.attachment",
+                )
+            ),
+            metadata={
+                "source": "cli_headless.session",
+                "external_session_id": external_session_id,
+            },
+        )
+
     async def list_model_catalog(
         self,
         query: str | None = None,
@@ -268,7 +309,12 @@ class HeadlessCliRuntime(AgentRuntime):
             external_session_id=rec.external_session_id,
             runtime=self.spec.key,
             items=items,
-            complete=True,
+            # This timeline only lives in memory (and is empty again after a
+            # connector restart), so it must never claim to be a complete
+            # replacement: a complete sync makes the Server delete every stored
+            # item that is missing from the snapshot, which would wipe a session's
+            # history on reconnect. Codex and Claude always report complete=False.
+            complete=False,
             metadata={"source": "cli_headless.snapshot"},
         )
 
