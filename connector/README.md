@@ -151,19 +151,25 @@ of the default provider registry.
 
 ### Headless CLI runtimes (MiniMax Code / CodeBuddy)
 
-The `cli_headless` package drives local CLIs in full-auto mode and turns each
-turn into one streaming subprocess run:
+The `cli_headless` package drives local CLIs in full-auto mode and normalizes
+their `stream-json` output into assistant messages, reasoning items and tool
+items:
 
-- MiniMax Code (`mcode exec --prompt-mode work --output-format stream-json`)
-- CodeBuddy (`codebuddy -p -y --output-format stream-json --include-partial-messages`)
+- MiniMax Code (`mcode`) — one-shot with
+  `mcode exec --prompt-mode work --output-format stream-json`, or over a
+  persistent `mcode acp` session, which pays the CLI's setup once instead of on
+  every message (measured through this kernel: turn 2 5.03 s instead of 20.80 s).
+- CodeBuddy (`codebuddy -p -y --output-format stream-json --include-partial-messages`).
 
-Both kernels stream `stream-json` stdout into assistant timeline messages,
-surface tool calls as tool items, keep multi-turn context by resuming the
-native CLI session (`--session` / `--resume --resume-create-missing`), and
-support per-session model selection (`--model`). Discovery is PATH-based;
-`MINIMAX_CLI_JS` can point at a specific MiniMax `cli.js` entrypoint. A
-runtime only reports itself as available when its CLI is installed, and each
+Both kernels keep multi-turn context by resuming the native CLI session
+(`--session` / `--resume --resume-create-missing`), support per-session model
+selection, and stage attachments the way the Claude runtime does. Discovery is
+PATH-based; `MINIMAX_CLI_JS` can point at a specific MiniMax `cli.js` entrypoint.
+A runtime only reports itself as available when its CLI is installed, and each
 kernel exposes a `defaultModel` config field next to `workspaceDir`.
+
+See [headless CLI runtimes](docs/headless-cli-runtimes.md) for the transport
+details, capability coverage, measured performance and troubleshooting.
 
 Connected sessions expose native slash commands through a live runtime catalog.
 See [runtime slash commands](docs/runtime-commands.md) for Codex commands, DSH
