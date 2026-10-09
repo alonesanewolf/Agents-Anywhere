@@ -40,6 +40,12 @@ from connector.runtime_protocol import (
     TurnStartTimelineItem,
 )
 from connector.runtime_protocol.host import RuntimeHostClient, runtime_kv_store
+from connector.runtimes.cli_headless.acp_client import (
+    AcpClient,
+    AcpError,
+    chunk_text,
+    thought_flag,
+)
 from connector.runtimes.cli_headless.attachments import (
     HeadlessTurnAttachment,
     materialize_headless_attachments,
@@ -88,11 +94,18 @@ class HeadlessCliSpec:
     display_name: str
     description: str
     available: Callable[[], bool]
-    # (prompt, workspace, model, cli_session) -> argv.
+    # (prompt, workspace, model, cli_session, attachments) -> argv.
     # cli_session None = start a fresh CLI session; str = resume that one.
-    build_argv: Callable[[str, str | None, str | None, str | None], list[str] | None]
+    build_argv: Callable[
+        [str, str | None, str | None, str | None, tuple[HeadlessTurnAttachment, ...]],
+        list[str] | None,
+    ]
     # Selectable models as (model_id, title) pairs; empty = CLI default only.
     models: tuple[tuple[str, str], ...] = ()
+    # Optional persistent transport. When set, turns reuse one long-lived
+    # ``<cli> acp`` process instead of paying the CLI's start-up per message.
+    # Returns the argv to launch the ACP server, or None when the CLI is absent.
+    acp_command: Callable[[], list[str] | None] | None = None
 
 
 @dataclass
@@ -111,6 +124,10 @@ class _HeadlessSession:
     # Model chosen for this session through session.selections.update. The CLI
     # is per-turn, so the selection is remembered here and passed with --model.
     model: str | None = None
+    # Session id owned by the persistent ACP child while it is alive; it equals
+    # cli_session_id, but is tracked separately so a died-and-restarted child
+    # can be restored with session/load.
+    acp_session_id: str | None = None
 
 
 class HeadlessCliRuntime(AgentRuntime):
@@ -134,6 +151,9 @@ class HeadlessCliRuntime(AgentRuntime):
         self._states = RuntimeSessionStateCache(spec.key, host)
         self._stopping = False
         self._kv = runtime_kv_store(host)
+        self._acp: AcpClient | None = None
+        self._acp_lock = asyncio.Lock()
+        self._acp_sessions: dict[str, str] = {}
         self._load_persisted_sessions()
 
     # ------------------------------------------------------------------ identity
@@ -162,6 +182,7 @@ class HeadlessCliRuntime(AgentRuntime):
             await self._kill_process(rec)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self._close_acp()
 
     # ------------------------------------------------------------------ reads
 
@@ -487,6 +508,14 @@ class HeadlessCliRuntime(AgentRuntime):
                 ok=True,
                 result={"interrupted": False, "alreadyStopped": True},
             )
+        acp_session_id = self._acp_sessions.get(session_id)
+        if self._acp is not None and self._acp.alive and acp_session_id:
+            # ACP has a real cancel: the agent stops the turn and reports
+            # stopReason="cancelled", instead of the process simply dying.
+            try:
+                await self._acp.cancel(acp_session_id)
+            except AcpError as exc:
+                logger.warning("{} could not cancel ACP session: {}", self.spec.key, exc)
         await self._kill_process(rec)
         return RuntimeOperationResult(
             ok=True,
@@ -515,22 +544,10 @@ class HeadlessCliRuntime(AgentRuntime):
                 status="running",
                 metadata={"source": f"{self.spec.key}.turn/started"},
             )
-            argv = self.spec.build_argv(content, rec.cwd, model, rec.cli_session_id, attachments)
-            if argv is None:
-                raise RuntimeUnavailableError(
-                    f"{self.spec.display_name} CLI was not found on this machine"
-                )
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=rec.cwd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                creationflags=CREATE_NO_WINDOW,
-            )
-            rec.process = proc
-            exit_code, error_message = await self._stream_output(rec, turn_id, proc)
-            await self._finish_turn(rec, turn_id, exit_code, error_message)
+            if self.spec.acp_command is not None and not attachments:
+                await self._run_acp_turn(rec, turn_id, content, model)
+            else:
+                await self._run_oneshot_turn(rec, turn_id, content, model, attachments)
         except asyncio.CancelledError:
             await self._kill_process(rec)
             await self._fail_turn(rec, turn_id, "cancelled", "Turn was cancelled", "cancelled")
@@ -541,6 +558,225 @@ class HeadlessCliRuntime(AgentRuntime):
         finally:
             rec.active_turn_id = None
             rec.process = None
+
+    async def _run_oneshot_turn(
+        self,
+        rec: _HeadlessSession,
+        turn_id: str,
+        content: str,
+        model: str | None,
+        attachments: tuple[HeadlessTurnAttachment, ...],
+    ) -> None:
+        """One process for this turn only (the original kernel behaviour)."""
+
+        argv = self.spec.build_argv(content, rec.cwd, model, rec.cli_session_id, attachments)
+        if argv is None:
+            raise RuntimeUnavailableError(
+                f"{self.spec.display_name} CLI was not found on this machine"
+            )
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=rec.cwd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        rec.process = proc
+        exit_code, error_message = await self._stream_output(rec, turn_id, proc)
+        await self._finish_turn(rec, turn_id, exit_code, error_message)
+
+    # ------------------------------------------------------- persistent (ACP)
+
+    async def _ensure_acp_client(self) -> AcpClient:
+        """Return the long-lived ACP process, starting it on first use."""
+
+        if self._acp is not None and self._acp.alive:
+            return self._acp
+        await self._close_acp()
+        if self.spec.acp_command is None:
+            raise AcpError(f"{self.spec.key} has no persistent transport")
+        command = self.spec.acp_command()
+        if command is None:
+            raise AcpError(f"{self.spec.display_name} CLI was not found on this machine")
+        client = AcpClient(command, self._workspace_dir())
+        await client.start()
+        try:
+            await client.initialize()
+        except AcpError:
+            await client.close()
+            raise
+        self._acp = client
+        self._acp_sessions.clear()
+        logger.info("{} started persistent ACP process {}", self.spec.key, command)
+        return client
+
+    async def _close_acp(self) -> None:
+        client = self._acp
+        self._acp = None
+        self._acp_sessions.clear()
+        if client is not None:
+            await client.close()
+
+    async def _ensure_acp_session(self, rec: _HeadlessSession) -> tuple[AcpClient, str]:
+        """Map a connector session onto an ACP session on the shared process."""
+
+        client = await self._ensure_acp_client()
+        known = self._acp_sessions.get(rec.session_id)
+        if known:
+            return client, known
+        cwd = rec.cwd or self._workspace_dir()
+        for candidate in (rec.acp_session_id, rec.cli_session_id):
+            if not candidate:
+                continue
+            try:
+                await client.load_session(candidate, cwd)
+            except AcpError as exc:
+                logger.warning(
+                    "{} could not restore ACP session {}: {}",
+                    self.spec.key,
+                    candidate,
+                    exc,
+                )
+                continue
+            self._acp_sessions[rec.session_id] = candidate
+            rec.acp_session_id = candidate
+            rec.cli_session_id = candidate
+            return client, candidate
+        result = await client.new_session(cwd)
+        session_id = result.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            raise AcpError("ACP session/new returned no session id")
+        self._acp_sessions[rec.session_id] = session_id
+        rec.acp_session_id = session_id
+        rec.cli_session_id = session_id
+        self._persist_sessions()
+        return client, session_id
+
+    async def _run_acp_turn(
+        self,
+        rec: _HeadlessSession,
+        turn_id: str,
+        content: str,
+        model: str | None,
+    ) -> None:
+        """Drive one turn over the persistent process.
+
+        Measured against mcode 0.6.5: a second prompt on the same process took
+        4.85s where a fresh process took 23.09s, because the CLI's own start-up
+        (~11s for mcode) is paid once instead of per message.
+        """
+
+        state = _StreamState(item_id=f"{rec.session_id}:{turn_id}:assistant")
+        try:
+            client, acp_session_id = await self._ensure_acp_session(rec)
+        except AcpError as exc:
+            logger.warning(
+                "{} persistent transport unavailable ({}); using one process per turn",
+                self.spec.key,
+                exc,
+            )
+            await self._run_oneshot_turn(rec, turn_id, content, model, ())
+            return
+
+        stop_reason = "end_turn"
+        try:
+            async with self._acp_lock:
+                async for update in client.prompt(acp_session_id, content):
+                    if "__stopReason" in update:
+                        stop_reason = str(update["__stopReason"])
+                        break
+                    await self._apply_acp_update(rec, turn_id, state, update)
+        except AcpError as exc:
+            await self._close_acp()
+            await self._fail_turn(rec, turn_id, "acp_turn_failed", str(exc), "failed")
+            return
+
+        await self._flush_assistant(rec, turn_id, state, force=True)
+        state.revision += 1
+        await self._publish_assistant(
+            rec,
+            turn_id,
+            state.item_id,
+            state.text,
+            state.order_seq,
+            state.revision,
+            "done",
+        )
+        if state.thinking:
+            await self._flush_reasoning(rec, turn_id, state, force=True)
+
+        if stop_reason == "cancelled":
+            await self._fail_turn(rec, turn_id, "cancelled", "Turn was cancelled", "cancelled")
+            return
+        if stop_reason not in {"end_turn", "max_tokens", "max_turn_requests"}:
+            await self._fail_turn(
+                rec,
+                turn_id,
+                "acp_stop_reason",
+                f"{self.spec.display_name} stopped the turn: {stop_reason}",
+                "failed",
+            )
+            return
+        await self._finish_turn(rec, turn_id, 0, None)
+
+    async def _apply_acp_update(
+        self,
+        rec: _HeadlessSession,
+        turn_id: str,
+        state: _StreamState,
+        update: dict[str, Any],
+    ) -> None:
+        """Translate one ``session/update`` payload into timeline items."""
+
+        text = chunk_text(update)
+        if text is not None:
+            if thought_flag(update):
+                state.thinking = _append_bounded(state.thinking, text)
+                await self._flush_reasoning(rec, turn_id, state)
+            else:
+                state.text = _append_bounded(state.text, text)
+                await self._flush_assistant(rec, turn_id, state)
+            return
+        kind = str(update.get("sessionUpdate") or "")
+        if kind not in {"tool_call", "tool_call_update"}:
+            return
+        tool_id = update.get("toolCallId")
+        if not isinstance(tool_id, str) or not tool_id:
+            return
+        # A tool_call_update only carries what changed (usually just a status),
+        # so accumulate per tool instead of overwriting the announced title and
+        # input with the sparse follow-up.
+        merged = state.tool_blocks.setdefault(tool_id, {})
+        title = update.get("title") or update.get("name")
+        if isinstance(title, str) and title:
+            merged["title"] = title
+        if isinstance(update.get("kind"), str):
+            merged["kind"] = update["kind"]
+        if update.get("rawInput") is not None:
+            merged["rawInput"] = update["rawInput"]
+        if isinstance(update.get("status"), str):
+            merged["status"] = update["status"]
+        if not merged.get("title"):
+            return
+        tool_input = merged.get("rawInput")
+        if tool_input is None:
+            tool_input = {
+                key: merged[key]
+                for key in ("kind", "status")
+                if merged.get(key) is not None
+            }
+        await self._publish_cli_tool_item(
+            rec,
+            turn_id,
+            state,
+            {
+                "id": tool_id,
+                "type": merged["title"],
+                "input": tool_input,
+            },
+            merged.get("status") in {"completed", "failed"},
+        )
 
     async def _stream_output(
         self,
@@ -757,11 +993,12 @@ class HeadlessCliRuntime(AgentRuntime):
         rec: _HeadlessSession,
         turn_id: str,
         state: _StreamState,
+        force: bool = False,
     ) -> None:
         now = time.monotonic()
         grown = len(state.thinking) - state.thinking_published
         due = now - state.last_flush >= STREAM_FLUSH_SECONDS
-        if grown < STREAM_FLUSH_CHARS and not due:
+        if not force and grown < STREAM_FLUSH_CHARS and not due:
             return
         state.thinking_revision += 1
         item_id = f"{rec.session_id}:{turn_id}:reasoning"
@@ -930,6 +1167,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 cwd=record.get("cwd"),
                 cli_session_id=record.get("cli_session_id"),
                 model=record.get("model"),
+                acp_session_id=record.get("acp_session_id"),
             )
 
     def _persist_sessions(self) -> None:
@@ -941,6 +1179,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 "cwd": rec.cwd,
                 "cli_session_id": rec.cli_session_id,
                 "model": rec.model,
+                "acp_session_id": rec.acp_session_id,
             }
             for rec in self._sessions.values()
         ]

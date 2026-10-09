@@ -444,3 +444,186 @@ def test_session_model_selection_persists_and_reaches_argv(tmp_path: Any) -> Non
         spec=spec,
     )
     assert restored._sessions["s1"].model == "m-fast"
+
+
+# --------------------------------------------------------------------------
+# Persistent (ACP) transport
+# --------------------------------------------------------------------------
+
+
+class FakeAcpClient:
+    """Stand-in for the long-lived `mcode acp` process."""
+
+    def __init__(self, chunks: list[dict[str, Any]]) -> None:
+        self.alive = True
+        self.chunks = chunks
+        self.created = 0
+        self.loaded: list[str] = []
+        self.prompts: list[tuple[str, str]] = []
+        self.cancelled: list[str] = []
+
+    async def initialize(self) -> dict[str, Any]:
+        return {"protocolVersion": 1}
+
+    async def new_session(self, cwd: Any, mcp_servers: Any = None) -> dict[str, Any]:
+        self.created += 1
+        return {"sessionId": f"mvs_new_{self.created}"}
+
+    async def load_session(self, session_id: str, cwd: Any, mcp_servers: Any = None) -> dict[str, Any]:
+        self.loaded.append(session_id)
+        return {"sessionId": session_id}
+
+    async def prompt(self, session_id: str, text: str, **kwargs: Any):
+        self.prompts.append((session_id, text))
+        for chunk in self.chunks:
+            yield chunk
+        yield {"__stopReason": "end_turn"}
+
+    async def cancel(self, session_id: str) -> None:
+        self.cancelled.append(session_id)
+
+    async def close(self) -> None:
+        self.alive = False
+
+
+ACP_CHUNKS = [
+    {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "weighing"}},
+    {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hel"}},
+    {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "lo"}},
+    {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "bash", "kind": "execute"},
+    {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"},
+    {"sessionUpdate": "usage_update", "used": 10, "size": 100},
+]
+
+
+def acp_spec(chunks_spec: HeadlessCliSpec | None = None, command: Any = None) -> HeadlessCliSpec:
+    base = chunks_spec or make_spec(MCODE_STREAM)
+    return HeadlessCliSpec(
+        key="minimax",
+        display_name="MiniMax",
+        description="acp test",
+        available=lambda: True,
+        build_argv=base.build_argv,
+        acp_command=command if command is not None else (lambda: ["fake", "acp"]),
+    )
+
+
+async def drive_acp_turns(
+    host: FakeHost,
+    runtime: HeadlessCliRuntime,
+    prompts: list[str],
+    *,
+    create: bool,
+) -> Any:
+    """Run turns through the ACP path and wait for each to settle."""
+
+    await runtime.start()
+    if create:
+        first = await runtime.create_and_start_session(
+            "s1", prompts[0], client_message_id="c1"
+        )
+        assert first.ok
+        remaining = prompts[1:]
+    else:
+        remaining = prompts
+    for index, prompt in enumerate(remaining, start=2):
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            state = await runtime.get_session_state("s1")
+            if state is None or state.status == "idle":
+                break
+        result = await runtime.start_turn(
+            "s1", None, prompt, client_message_id=f"c{index}"
+        )
+        assert result.ok
+    for _ in range(400):
+        await asyncio.sleep(0.02)
+        state = await runtime.get_session_state("s1")
+        if state is not None and state.status in ("idle", "error"):
+            break
+    assert state is not None and state.status in ("idle", "error"), host.turn_outcomes
+    return await runtime.get_session_snapshot("s1")
+
+
+def make_acp_runtime(
+    tmp_path: Any, spec: HeadlessCliSpec
+) -> tuple[FakeHost, HeadlessCliRuntime]:
+    host = FakeHost(JsonKeyValueStore(os.path.join(str(tmp_path), "kv.json")))
+    runtime = HeadlessCliRuntime(
+        config=RuntimeConfig(runtime=spec.key, revision=1, values={}),
+        host=host,
+        spec=spec,
+    )
+    return host, runtime
+
+
+def test_acp_turns_reuse_one_process_and_one_session(tmp_path: Any) -> None:
+    """One persistent process must serve every turn of a session."""
+
+    spec = acp_spec()
+    host, runtime = make_acp_runtime(tmp_path, spec)
+    fake = FakeAcpClient(ACP_CHUNKS)
+    runtime._acp = fake
+
+    snapshot = asyncio.run(
+        drive_acp_turns(host, runtime, ["first", "second"], create=True)
+    )
+
+    assert fake.created == 1, "a new ACP session must not be created per turn"
+    assert [session for session, _text in fake.prompts] == ["mvs_new_1", "mvs_new_1"]
+    assert host.turn_outcomes == ["completed", "completed"]
+
+    assistants = [
+        item for item in snapshot.items if item.type == "message" and item.role == "assistant"
+    ]
+    assert assistants[-1].content["text"] == "hello"
+    assert assistants[-1].status == "done"
+
+    reasoning = [
+        item
+        for item in snapshot.items
+        if item.type == "system" and item.content.get("kind") == "reasoning"
+    ]
+    assert reasoning and "weighing" in reasoning[-1].content["text"]
+
+    tools = [item for item in snapshot.items if item.type == "tool"]
+    # One item per turn: tool_call_update upserts the same id instead of adding
+    # a second item for the same call.
+    assert len(tools) == 2
+    assert {item.content["title"] for item in tools} == {"bash"}
+    assert all(item.status == "done" for item in tools)
+
+
+def test_acp_restores_a_session_after_the_process_died(tmp_path: Any) -> None:
+    """A restarted connector must resume the session instead of starting over."""
+
+    spec = acp_spec()
+    host, runtime = make_acp_runtime(tmp_path, spec)
+    runtime._acp = FakeAcpClient(ACP_CHUNKS)
+    asyncio.run(drive_acp_turns(host, runtime, ["first"], create=True))
+
+    # Fresh runtime instance: the ACP child is gone, the KV registry survives.
+    restarted_host, restarted = make_acp_runtime(tmp_path, spec)
+    fake = FakeAcpClient(ACP_CHUNKS)
+    restarted._acp = fake
+    assert restarted._sessions["s1"].acp_session_id == "mvs_new_1"
+
+    asyncio.run(drive_acp_turns(restarted_host, restarted, ["third"], create=False))
+
+    assert fake.loaded == ["mvs_new_1"], "the stored ACP session id must be restored"
+    assert fake.created == 0, "restoring must not create a second session"
+
+
+def test_acp_unavailable_falls_back_to_one_process_per_turn(tmp_path: Any) -> None:
+    """No ACP server must degrade to the original one-shot kernel."""
+
+    spec = acp_spec(command=lambda: None)
+    host, runtime = make_acp_runtime(tmp_path, spec)
+
+    snapshot = asyncio.run(drive_acp_turns(host, runtime, ["hi"], create=True))
+
+    assert host.turn_outcomes == ["completed"]
+    assistants = [
+        item for item in snapshot.items if item.type == "message" and item.role == "assistant"
+    ]
+    assert assistants[-1].content["text"] == "this is the full answer."

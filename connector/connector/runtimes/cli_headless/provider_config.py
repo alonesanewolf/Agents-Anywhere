@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from typing import Any
 
+from connector.runtimes.cli_headless.acp_client import acp_argv
 from connector.runtimes.cli_headless.attachments import HeadlessTurnAttachment
 from connector.runtimes.cli_headless.discovery import codebuddy_cli, minimax_cli
 
@@ -60,6 +61,20 @@ def minimax_argv(
         argv += ["--file", attachment.path]
     argv.append(prompt)
     return argv
+
+
+def minimax_acp_command() -> list[str] | None:
+    """Persistent `mcode acp` command, or None when the CLI is absent.
+
+    The one-shot path pays the CLI's start-up on every message (~11s measured
+    for mcode 0.6.5); the ACP server pays it once per runtime and then answers
+    prompts on the same process.
+    """
+
+    cli = minimax_cli()
+    if cli is None:
+        return None
+    return acp_argv(cli)
 
 
 def codebuddy_argv(

@@ -19,6 +19,7 @@ from connector.runtimes.cli_headless.provider_config import (
     CAPABILITIES,
     CONFIG_SCHEMA_REVISION,
     codebuddy_argv,
+    minimax_acp_command,
     minimax_argv,
     shared_config_schema,
     with_default_model,
@@ -127,6 +128,9 @@ class MiniMaxProvider(HeadlessCliProvider):
                 description="MiniMax Code (mcode exec --prompt-mode work)",
                 available=minimax_available,
                 build_argv=minimax_argv,
+                # Persistent session: measured 4.85s for a follow-up prompt on
+                # one `mcode acp` process vs 23-26s for a fresh process per turn.
+                acp_command=minimax_acp_command,
             )
         )
 
