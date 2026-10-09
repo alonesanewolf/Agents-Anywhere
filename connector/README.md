@@ -13,7 +13,7 @@ back to the backend.
 ```text
 connector/
   runtime_protocol/  AgentRuntime, RuntimeProvider, RuntimeHostClient contracts
-  runtimes/          Codex, Claude and DSH RuntimeProvider/AgentRuntime packages
+  runtimes/          Codex, Claude, DSH, MiniMax Code and CodeBuddy RuntimeProvider/AgentRuntime packages
   server/            Backend auth, ingest, RPC channel, request dispatch, host mapping
   core/              Connector config, JSON-RPC, runtime owner, runtime config storage
   local/             Local filesystem, shell, and terminal backends
@@ -135,8 +135,8 @@ atomic file transactions and legacy migration.
 
 ## Runtime Discovery
 
-The default providers are Codex, Claude and DSH. The connector reports attached runtime
-capabilities to the server. Codex is discovered through the official
+The default providers are Codex, Claude, DSH, MiniMax Code and CodeBuddy. The connector
+reports attached runtime capabilities to the server. Codex is discovered through the official
 `openai-codex` SDK package; the connector does not use a Codex CLI/app-server
 path or IPC switch as an active runtime surface. If Claude Code is not on
 `PATH`, set:
@@ -148,6 +148,22 @@ CLAUDE_BIN=/path/to/claude
 DSH requires the bridge integration described in
 [DSH Bridge Next](../dsh-bridge-next/README.md). Legacy ACP adapters are not part
 of the default provider registry.
+
+### Headless CLI runtimes (MiniMax Code / CodeBuddy)
+
+The `cli_headless` package drives local CLIs in full-auto mode and turns each
+turn into one streaming subprocess run:
+
+- MiniMax Code (`mcode exec --prompt-mode work --output-format stream-json`)
+- CodeBuddy (`codebuddy -p -y --output-format stream-json --include-partial-messages`)
+
+Both kernels stream `stream-json` stdout into assistant timeline messages,
+surface tool calls as tool items, keep multi-turn context by resuming the
+native CLI session (`--session` / `--resume --resume-create-missing`), and
+support per-session model selection (`--model`). Discovery is PATH-based;
+`MINIMAX_CLI_JS` can point at a specific MiniMax `cli.js` entrypoint. A
+runtime only reports itself as available when its CLI is installed, and each
+kernel exposes a `defaultModel` config field next to `workspaceDir`.
 
 Connected sessions expose native slash commands through a live runtime catalog.
 See [runtime slash commands](docs/runtime-commands.md) for Codex commands, DSH
