@@ -208,7 +208,7 @@ class HeadlessCliRuntime(AgentRuntime):
                     description="模型由本机 CLI 自己的配置决定，此处选择不改变行为",
                 ),
             )
-        return RuntimeModelCatalog(runtime=self.spec.key, revision=1, models=items)
+        return RuntimeModelCatalog(runtime=self.spec.key, revision=2, models=items)
 
     async def list_sessions(
         self,
@@ -443,7 +443,7 @@ class HeadlessCliRuntime(AgentRuntime):
                 raw = await asyncio.wait_for(
                     proc.stdout.readline(), timeout=min(remaining, READ_SLICE_SECONDS)
                 )
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 continue
             if not raw:
                 break
